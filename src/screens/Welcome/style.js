@@ -19,5 +19,15 @@ const styles = StyleSheet.create({
         fontFamily: Fonts.type.NunitoSans_Regular,
         textAlign: 'center'
     },
+    wrapper: {
+        display: 'flex',
+        flex: 1,
+        justifyContent: 'center',
+        paddingHorizontal: 20,
+    },
+    id: {
+        textAlign: 'center',
+        marginBottom: 20,
+    },
 })
 export default styles;
