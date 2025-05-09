@@ -12,16 +12,17 @@ function HomeStack() {
         <Stack.Navigator>
             <Stack.Screen
                 options={{ headerShown: false }}
+                name="Counter"
+                component={Counter}
+            />
+            <Stack.Screen
+                options={{ headerShown: false }}
                 name="Welcome"
                 component={Welcome}
             />
             <Stack.Screen
                 name="Recorder"
                 component={Recorder}
-            />
-            <Stack.Screen
-                name="Counter"
-                component={Counter}
             />
         </Stack.Navigator>
     );
