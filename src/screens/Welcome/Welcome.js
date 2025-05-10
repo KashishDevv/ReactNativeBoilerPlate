@@ -17,7 +17,7 @@ function Welcome() {
     } else {
         NativeModule = NativeModules.BridgingCodeModule;
     }
-    console.log(NativeModule,"NativeModule=====>")
+    console.log(NativeModule, "NativeModule=====>")
 
 
     // For Android
@@ -37,19 +37,19 @@ function Welcome() {
     }
 
     // For IOS
-    // const nativeSimpleMethodforIos = () => {
-    //     NativeModule.bothClassifyAndCallback("https://fileinfo.com/img/ss/xl/jpg_44-2.jpg", result => {
-    //         alert(result)
-    //     })
+    const nativeSimpleMethodforIos = () => {
+        NativeModule.bothClassifyAndCallback("https://fileinfo.com/img/ss/xl/jpg_44-2.jpg", result => {
+            alert(result)
+        })
 
-    //     NativeModule.makeApiCall('https://jsonplaceholder.typicode.com/todos/1')
-    //         .then(response => {
-    //             console.log('API Response:', response);
-    //         })
-    //         .catch(error => {
-    //             console.error('API Error:', error);
-    //         });
-    // }
+        NativeModule.makeApiCall('https://jsonplaceholder.typicode.com/todos/1')
+            .then(response => {
+                console.log('API Response:', response);
+            })
+            .catch(error => {
+                console.error('API Error:', error);
+            });
+    }
 
 
     return (
@@ -71,7 +71,7 @@ function Welcome() {
             <Button
                 onPress={() => Platform.OS === 'android' ?
                     nativeSimpleMethodReturnsforAndroid()
-                    : console.log("Called")}
+                    : nativeSimpleMethodforIos()}
                 title="Simple Method"
             />
         </SafeAreaView>
