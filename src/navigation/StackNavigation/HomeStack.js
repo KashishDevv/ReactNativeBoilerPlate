@@ -2,7 +2,6 @@ import * as React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import Counter from '../../screens/Counter/Counter';
 import Welcome from '../../screens/Welcome/Welcome';
-import Recorder from '../../screens/Recorder/Recorder';
 
 
 const Stack = createNativeStackNavigator();
@@ -19,10 +18,6 @@ function HomeStack() {
                 options={{ headerShown: false }}
                 name="Welcome"
                 component={Welcome}
-            />
-            <Stack.Screen
-                name="Recorder"
-                component={Recorder}
             />
         </Stack.Navigator>
     );
