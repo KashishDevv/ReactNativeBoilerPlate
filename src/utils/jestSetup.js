@@ -23,6 +23,37 @@ jest.mock('@react-native-community/netinfo', () => ({
     NetInfo: jest.fn(), // Mock the NetInfo function
 }));
 
+// Mock react-native-permissions to avoid ESM issues and native calls in tests
+jest.mock('react-native-permissions', () => {
+  const RESULTS = {
+    UNAVAILABLE: 'unavailable',
+    DENIED: 'denied',
+    BLOCKED: 'blocked',
+    GRANTED: 'granted',
+    LIMITED: 'limited',
+  };
+  return {
+    __esModule: true,
+    RESULTS,
+    PERMISSIONS: {
+      ANDROID: {
+        BLUETOOTH_SCAN: 'android.permission.BLUETOOTH_SCAN',
+        BLUETOOTH_CONNECT: 'android.permission.BLUETOOTH_CONNECT',
+        BLUETOOTH_ADVERTISE: 'android.permission.BLUETOOTH_ADVERTISE',
+        ACCESS_FINE_LOCATION: 'android.permission.ACCESS_FINE_LOCATION',
+        ACCESS_COARSE_LOCATION: 'android.permission.ACCESS_COARSE_LOCATION',
+      },
+      IOS: {
+        BLUETOOTH_PERIPHERAL: 'ios.permission.BLUETOOTH_PERIPHERAL',
+        LOCATION_WHEN_IN_USE: 'ios.permission.LOCATION_WHEN_IN_USE',
+      },
+    },
+    check: jest.fn(async () => RESULTS.GRANTED),
+    request: jest.fn(async () => RESULTS.GRANTED),
+    openSettings: jest.fn(async () => {}),
+  };
+});
+
 jest.mock('@react-navigation/native', () => {
     return {
       __esModule: true,

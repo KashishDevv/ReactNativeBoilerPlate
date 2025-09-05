@@ -16,7 +16,7 @@ prepare_react_native_project!
 # ⬇️ uncomment wanted permissions
 setup_permissions([
   # 'AppTrackingTransparency',
-  # 'Bluetooth',
+  'Bluetooth',
   # 'Calendars',
   # 'CalendarsWriteOnly',
   'Camera',
@@ -28,7 +28,7 @@ setup_permissions([
   # 'MediaLibrary',
   # 'Microphone',
   # 'Motion',
-  # 'Notifications',
+  'Notifications',
   # 'PhotoLibrary',
   # 'PhotoLibraryAddOnly',
   # 'Reminders',

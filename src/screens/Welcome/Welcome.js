@@ -74,6 +74,20 @@ function Welcome() {
                     : nativeSimpleMethodforIos()}
                 title="Simple Method"
             />
+            
+            <View style={{ marginTop: 20 }}>
+                <Button
+                    onPress={() => navigation.navigate('BLEManager')}
+                    title="Open BLE Manager"
+                />
+            </View>
+            
+            <View style={{ marginTop: 10 }}>
+                <Button
+                    onPress={() => navigation.navigate('Counter')}
+                    title="Counter Example"
+                />
+            </View>
         </SafeAreaView>
     )
 }

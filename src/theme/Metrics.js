@@ -18,6 +18,13 @@ const moderateScale = (size, factor = 0.5) => size + (scale(size) * factor);
 const Metrics = {
     screenWidth: width < height ? width : height,
     screenHeight: width < height ? height : width,
+    
+    // Spacing values
+    smallMargin: 8,
+    baseMargin: 16,
+    doubleBaseMargin: 32,
+    borderRadius: 12,
+    
     textAlign: {
         TOP: 'top',
         CENTER: 'center',

@@ -1,3 +1,3 @@
 export const Urls ={
-    BASE_URL: "https://dummyjson.com/products",
+    BASE_URL: "https://api.staging.dyreid.no/api/",
 }
