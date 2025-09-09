@@ -155,7 +155,8 @@ const ModernBLEManager = ({ navigation }) => {
         const battery = await BLEService.getPhoneBatteryLevel();
         setPhoneBatteryLevel(battery);
         
-        console.log(`🔄 Periodic refresh - Profile: ${profile}, Battery: ${battery}%`);
+        const batteryDisplay = battery !== null ? `${battery}%` : 'Unknown';
+        console.log(`🔄 Periodic refresh - Profile: ${profile}, Battery: ${batteryDisplay}`);
       } catch (error) {
         console.log('Periodic refresh failed:', error);
       }
@@ -276,6 +277,12 @@ const ModernBLEManager = ({ navigation }) => {
       
       await BLEService.startScanning(
         (device) => {
+          // Filter out devices with "Unknown Device" name
+          if (device.name === "Unknown Device" || device.name === "Unknown") {
+            console.log(`🚫 Skipping unknown device: ${device.name} (${device.id})`);
+            return;
+          }
+          
           console.log(`🔍 Discovered device: ${device.name || 'Unknown'} (${device.id})`);
           setDevices(prevDevices => {
             const existingIndex = prevDevices.findIndex(d => d.id === device.id);
@@ -404,6 +411,15 @@ const ModernBLEManager = ({ navigation }) => {
         return false;
       }
       
+      return true;
+    });
+    
+    // Filter out devices with "Unknown Device" name
+    result = result.filter(d => {
+      if (d.name === "Unknown Device" || d.name === "Unknown") {
+        // console.log(`🚫 Filtering out unknown device: ${d.name} (${d.id})`);
+        return false;
+      }
       return true;
     });
     // Sort: connected first, then by RSSI (strongest first), then by name

@@ -24,6 +24,20 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" 
                      tools:targetApi="s" />
     
+    <!-- Foreground service permissions -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" 
+                     tools:targetApi="u" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
+    <!-- Battery optimization permissions -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    
+    <!-- Companion Device Manager permissions -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    
     <!-- Feature declarations -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
@@ -48,5 +62,23 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
       </activity>
+      
+      <!-- BLE Foreground Service -->
+      <service
+        android:name=".BLEForegroundService"
+        android:enabled="true"
+        android:exported="false"
+        android:foregroundServiceType="connectedDevice"
+        android:stopWithTask="false" />
+      
+      <!-- BLE Background Receiver -->
+      <receiver
+        android:name=".BLEBackgroundReceiver"
+        android:enabled="true"
+        android:exported="false">
+        <intent-filter>
+          <action android:name="com.reactnativeboilerplate.BLE_SCAN_RESULT" />
+        </intent-filter>
+      </receiver>
     </application>
 </manifest>

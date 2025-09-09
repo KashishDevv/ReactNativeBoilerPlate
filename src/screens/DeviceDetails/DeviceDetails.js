@@ -77,7 +77,7 @@ const DeviceDetails = ({ route, navigation }) => {
 
       // Start GET API calling every 15 seconds when screen is focused
       console.log(`📱 [GET API] Starting GET API for device: ${deviceId}`);
-      BLEService.setScreenActiveState(deviceId, true);
+      BLEService.setDeviceScreenActive(deviceId, true);
 
       // Listen for data updates from GET API
       const handleDataUpdate = (data) => {
@@ -97,7 +97,7 @@ const DeviceDetails = ({ route, navigation }) => {
         
         // Stop GET API calling when screen loses focus
         console.log(`📱 [GET API] Stopping GET API for device: ${deviceId}`);
-        BLEService.setScreenActiveState(deviceId, false);
+        BLEService.setDeviceScreenActive(deviceId, false);
       };
     }, [deviceId])
   );

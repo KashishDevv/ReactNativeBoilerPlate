@@ -70,7 +70,7 @@ The BLE implementation demonstrates **excellent compliance with industry standar
 
 ### 1. **Library Selection** ⭐⭐⭐⭐⭐
 
-#### **react-native-ble-plx**
+#### **Native BLE Implementation**
 - ✅ **Industry Standard**: Uses the most popular and well-maintained BLE library
 - ✅ **Cross-Platform**: Proper iOS and Android support
 - ✅ **Active Development**: Regular updates and community support
@@ -873,7 +873,7 @@ This implementation can serve as a **reference implementation** for other develo
 - `src/screens/ModernBLEManager/ModernBLEManager.js` - Modern BLE UI
 
 ### **Dependencies**
-- `react-native-ble-plx`: Industry-standard BLE library
+- `Native BLE Implementation`: Industry-standard BLE library
 - `buffer`: Data parsing utilities
 - `axios`: HTTP client for API requests
 
