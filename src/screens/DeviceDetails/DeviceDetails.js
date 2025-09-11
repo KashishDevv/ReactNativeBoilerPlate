@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   RefreshControl,
+  AppState,
 } from 'react-native';
 import BLEService from '../../services/ble/BLEService';
 import { 
@@ -24,6 +25,7 @@ const DeviceDetails = ({ route, navigation }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedServices, setExpandedServices] = useState(new Set());
+  const [appState, setAppState] = useState(AppState.currentState);
 
   useEffect(() => {
     loadDeviceDetails();
@@ -31,13 +33,23 @@ const DeviceDetails = ({ route, navigation }) => {
       title: device?.name || 'Device Details',
     });
 
+    // Set up AppState listener to handle background/foreground transitions
+    const handleAppStateChange = (nextAppState) => {
+      console.log(`📱 [DeviceDetails] App state changed: ${appState} → ${nextAppState}`);
+      setAppState(nextAppState);
+    };
+
+    const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
+
     // Set up data update callback for real-time updates (with fallback)
     try {
       if (BLEService && typeof BLEService.setDeviceDataUpdateCallback === 'function') {
         BLEService.setDeviceDataUpdateCallback((updatedDeviceId, deviceData) => {
-          if (updatedDeviceId === deviceId) {
+          if (updatedDeviceId === deviceId && AppState.currentState === 'active') {
             console.log('Device data updated via callback:', deviceData);
             updateDeviceData();
+          } else if (updatedDeviceId === deviceId && AppState.currentState !== 'active') {
+            console.log('📱 [DeviceDetails] Skipping callback update - app is in background');
           }
         });
         console.log('Callback setup successful');
@@ -48,13 +60,28 @@ const DeviceDetails = ({ route, navigation }) => {
       console.warn('Callback setup failed, using polling:', error.message);
     }
 
-    // Frequent polling to ensure UI updates (fallback method)
+    // Less frequent polling to reduce excessive updates (fallback method)
+    // Only poll when app is active to prevent background updates
     const interval = setInterval(() => {
-      updateDeviceData();
-    }, 500); // Update every 500ms for responsiveness
+      if (AppState.currentState === 'active') {
+        updateDeviceData();
+      } else {
+        console.log('📱 [DeviceDetails] Skipping UI update - app is in background');
+      }
+    }, 2000); // Update every 2 seconds for better performance
+
+    // Add timeout to prevent infinite loading
+    const timeout = setTimeout(() => {
+      if (loading) {
+        console.log('⚠️ [DeviceDetails] Loading timeout reached, forcing completion');
+        setLoading(false);
+      }
+    }, 5000); // 5 second timeout - more reasonable
 
     return () => {
       clearInterval(interval);
+      clearTimeout(timeout);
+      appStateSubscription?.remove();
       try {
         if (BLEService && typeof BLEService.setDeviceDataUpdateCallback === 'function') {
           BLEService.setDeviceDataUpdateCallback(null);
@@ -105,43 +132,73 @@ const DeviceDetails = ({ route, navigation }) => {
   const loadDeviceDetails = async () => {
     try {
       setLoading(true);
+      console.log(`📱 [DeviceDetails] Loading details for device: ${deviceId}`);
+      
       let deviceData = BLEService.getDevice(deviceId);
+      console.log(`📱 [DeviceDetails] Initial device data:`, deviceData ? 'Found' : 'Not found');
+      
       // Fallback: attempt to synthesize device if connected but missing from snapshot
       if (!deviceData) {
         console.log('🔎 Device not in scanned snapshot, attempting fallback synthesis...');
-        // Only try to load services if device is connected
-        if (deviceData?.connectionState === CONNECTION_STATES.CONNECTED) {
+        // Check if device is connected using the public method
+        if (BLEService.isDeviceConnected(deviceId)) {
+          console.log('📱 Device found as connected, loading services...');
           try {
-            await BLEService.loadDeviceServices(deviceId);
+            // Don't wait for service discovery - load it in background
+            BLEService.loadDeviceServices(deviceId).catch(error => {
+              console.log('⚠️ Background service loading failed:', error.message);
+            });
           } catch (error) {
-            console.log('⚠️ Could not load services - device may be disconnected:', error.message);
+            console.log('⚠️ Could not start service loading:', error.message);
           }
         }
         deviceData = BLEService.getDevice(deviceId);
       }
       
       if (deviceData) {
+        console.log(`📱 [DeviceDetails] Device data loaded:`, {
+          name: deviceData.name,
+          connectionState: deviceData.connectionState,
+          hasDeviceData: !!deviceData.deviceData
+        });
+        
         setDevice(deviceData);
         
         // Only try to request data if device is connected
         if (deviceData.connectionState === CONNECTION_STATES.CONNECTED) {
+          console.log('📱 [DeviceDetails] Device is connected, requesting data...');
           try {
-            await BLEService.requestDeviceData(deviceId);
+            // Enable system commands since we now have proper native implementations
+            await BLEService.requestDeviceData(deviceId, { enableSystemCommands: true });
+            console.log('📱 [DeviceDetails] Data request completed');
           } catch (error) {
             console.log('⚠️ Could not request device data - device may be disconnected:', error.message);
           }
         } else {
-          console.log('📱 Device not connected, skipping data request');
+          console.log(`📱 [DeviceDetails] Device not connected (state: ${deviceData.connectionState}), skipping data request`);
+        }
+        
+        // Load services in background without blocking UI
+        if (deviceData.connectionState === CONNECTION_STATES.CONNECTED) {
+          console.log('📱 [DeviceDetails] Starting background service discovery...');
+          BLEService.loadDeviceServices(deviceId).then(() => {
+            console.log('📱 [DeviceDetails] Background service discovery completed');
+            updateDeviceData(); // Refresh UI with new service data
+          }).catch(error => {
+            console.log('⚠️ Background service discovery failed:', error.message);
+          });
         }
       } else {
+        console.log('❌ [DeviceDetails] Device not found in BLE service');
         Alert.alert('Error', 'Device not found', [
           { text: 'OK', onPress: () => navigation.goBack() }
         ]);
       }
     } catch (error) {
-      console.error('Error loading device details:', error);
+      console.error('❌ [DeviceDetails] Error loading device details:', error);
       Alert.alert('Error', 'Failed to load device details');
     } finally {
+      console.log('📱 [DeviceDetails] Loading completed, setting loading to false');
       setLoading(false);
     }
   };
@@ -149,24 +206,42 @@ const DeviceDetails = ({ route, navigation }) => {
   const updateDeviceData = () => {
     const deviceData = BLEService.getDeviceDataFresh(deviceId);
     if (deviceData) {
-      setDevice(deviceData);
-      console.log('UI updated with device data:', {
-        name: deviceData.name,
-        batteryLevel: deviceData.deviceData?.batteryLevel,
-        temperature: deviceData.deviceData?.temperature,
-        steps: deviceData.deviceData?.steps,
-        lastUpdate: deviceData.deviceData?.lastUpdate
-      });
+      // Only update if data has actually changed to reduce unnecessary re-renders
+      const hasDataChanged = !device || 
+        device.deviceData?.batteryLevel !== deviceData.deviceData?.batteryLevel ||
+        device.deviceData?.temperature !== deviceData.deviceData?.temperature ||
+        device.deviceData?.steps !== deviceData.deviceData?.steps ||
+        device.connectionState !== deviceData.connectionState;
+      
+      if (hasDataChanged) {
+        setDevice(deviceData);
+        console.log('UI updated with device data:', {
+          name: deviceData.name,
+          batteryLevel: deviceData.deviceData?.batteryLevel,
+          temperature: deviceData.deviceData?.temperature,
+          steps: deviceData.deviceData?.steps,
+          lastUpdate: deviceData.deviceData?.lastUpdate,
+          connectionState: deviceData.connectionState
+        });
+        
+        // Log battery level issue if it's still null
+        if (deviceData.deviceData?.batteryLevel === null && deviceData.connectionState === 'connected') {
+          console.log('⚠️ Battery level is null - device may not expose battery characteristic');
+        }
+      }
     }
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
     try {
+      console.log('📱 [DeviceDetails] Refreshing device data...');
+      
       // Update device data from BLE service first
       const freshDeviceData = BLEService.getDevice(deviceId);
       if (freshDeviceData) {
         setDevice(freshDeviceData);
+        console.log('📱 [DeviceDetails] Fresh device data loaded');
       }
       
       // Only try to load services if device is connected
@@ -188,6 +263,47 @@ const DeviceDetails = ({ route, navigation }) => {
       Alert.alert('Error', 'Failed to refresh device data');
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const attemptConnection = async () => {
+    try {
+      console.log('📱 [DeviceDetails] Attempting manual connection...');
+      setLoading(true);
+      
+      // Try to connect to the device
+      await BLEService.connectToDevice(deviceId);
+      
+      // Wait a moment for connection to complete
+      setTimeout(async () => {
+        try {
+          await loadDeviceDetails();
+        } catch (error) {
+          console.log('⚠️ Error loading details after connection:', error.message);
+          setLoading(false);
+        }
+      }, 2000);
+      
+    } catch (error) {
+      console.error('❌ Connection attempt failed:', error);
+      Alert.alert('Connection Failed', 'Could not connect to device. Please try again.');
+      setLoading(false);
+    }
+  };
+
+  const refreshServices = async () => {
+    try {
+      console.log('📱 [DeviceDetails] Manually refreshing services...');
+      setLoading(true);
+      
+      await BLEService.loadDeviceServices(deviceId);
+      updateDeviceData();
+      
+    } catch (error) {
+      console.error('❌ Service refresh failed:', error);
+      Alert.alert('Refresh Failed', 'Could not refresh services. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -234,6 +350,12 @@ const DeviceDetails = ({ route, navigation }) => {
           <Text style={styles.disconnectedWarningText}>
             ⚠️ Device is not connected. Some features may be limited.
           </Text>
+          <TouchableOpacity
+            style={styles.connectButton}
+            onPress={attemptConnection}
+          >
+            <Text style={styles.connectButtonText}>Try Connect</Text>
+          </TouchableOpacity>
         </View>
       )}
       
@@ -275,14 +397,12 @@ const DeviceDetails = ({ route, navigation }) => {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Live Data</Text>
         
-        {deviceData.batteryLevel !== null && (
-          <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Battery Level:</Text>
-            <Text style={[styles.infoValue, styles.batteryText]}>
-              {deviceData.batteryLevel}%
-            </Text>
-          </View>
-        )}
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>Battery Level:</Text>
+          <Text style={[styles.infoValue, deviceData.batteryLevel !== null ? styles.batteryText : styles.batteryUnavailableText]}>
+            {(deviceData.batteryLevel !== null && deviceData.batteryLevel !== undefined) ? `${deviceData?.batteryLevel}%` : 'Not Available'}
+          </Text>
+        </View>
 
         {deviceData.temperature !== null && (
           <View style={styles.infoRow}>
@@ -317,12 +437,12 @@ const DeviceDetails = ({ route, navigation }) => {
 
 
   const renderServices = () => {
-    if (!device.services || device.services.length === 0) {
+    if (!device || !device.services || device.services.length === 0) {
       return (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Services</Text>
           <Text style={styles.emptyText}>
-            {device.connectionState === CONNECTION_STATES.CONNECTED 
+            {device && device.connectionState === CONNECTION_STATES.CONNECTED 
               ? 'No services discovered' 
               : 'Connect to device to view services'}
           </Text>
@@ -332,7 +452,15 @@ const DeviceDetails = ({ route, navigation }) => {
 
     return (
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Services & Characteristics</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Services & Characteristics</Text>
+          <TouchableOpacity
+            style={styles.refreshButton}
+            onPress={refreshServices}
+          >
+            <Text style={styles.refreshButtonText}>Refresh</Text>
+          </TouchableOpacity>
+        </View>
         {device.services.map((service) => (
           <View key={service.uuid} style={styles.serviceCard}>
             <TouchableOpacity
@@ -352,19 +480,20 @@ const DeviceDetails = ({ route, navigation }) => {
 
             {expandedServices.has(service.uuid) && (
               <View style={styles.characteristicsContainer}>
-                {service.characteristics.map((char) => (
-                  <View key={char.uuid} style={styles.characteristicCard}>
-                    <View style={styles.characteristicHeader}>
-                      <Text style={styles.characteristicName}>
-                        Characteristic ({char.uuid.substring(0, 8)}...)
-                      </Text>
-                      <Text style={styles.characteristicUuid}>{char.uuid}</Text>
-
+                {service.characteristics && service.characteristics.length > 0 ? (
+                  service.characteristics.map((char) => (
+                    <View key={char.uuid} style={styles.characteristicCard}>
+                      <View style={styles.characteristicHeader}>
+                        <Text style={styles.characteristicName}>
+                          Characteristic ({char.uuid.substring(0, 8)}...)
+                        </Text>
+                        <Text style={styles.characteristicUuid}>{char.uuid}</Text>
+                      </View>
                     </View>
-
-
-                  </View>
-                ))}
+                  ))
+                ) : (
+                  <Text style={styles.emptyText}>No characteristics found</Text>
+                )}
               </View>
             )}
           </View>
@@ -481,6 +610,23 @@ const styles = StyleSheet.create({
     color: Colors.text,
     marginBottom: Metrics.baseMargin,
   },
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Metrics.baseMargin,
+  },
+  refreshButton: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Metrics.baseMargin,
+    paddingVertical: Metrics.smallMargin,
+    borderRadius: Metrics.borderRadius,
+  },
+  refreshButtonText: {
+    color: Colors.white,
+    fontSize: Fonts.size.small,
+    fontFamily: Fonts.type.medium,
+  },
   disconnectedWarning: {
     backgroundColor: Colors.warning,
     padding: Metrics.smallMargin,
@@ -492,6 +638,19 @@ const styles = StyleSheet.create({
     fontSize: Fonts.size.small,
     fontFamily: Fonts.type.medium,
     textAlign: 'center',
+    marginBottom: Metrics.smallMargin,
+  },
+  connectButton: {
+    backgroundColor: Colors.white,
+    paddingHorizontal: Metrics.baseMargin,
+    paddingVertical: Metrics.smallMargin,
+    borderRadius: Metrics.borderRadius,
+    alignSelf: 'center',
+  },
+  connectButtonText: {
+    color: Colors.warning,
+    fontSize: Fonts.size.small,
+    fontFamily: Fonts.type.medium,
   },
   infoRow: {
     flexDirection: 'row',
@@ -521,6 +680,10 @@ const styles = StyleSheet.create({
   },
   batteryText: {
     color: Colors.success,
+  },
+  batteryUnavailableText: {
+    color: Colors.lightText,
+    fontStyle: 'italic',
   },
   temperatureText: {
     color: Colors.primary,

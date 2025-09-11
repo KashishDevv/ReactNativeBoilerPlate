@@ -169,6 +169,28 @@ class AutoConnectService {
   }
 
   /**
+   * Get list of forgotten devices
+   */
+  async getForgottenDevices() {
+    try {
+      let result;
+      
+      if (Platform.OS === 'ios') {
+        result = await BridgingCodeModule.getForgottenDevices();
+      } else {
+        result = await SampleBridgeAndroid.getForgottenDevices();
+      }
+      
+      const devices = result.forgottenDevices || [];
+      console.log('📱 Forgotten devices:', devices);
+      return { success: true, devices };
+    } catch (error) {
+      console.error('❌ Failed to get forgotten devices:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * Get auto-connect status
    */
   async getAutoConnectStatus() {
@@ -267,17 +289,11 @@ class AutoConnectService {
   async ensureCallbacksRegistered() {
     try {
       console.log('🔗 Ensuring callbacks are registered...');
-      let result;
       
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.ensureCallbacksRegistered();
-      } else {
-        // Android callbacks are handled by DeviceEventEmitter, no registration needed
-        result = { platform: 'android', callbacksRegistered: true };
-      }
-      
-      console.log('🔗 Callback registration status:', result);
-      return { success: true, result };
+      // Callbacks are automatically registered through event listeners
+      // No need to call native method anymore
+      console.log('✅ Callbacks are automatically registered via event listeners');
+      return { success: true, message: 'Callbacks registered via event listeners' };
     } catch (error) {
       console.error('❌ Callback registration failed:', error);
       return { success: false, error: error.message };

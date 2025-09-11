@@ -20,6 +20,7 @@ import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
 import { Metrics } from '../../theme/Metrics';
 import BLEPermissions from '../../utils/BLEPermissions';
+import NotificationPermissions from '../../utils/NotificationPermissions';
 
 const { width } = Dimensions.get('window');
 
@@ -465,6 +466,16 @@ const BLEManager = ({ navigation }) => {
     }
   }, []);
 
+  const checkNotificationPermissions = useCallback(async () => {
+    try {
+      console.log('🔔 Checking notification permissions...');
+      await NotificationPermissions();
+    } catch (error) {
+      console.error('Error checking notification permissions:', error);
+      Alert.alert('Error', 'Failed to check notification permissions');
+    }
+  }, []);
+
   const getConnectionButtonText = (device) => {
     switch (device.connectionState) {
       case CONNECTION_STATES.CONNECTING:
@@ -527,7 +538,7 @@ const BLEManager = ({ navigation }) => {
         </View>
         <View style={styles.deviceMeta}>
           <Text style={styles.rssiText}>RSSI: {item.rssi || 'N/A'}</Text>
-          {item.deviceData?.batteryLevel !== null && (
+          {item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined && (
             <Text style={styles.batteryText}>
               Battery: {item.deviceData.batteryLevel}%
             </Text>
@@ -535,13 +546,13 @@ const BLEManager = ({ navigation }) => {
         </View>
       </View>
 
-      {item.deviceData?.temperature !== null && (
+      {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && (
         <Text style={styles.temperatureText}>
           Temperature: {item.deviceData.temperature?.toFixed(1)}°C
         </Text>
       )}
 
-      {item.deviceData?.steps !== null && (
+      {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
         <Text style={styles.stepsText}>
           Steps: {item.deviceData.steps}
         </Text>
@@ -682,6 +693,13 @@ const BLEManager = ({ navigation }) => {
           onPress={checkPermissions}
         >
           <Text style={styles.autoConnectButtonText}>Check Permissions</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.autoConnectButton, { backgroundColor: Colors.primary }]}
+          onPress={checkNotificationPermissions}
+        >
+          <Text style={styles.autoConnectButtonText}>Check Notifications</Text>
         </TouchableOpacity>
       </View>
 

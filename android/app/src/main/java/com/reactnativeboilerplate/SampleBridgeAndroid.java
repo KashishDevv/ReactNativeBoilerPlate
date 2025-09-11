@@ -155,7 +155,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     private Map<String, DeviceData> deviceDataMap = new ConcurrentHashMap<>();
     private Map<String, BluetoothGattCharacteristic> deviceCharacteristics = new ConcurrentHashMap<>();
     private Map<String, Integer> healthCheckFailures = new ConcurrentHashMap<>();
-    private Set<String> manualDisconnectCooldown = new HashSet<>();
+    private Set<String> manualDisconnectInProgress = new HashSet<>();
     private Set<String> pendingWrites = new HashSet<>();
     
     // Enhanced operation tracking with TransactionManager
@@ -443,6 +443,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         DeviceData deviceData = deviceDataMap.get(deviceId);
                         if (deviceData != null) {
                             deviceData.connectionState = "disconnected";
+                            // Send both events for health check failures as we don't know the connection type
                             sendEvent("DeviceDisconnected", createDeviceInfoMap(deviceData));
                             sendEvent("AutoConnectDeviceDisconnected", createDeviceInfoMap(deviceData));
                         }
@@ -457,6 +458,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 DeviceData deviceData = deviceDataMap.get(deviceId);
                 if (deviceData != null) {
                     deviceData.connectionState = "disconnected";
+                    // Send both events for health check errors as we don't know the connection type
                     sendEvent("DeviceDisconnected", createDeviceInfoMap(deviceData));
                     sendEvent("AutoConnectDeviceDisconnected", createDeviceInfoMap(deviceData));
                     Log.d(TAG, "⚡ Device " + deviceId + " marked as disconnected due to health check error");
@@ -536,7 +538,259 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         updatePowerProfileSettings();
         startHealthChecks();
         
+        // Initialize state restoration (like iOS willRestoreState)
+        initializeStateRestoration();
+        
         Log.d("SampleBridgeAndroid", "🏁 SampleBridgeAndroid initialized with " + bondedDevices.size() + " bonded devices");
+    }
+    
+    // MARK: - State Restoration (like iOS willRestoreState)
+    
+    private void initializeStateRestoration() {
+        Log.d(TAG, "🔄 Initializing Android state restoration");
+        
+        // Check for existing connections that need to be restored
+        restoreExistingConnections();
+        
+        // Start monitoring for app state changes
+        startAppStateMonitoring();
+    }
+    
+    private void restoreExistingConnections() {
+        Log.d(TAG, "🔄 Restoring existing connections");
+        
+        // Check if we have any bonded devices that should be connected
+        if (bondedDeviceIds.isEmpty()) {
+            Log.d(TAG, "ℹ️ No bonded devices to restore");
+            return;
+        }
+        
+        Log.d(TAG, "📋 Found " + bondedDeviceIds.size() + " bonded devices to potentially restore");
+        
+        // Try to restore connections to bonded devices
+        for (String deviceId : bondedDeviceIds) {
+            BluetoothDevice device = bondedDevices.get(deviceId);
+            if (device != null) {
+                Log.d(TAG, "🔄 Attempting to restore connection to: " + deviceId);
+                restoreConnectionToDevice(deviceId, device);
+            }
+        }
+    }
+    
+    private void restoreConnectionToDevice(String deviceId, BluetoothDevice device) {
+        Log.d(TAG, "🔄 Restoring connection to device: " + deviceId);
+        
+        try {
+            // Check if already connected
+            if (connectedGatts.containsKey(deviceId)) {
+                Log.d(TAG, "✅ Device already connected: " + deviceId);
+                // Ensure data exchange is active for existing connection
+                ensureDataExchangeActive(deviceId);
+                return;
+            }
+            
+            // Attempt direct connection (like iOS connectToKnownPeripheralsNative)
+            BluetoothGatt gatt = device.connectGatt(
+                getReactApplicationContext(),
+                true, // autoConnect = true for restoration
+                new BluetoothGattCallback() {
+                    @Override
+                    public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
+                        String deviceId = gatt.getDevice().getAddress();
+                        Log.d(TAG, "🔄 State restoration connection change: " + deviceId + " - Status: " + status + " - New State: " + newState);
+                        
+                        if (newState == BluetoothProfile.STATE_CONNECTED) {
+                            Log.d(TAG, "✅ State restoration successful: " + deviceId);
+                            connectedGatts.put(deviceId, gatt);
+                            
+                            // Immediately start service discovery and data exchange (like iOS)
+                            gatt.discoverServices();
+                            
+                            // CRITICAL FIX: Ensure data reading starts immediately after restoration
+                            Log.d(TAG, "📊 State restoration: Starting immediate data reading for: " + deviceId);
+                            mainHandler.postDelayed(() -> {
+                                if (connectedGatts.containsKey(deviceId)) {
+                                    Log.d(TAG, "📊 State restoration: Requesting device data after restoration delay");
+                                    requestDeviceData(deviceId);
+                                    
+                                    // Start RSSI monitoring for restored device
+                                    startRSSIMonitoringForDevice(deviceId);
+                                    
+                                    // Start health data API monitoring for restored device
+                                    startHealthDataApiMonitoringForDevice(deviceId);
+                                }
+                            }, 1000); // 1 second delay to ensure connection is stable
+                            
+                            // Send restoration notification
+                            String deviceName = gatt.getDevice().getName() != null ? gatt.getDevice().getName() : deviceId;
+                            sendLocalNotificationIfBackground("Connection Restored", "Restored connection to " + deviceName);
+                            
+                        } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                            Log.d(TAG, "❌ State restoration failed: " + deviceId);
+                            connectedGatts.remove(deviceId);
+                        }
+                    }
+                    
+                    @Override
+                    public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+                        String deviceId = gatt.getDevice().getAddress();
+                        Log.d(TAG, "✅ State restoration services discovered: " + deviceId);
+                        
+                        if (status == BluetoothGatt.GATT_SUCCESS) {
+                            // Handle service discovery (this will trigger data reading)
+                            handleServicesDiscovered(gatt);
+                        }
+                    }
+                    
+                    @Override
+                    public void onCharacteristicRead(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+                        String deviceId = gatt.getDevice().getAddress();
+                        String characteristicUuid = characteristic.getUuid().toString();
+                        
+                        Log.d(TAG, "📖 State restoration characteristic read: " + characteristicUuid + " on device " + deviceId + " - Status: " + status);
+                        
+                        if (status == BluetoothGatt.GATT_SUCCESS) {
+                            // Handle the characteristic data (this will process steps, temperature, etc.)
+                            handleCharacteristicData(deviceId, characteristic);
+                        }
+                    }
+                    
+                    @Override
+                    public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+                        String deviceId = gatt.getDevice().getAddress();
+                        String characteristicUuid = characteristic.getUuid().toString();
+                        
+                        Log.d(TAG, "📡 State restoration characteristic changed: " + characteristicUuid + " on device " + deviceId);
+                        
+                        // Handle the characteristic data (this will process steps, temperature, etc.)
+                        handleCharacteristicData(deviceId, characteristic);
+                    }
+                }
+            );
+            
+            Log.d(TAG, "🚀 State restoration connection attempt initiated for: " + deviceId);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Failed to restore connection to device: " + deviceId, e);
+        }
+    }
+    
+    private void ensureDataExchangeActive(String deviceId) {
+        Log.d(TAG, "📊 Ensuring data exchange is active for restored device: " + deviceId);
+        
+        BluetoothGatt gatt = connectedGatts.get(deviceId);
+        if (gatt == null) {
+            Log.w(TAG, "⚠️ Cannot ensure data exchange - GATT not found for: " + deviceId);
+            return;
+        }
+        
+        // Request device data immediately (like iOS)
+        requestDeviceData(deviceId);
+        
+        // Start RSSI monitoring
+        startRSSIMonitoringForDevice(deviceId);
+        
+        // Start health data API monitoring
+        startHealthDataApiMonitoringForDevice(deviceId);
+    }
+    
+    private void startAppStateMonitoring() {
+        Log.d(TAG, "📱 Starting app state monitoring for state restoration");
+        
+        // This would typically be implemented using ActivityLifecycleCallbacks
+        // For now, we'll implement a simple version that can be called from JavaScript
+        // when the app comes to foreground
+    }
+    
+    @ReactMethod
+    public void onAppStateChanged(String newState, Promise promise) {
+        Log.d(TAG, "📱 App state changed to: " + newState);
+        
+        try {
+            if ("active".equals(newState)) {
+                // App came to foreground - restore connections and data exchange
+                Log.d(TAG, "🔄 App became active - restoring connections and data exchange");
+                restoreExistingConnections();
+                
+                // Start scanning for any missing bonded devices
+                if (autoConnectEnabled.get()) {
+                    startScanningForBondedDevices();
+                }
+            } else if ("background".equals(newState)) {
+                // App went to background - ensure background operations continue
+                Log.d(TAG, "🔄 App went to background - ensuring background operations continue");
+                ensureBackgroundOperationsContinue();
+            }
+            
+            promise.resolve("App state change handled");
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error handling app state change: " + e.getMessage());
+            promise.reject("APP_STATE_ERROR", e.getMessage());
+        }
+    }
+    
+    private void ensureBackgroundOperationsContinue() {
+        Log.d(TAG, "🔄 Ensuring background operations continue");
+        
+        // Ensure foreground service is running
+        if (!isServiceRunning) {
+            startForegroundService();
+        }
+        
+        // Ensure health checks continue
+        if (healthCheckTimer == null) {
+            startHealthChecks();
+        }
+        
+        // Ensure RSSI monitoring continues for connected devices
+        for (String deviceId : connectedGatts.keySet()) {
+            startRSSIMonitoringForDevice(deviceId);
+        }
+    }
+    
+    private void startRSSIMonitoringForDevice(String deviceId) {
+        Log.d(TAG, "📶 Starting RSSI monitoring for device: " + deviceId);
+        
+        BluetoothGatt gatt = connectedGatts.get(deviceId);
+        if (gatt == null) {
+            Log.w(TAG, "⚠️ Cannot start RSSI monitoring - GATT not found for: " + deviceId);
+            return;
+        }
+        
+        // Start periodic RSSI reads (like iOS)
+        executorService.scheduleAtFixedRate(() -> {
+            try {
+                if (connectedGatts.containsKey(deviceId)) {
+                    Log.d(TAG, "📶 Reading RSSI for auto-connected device: " + deviceId);
+                    gatt.readRemoteRssi();
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "❌ Error reading RSSI for device " + deviceId + ": " + e.getMessage());
+            }
+        }, 0, 30, TimeUnit.SECONDS); // Read RSSI every 30 seconds (like iOS)
+        
+        Log.d(TAG, "✅ RSSI monitoring started for auto-connected device: " + deviceId);
+    }
+    
+    private void startHealthDataApiMonitoringForDevice(String deviceId) {
+        Log.d(TAG, "📊 Starting health data API monitoring for device: " + deviceId);
+        
+        // Start periodic health data API calls (like iOS)
+        executorService.scheduleAtFixedRate(() -> {
+            try {
+                if (connectedGatts.containsKey(deviceId)) {
+                    DeviceData deviceData = deviceDataMap.get(deviceId);
+                    if (deviceData != null) {
+                        Log.d(TAG, "📊 Sending health data API call for auto-connected device: " + deviceId);
+                        sendHealthDataApiEvent(deviceId, createDeviceInfoMap(deviceData));
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "❌ Error in health data API monitoring for device " + deviceId + ": " + e.getMessage());
+            }
+        }, 0, 60, TimeUnit.SECONDS); // Send health data every 60 seconds (like iOS)
+        
+        Log.d(TAG, "✅ Health data API monitoring started for auto-connected device: " + deviceId);
     }
 
     @Override
@@ -730,24 +984,32 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         isScanning.set(true);
         
-        // Create scan filters - scan for ALL devices to show in UI
+        // Check if app is in background (like iOS implementation)
+        boolean isBackground = !isAppInForeground();
+        
         List<ScanFilter> filters = new ArrayList<>();
-        
-        // For debugging: scan for all devices
-        // In production, you might want to filter by specific services
-        // ScanFilter serviceFilter = new ScanFilter.Builder()
-        //     .setServiceUuid(ParcelUuid.fromString(SMART_TAG_SERVICE_UUID))
-        //     .build();
-        // filters.add(serviceFilter);
-        
-        // Create scan settings optimized for device discovery
-        // Configure scan settings based on power profile
         Map<String, Object> profileSettings = powerProfiles.get(currentPowerProfile);
         String scanMode = profileSettings != null ? (String) profileSettings.get("scanMode") : "LowLatency";
         
+        if (isBackground) {
+            // Background scan with service filter (like iOS)
+            Log.d("SampleBridgeAndroid", "🔍 Background scan with service filter: " + SMART_TAG_SERVICE_UUID);
+            scanMode = "LowPower"; // Force low power mode for background
+            
+            // Add service filter for Smart Tag devices
+            ScanFilter serviceFilter = new ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid.fromString(SMART_TAG_SERVICE_UUID))
+                .build();
+            filters.add(serviceFilter);
+        } else {
+            // Foreground broad scan (like iOS)
+            Log.d("SampleBridgeAndroid", "🔍 Foreground broad scan for all devices");
+            // No filters for foreground - scan all devices
+        }
+        
         ScanSettings settings = new ScanSettings.Builder()
             .setScanMode(getScanModeFromString(scanMode))
-            .setReportDelay(0) // Report results immediately
+            .setReportDelay(isBackground ? 1000 : 0) // Delay reports in background to save battery
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
             .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
             .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
@@ -755,10 +1017,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         // Start scanning with proper error handling
         try {
-            Log.d("SampleBridgeAndroid", "🔍 Starting scan with " + filters.size() + " filters");
-            Log.d("SampleBridgeAndroid", "🔍 Scan settings: mode=" + scanMode + ", reportDelay=0, callbackType=ALL_MATCHES");
+            Log.d("SampleBridgeAndroid", "🔍 Starting " + (isBackground ? "background" : "foreground") + " scan with " + filters.size() + " filters");
+            Log.d("SampleBridgeAndroid", "🔍 Scan settings: mode=" + scanMode + ", reportDelay=" + (isBackground ? 1000 : 0) + ", callbackType=ALL_MATCHES");
             bluetoothLeScanner.startScan(filters, settings, scanCallback);
-            Log.d("SampleBridgeAndroid", "✅ Successfully started scanning for ALL BLE devices");
+            Log.d("SampleBridgeAndroid", "✅ Successfully started " + (isBackground ? "background" : "foreground") + " scanning");
             
             // Auto-stop after power profile duration to preserve battery
             Map<String, Object> scanProfileSettings = powerProfiles.get(currentPowerProfile);
@@ -777,6 +1039,12 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Log.e("SampleBridgeAndroid", "Error starting scan: " + e.getMessage());
             isScanning.set(false);
         }
+    }
+    
+    private boolean isAppInForeground() {
+        // Simple check - in a real implementation, you'd use ActivityManager
+        // For now, assume foreground unless explicitly told otherwise
+        return true;
     }
     
     private void stopScanning() {
@@ -918,7 +1186,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         }
         
         // Send service discovery event
-        sendEvent("ServicesDiscovered", createDeviceInfoMap(deviceData));
+        sendEvent("ServicesDiscovered", createServiceInfoMap(deviceData));
         
         // Request initial data immediately since services are now discovered
         Log.d(TAG, "📊 Service discovery complete, requesting device data for: " + deviceId);
@@ -1219,6 +1487,42 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         }
         
         return packet;
+    }
+    
+    private WritableMap createServiceInfoMap(DeviceData deviceData) {
+        WritableMap map = Arguments.createMap();
+        map.putString("deviceId", deviceData.deviceId);
+        map.putString("deviceName", deviceData.deviceName);
+        map.putBoolean("isSmartTag", deviceData.isSmartTag);
+        map.putString("connectionState", deviceData.connectionState);
+        
+        // Include services information for ServicesDiscovered event
+        WritableArray servicesArray = Arguments.createArray();
+        for (String serviceUuid : deviceData.services.keySet()) {
+            BluetoothGattService service = deviceData.services.get(serviceUuid);
+            if (service != null) {
+                WritableMap serviceMap = Arguments.createMap();
+                serviceMap.putString("uuid", serviceUuid);
+                serviceMap.putBoolean("isPrimary", service.getType() == BluetoothGattService.SERVICE_TYPE_PRIMARY);
+                
+                // Include characteristics
+                WritableArray characteristicsArray = Arguments.createArray();
+                List<BluetoothGattCharacteristic> characteristics = service.getCharacteristics();
+                for (BluetoothGattCharacteristic characteristic : characteristics) {
+                    WritableMap charMap = Arguments.createMap();
+                    charMap.putString("uuid", characteristic.getUuid().toString());
+                    charMap.putBoolean("isReadable", (characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_READ) != 0);
+                    charMap.putBoolean("isWritable", (characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0);
+                    charMap.putBoolean("isNotifiable", (characteristic.getProperties() & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0);
+                    characteristicsArray.pushMap(charMap);
+                }
+                serviceMap.putArray("characteristics", characteristicsArray);
+                servicesArray.pushMap(serviceMap);
+            }
+        }
+        map.putArray("services", servicesArray);
+        
+        return map;
     }
     
     private WritableMap createDeviceInfoMap(DeviceData deviceData) {
@@ -1580,17 +1884,36 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             // Request connection parameters based on power profile
                             requestConnectionParameters(gatt, deviceId);
                             
+                            // Send local notification for auto-connection
+                            String deviceName = gatt.getDevice().getName() != null ? gatt.getDevice().getName() : deviceId;
+                            sendLocalNotificationIfBackground("Device Auto-Connected", "Auto-connected to " + deviceName);
+                            
                             // Update device state
                             DeviceData deviceData = deviceDataMap.get(deviceId);
                             if (deviceData != null) {
                                 deviceData.connectionState = "connected";
-                                sendEvent("DeviceConnected", createDeviceInfoMap(deviceData));
-                                // Also send auto-connect event for consistency
+                                // Only send AutoConnectDeviceConnected for direct connections (auto-connect)
                                 sendEvent("AutoConnectDeviceConnected", createDeviceInfoMap(deviceData));
                             }
                             
                             // Start service discovery
                             gatt.discoverServices();
+                            
+                            // CRITICAL FIX: Ensure data reading starts immediately after connection
+                            // This is essential for auto-connected devices to get data
+                            Log.d(TAG, "📊 Auto-connect: Starting immediate data reading for: " + deviceId);
+                            mainHandler.postDelayed(() -> {
+                                if (connectedGatts.containsKey(deviceId)) {
+                                    Log.d(TAG, "📊 Auto-connect: Requesting device data after connection delay");
+                                    requestDeviceData(deviceId);
+                                    
+                                    // Start RSSI monitoring for auto-connected device
+                                    startRSSIMonitoringForDevice(deviceId);
+                                    
+                                    // Start health data API monitoring for auto-connected device
+                                    startHealthDataApiMonitoringForDevice(deviceId);
+                                }
+                            }, 1000); // 1 second delay to ensure connection is stable
                             
                         } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                             Log.d(TAG, "❌ Direct connection failed: " + deviceId);
@@ -1600,8 +1923,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             DeviceData deviceData = deviceDataMap.get(deviceId);
                             if (deviceData != null) {
                                 deviceData.connectionState = "disconnected";
-                                sendEvent("DeviceDisconnected", createDeviceInfoMap(deviceData));
-                                // Also send auto-connect event for consistency
+                                // Only send AutoConnectDeviceDisconnected for direct connections (auto-connect)
                                 sendEvent("AutoConnectDeviceDisconnected", createDeviceInfoMap(deviceData));
                             }
                         }
@@ -1742,9 +2064,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             if (bondedDevices.containsKey(deviceId) || "Health Tag".equals(deviceName)) {
                 Log.d("SampleBridgeAndroid", "🎯 TARGET DEVICE FOUND: " + deviceName + " (" + deviceId + ")");
                 
-                // Check if device is in manual disconnect cooldown
-                if (manualDisconnectCooldown.contains(deviceId)) {
-                    Log.d("SampleBridgeAndroid", "⏰ Device " + deviceName + " is in manual disconnect cooldown - skipping reconnection");
+                // Check if device was manually disconnected - prevent auto-connection during scanning
+                if (manualDisconnectInProgress.contains(deviceId)) {
+                    Log.d("SampleBridgeAndroid", "🔌 Device " + deviceName + " was manually disconnected - skipping auto-connection during scan");
                     return;
                 }
                 
@@ -1852,6 +2174,12 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     @ReactMethod
     public void connectToDevice(String deviceId, Promise promise) {
         try {
+            // If this is a manual connection to a device that was manually disconnected, clear the tracking
+            if (manualDisconnectInProgress.contains(deviceId)) {
+                Log.d(TAG, "🔄 Manual connection to previously manually disconnected device - clearing tracking: " + deviceId);
+                manualDisconnectInProgress.remove(deviceId);
+            }
+            
             BluetoothDevice device = bluetoothAdapter.getRemoteDevice(deviceId);
             if (device != null) {
                 // Check if already connected
@@ -1881,18 +2209,16 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                 // Add to bonded devices for auto-connection
                                 addToBondedDevices(deviceId, gatt.getDevice());
                                 
-                                // Send local notification for connection (like iOS) - DISABLED FOR TESTING
-                                // String deviceName = gatt.getDevice().getName() != null ? gatt.getDevice().getName() : deviceId;
-                                // sendLocalNotificationIfBackground("Device Connected", "Connected to " + deviceName);
-                                Log.d(TAG, "🔔 Connection notification disabled for testing");
+                                // Send local notification for connection (like iOS)
+                                String deviceName = gatt.getDevice().getName() != null ? gatt.getDevice().getName() : deviceId;
+                                sendLocalNotificationIfBackground("Device Connected", "Connected to " + deviceName);
                                 
                                 // Update device state
                                 DeviceData deviceData = deviceDataMap.get(deviceId);
                                 if (deviceData != null) {
                                     deviceData.connectionState = "connected";
+                                    // Only send DeviceConnected for manual connections
                                     sendEvent("DeviceConnected", createDeviceInfoMap(deviceData));
-                                    // Also send auto-connect event for consistency
-                                    sendEvent("AutoConnectDeviceConnected", createDeviceInfoMap(deviceData));
                                 }
                                 
                                 // Following Punch Through guide: Perform operations serially
@@ -1913,9 +2239,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                 DeviceData deviceData = deviceDataMap.get(deviceId);
                                 if (deviceData != null) {
                                     deviceData.connectionState = "disconnected";
+                                    // Only send DeviceDisconnected for manual connections
                                     sendEvent("DeviceDisconnected", createDeviceInfoMap(deviceData));
-                                    // Also send auto-connect event for consistency
-                                    sendEvent("AutoConnectDeviceDisconnected", createDeviceInfoMap(deviceData));
                                 }
                                 
                                 // Schedule reconnection if auto-connect is enabled
@@ -2286,7 +2611,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             }
             
             Log.d(TAG, "📋 Returning " + servicesArray.size() + " services for device: " + deviceId);
-            promise.resolve(servicesArray);
+            
+            // Return services in the format expected by JavaScript
+            WritableMap result = Arguments.createMap();
+            result.putArray("services", servicesArray);
+            promise.resolve(result);
             
         } catch (Exception e) {
             Log.e(TAG, "❌ Error getting device services: " + e.getMessage());
@@ -2503,43 +2832,6 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         return canWrite;
     }
 
-    //Custom function that we are going to export to JS
-    @ReactMethod
-    public void showToast(String message) {
-        Toast.makeText(getReactApplicationContext(), message, Toast.LENGTH_SHORT).show();
-    }
-
-    @ReactMethod
-    public void examplePayment(String strStart, String donationId, Callback callBack) {
-        //your logic in here
-        Log.d("CalendarModule", "Create event called with name: " + strStart
-                + " and location: " + donationId);
-        callBack.invoke(strStart, donationId);
-    }
-
-    @ReactMethod
-    public void callExampleApi(String url, final com.facebook.react.bridge.Callback callBack) {
-        Request request = new Request.Builder()
-                .url(url)
-                .build();
-
-        client.newCall(request).enqueue(new okhttp3.Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                callBack.invoke("Error", e.getMessage());
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) throws IOException {
-                if (!response.isSuccessful()) {
-                    callBack.invoke("Error", response.message());
-                } else {
-                    callBack.invoke("Success", response.body().string());
-                }
-            }
-        });
-    }
-    
     // MARK: - Operation Queue Methods (Following Punch Through Guide)
     
     @ReactMethod
@@ -3091,9 +3383,84 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     }
     
     @ReactMethod
+    public void sendSystemCommand(String deviceId, int command, ReadableArray payload, Promise promise) {
+        try {
+            Log.d(TAG, "🔧 Sending system command 0x" + Integer.toHexString(command) + " to device: " + deviceId);
+            
+            BluetoothGatt gatt = connectedGatts.get(deviceId);
+            if (gatt == null) {
+                promise.reject("DEVICE_NOT_CONNECTED", "Device not connected: " + deviceId);
+                return;
+            }
+            
+            // Convert ReadableArray to byte array
+            byte[] payloadBytes = new byte[payload.size()];
+            for (int i = 0; i < payload.size(); i++) {
+                payloadBytes[i] = (byte) payload.getInt(i);
+            }
+            
+            // Create packet according to system command format
+            byte[] packet = new byte[20]; // 20-byte packet
+            
+            // Byte 0: Request ID (0xAA)
+            packet[0] = (byte) 0xAA;
+            
+            // Byte 1: Command ID
+            packet[1] = (byte) command;
+            
+            // Byte 2: Command Length
+            packet[2] = (byte) payloadBytes.length;
+            
+            // Bytes 3-19: Command Data (up to 17 bytes)
+            for (int i = 0; i < payloadBytes.length && i < 17; i++) {
+                packet[3 + i] = payloadBytes[i];
+            }
+            
+            // Find the system command characteristic
+            BluetoothGattCharacteristic sysCmdChar = null;
+            BluetoothGattService smartTagService = gatt.getService(UUID.fromString("0F0E0D0C-0B0A-0908-0706-050403020100"));
+            if (smartTagService != null) {
+                sysCmdChar = smartTagService.getCharacteristic(UUID.fromString("5F5E5D5C-5B5A-5958-5756-555453525150"));
+            }
+            
+            if (sysCmdChar == null) {
+                promise.reject("CHARACTERISTIC_NOT_FOUND", "System command characteristic not found");
+                return;
+            }
+            
+            // Write the packet to the characteristic
+            sysCmdChar.setValue(packet);
+            boolean success = gatt.writeCharacteristic(sysCmdChar);
+            
+            if (success) {
+                Log.d(TAG, "✅ System command sent successfully");
+                promise.resolve(true);
+            } else {
+                promise.reject("WRITE_FAILED", "Failed to write system command");
+            }
+            
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error sending system command: " + e.getMessage());
+            promise.reject("SYSTEM_COMMAND_ERROR", e.getMessage());
+        }
+    }
+    
+    @ReactMethod
     public void cancelConnection(String deviceId, Promise promise) {
         try {
-            Log.d(TAG, "🔌 Cancelling connection for device: " + deviceId);
+            Log.d(TAG, "🔌 Manual disconnect from device: " + deviceId + " (system-style)");
+            
+            // Mark this as a manual disconnect
+            manualDisconnectInProgress.add(deviceId);
+            
+            // Set a timeout to clear manual disconnect tracking after 30 minutes
+            // This prevents the tracking from persisting indefinitely
+            mainHandler.postDelayed(() -> {
+                if (manualDisconnectInProgress.contains(deviceId)) {
+                    Log.d(TAG, "⏰ Clearing manual disconnect tracking after 30 minutes for: " + deviceId);
+                    manualDisconnectInProgress.remove(deviceId);
+                }
+            }, 1800000); // 30 minutes in milliseconds
             
             // Use ConnectionManager to disconnect
             if (connectionManager != null) {
@@ -3512,6 +3879,20 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         }
     }
     
+    @ReactMethod
+    public void getForgottenDevices(Promise promise) {
+        try {
+            WritableArray devices = Arguments.createArray();
+            // Android doesn't have a forgotten devices concept like iOS
+            // Return empty array for consistency with iOS
+            promise.resolve(devices);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error getting forgotten devices: " + e.getMessage());
+            promise.reject("FORGOTTEN_DEVICE_ERROR", e.getMessage());
+        }
+    }
+    
     // MARK: - Device Status Methods
     
     @ReactMethod
@@ -3739,7 +4120,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         connectedGatts.clear();
         deviceDataMap.clear();
         deviceCharacteristics.clear();
-        manualDisconnectCooldown.clear();
+        manualDisconnectInProgress.clear();
         pendingWrites.clear();
         pendingReadPromises.clear();
         pendingServiceDiscoveryPromises.clear();

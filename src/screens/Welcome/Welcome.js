@@ -38,17 +38,9 @@ function Welcome() {
 
     // For IOS
     const nativeSimpleMethodforIos = () => {
-        NativeModule.bothClassifyAndCallback("https://fileinfo.com/img/ss/xl/jpg_44-2.jpg", result => {
-            alert(result)
-        })
-
-        NativeModule.makeApiCall('https://jsonplaceholder.typicode.com/todos/1')
-            .then(response => {
-                console.log('API Response:', response);
-            })
-            .catch(error => {
-                console.error('API Error:', error);
-            });
+        // These methods were removed as they were unused
+        console.log('iOS native methods removed - no longer available');
+        alert('iOS native methods removed - no longer available');
     }
 
 

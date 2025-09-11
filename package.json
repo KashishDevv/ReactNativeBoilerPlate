@@ -24,7 +24,6 @@
     "npm": "^11.5.2",
     "react": "19.0.0",
     "react-native": "0.79.5",
-    "react-native-ble-plx": "^3.5.0",
     "react-native-device-info": "^14.0.4",
     "react-native-permissions": "^5.4.2",
     "react-native-safe-area-context": "^5.5.2",

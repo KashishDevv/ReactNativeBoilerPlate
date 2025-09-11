@@ -719,11 +719,11 @@ const ModernBLEManager = ({ navigation }) => {
       </View>
 
       {/* Data Row */}
-      {(item.deviceData?.batteryLevel !== null || 
-        item.deviceData?.temperature !== null || 
-        item.deviceData?.steps !== null) && (
+      {(item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined || 
+        item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined || 
+        item.deviceData?.steps !== null && item.deviceData?.steps !== undefined) && (
         <View style={styles.dataRow}>
-          {item.deviceData?.batteryLevel !== null && (
+          {item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined && (
             <View style={styles.dataItem}>
               <Text style={styles.dataLabel}>🔋 Battery</Text>
               <Text style={[styles.dataValue, { color: getBatteryColor(item.deviceData.batteryLevel) }]}>
@@ -732,7 +732,7 @@ const ModernBLEManager = ({ navigation }) => {
             </View>
           )}
           
-          {item.deviceData?.temperature !== null && (
+          {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && (
             <View style={styles.dataItem}>
               <Text style={styles.dataLabel}>🌡️ Temp</Text>
               <Text style={styles.dataValue}>
@@ -741,7 +741,7 @@ const ModernBLEManager = ({ navigation }) => {
             </View>
           )}
 
-          {item.deviceData?.steps !== null && (
+          {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
             <View style={styles.dataItem}>
               <Text style={styles.dataLabel}>👟 Steps</Text>
               <Text style={styles.dataValue}>

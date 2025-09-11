@@ -18,11 +18,24 @@ class BLEDataParser {
    */
   parseDeviceStatus(base64Data) {
     try {
+      console.log(`🔍 [BLEDataParser] Starting parseDeviceStatus with:`, {
+        dataType: typeof base64Data,
+        dataLength: base64Data?.length,
+        dataPreview: base64Data?.substring(0, 50),
+        isBase64: /^[A-Za-z0-9+/]*={0,2}$/.test(base64Data)
+      });
+      
       if (!base64Data) {
+        console.log('❌ [BLEDataParser] No data provided');
         return null;
       }
 
       const buffer = Buffer.from(base64Data, 'base64');
+      console.log(`🔍 [BLEDataParser] Buffer created:`, {
+        bufferLength: buffer.length,
+        expectedLength: DEVICE_STATUS_LAYOUT.TOTAL_SIZE,
+        bufferHex: buffer.toString('hex')
+      });
       
       if (buffer.length < DEVICE_STATUS_LAYOUT.TOTAL_SIZE) {
         console.warn(`Device status data size mismatch. Expected ${DEVICE_STATUS_LAYOUT.TOTAL_SIZE}, got ${buffer.length}`);
@@ -132,7 +145,7 @@ class BLEDataParser {
         console.log(`========================`);
       }
 
-      return {
+      const result = {
         type: 'device_status',
         timestamp: new Date(timestamp * 1000), // Convert Unix timestamp to Date
         steps,
@@ -145,9 +158,18 @@ class BLEDataParser {
         rawBuffer: buffer.toString('hex'), // For debugging
         sddCompliant: true
       };
+      
+      console.log(`✅ [BLEDataParser] Successfully parsed device status:`, {
+        steps: result.steps,
+        temperature: result.temperature,
+        timestamp: result.timestamp,
+        type: result.type
+      });
+      
+      return result;
 
     } catch (error) {
-      console.error('Error parsing device status:', error);
+      console.error('❌ [BLEDataParser] Error parsing device status:', error);
       return null;
     }
   }
@@ -746,7 +768,7 @@ class BLEDataParser {
 
     return {
       batteryLevel: deviceData.batteryLevel !== null 
-        ? `${deviceData.batteryLevel}%` 
+        ? `${deviceData?.batteryLevel}%` 
         : 'N/A',
       
       temperature: deviceData.temperature !== null 
