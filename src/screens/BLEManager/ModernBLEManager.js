@@ -121,7 +121,7 @@ const ModernBLEManager = ({ navigation }) => {
     
     // Register device list update callback (auto-connect events)
     BLEService.setDeviceListUpdateCallback(async () => {
-      console.log('🔄 [Modern] Device list update triggered - reloading connected devices');
+      // console.log('🔄 [Modern] Device list update triggered - reloading connected devices');
       try {
         const connected = await BLEService.getConnectedDevices();
         setConnectedDevices(connected);
@@ -189,7 +189,7 @@ const ModernBLEManager = ({ navigation }) => {
       
       // Also re-register callback on focus
       BLEService.setDeviceListUpdateCallback(async () => {
-        console.log('🔄 [Modern] (focus) Device list update triggered');
+        // console.log('🔄 [Modern] (focus) Device list update triggered');
         try {
           const connected = await BLEService.getConnectedDevices();
           setConnectedDevices(connected);
@@ -447,7 +447,7 @@ const ModernBLEManager = ({ navigation }) => {
       if (an > bn) return 1;
       return 0;
     });
-    console.log('📱 [Modern] Final device list:', result.map(d => `${d.name} (${d.connectionState})`));
+    // console.log('📱 [Modern] Final device list:', result.map(d => `${d.name} (${d.connectionState})`));
     return result;
   }, [connectedDevices, devices]);
 
@@ -704,6 +704,30 @@ const ModernBLEManager = ({ navigation }) => {
               </View>
             </View>
             <Text style={styles.deviceId}>{item.id}</Text>
+            
+            {/* ✅ Manufacturer Data Display */}
+            {item.manufacturerData && (
+              <View style={styles.manufacturerDataContainer}>
+                {item.manufacturerData.batteryLevel !== null && (
+                  <Text style={styles.manufacturerDataText}>
+                    🔋 {item.manufacturerData.batteryLevel}% ({item.manufacturerData.batteryMillivolts}mV)
+                  </Text>
+                )}
+                {item.manufacturerData.recordCount !== undefined && item.manufacturerData.recordCount > 0 && (
+                  <Text style={styles.manufacturerDataText}>
+                    📊 {item.manufacturerData.recordCount} records
+                  </Text>
+                )}
+                {item.manufacturerData.statusText && (
+                  <Text style={[
+                    styles.manufacturerDataText,
+                    { color: item.manufacturerData.statusText === 'Good' ? '#4CAF50' : '#FF9800' }
+                  ]}>
+                    ⚙️ {item.manufacturerData.statusText}
+                  </Text>
+                )}
+              </View>
+            )}
           </View>
         
         <View style={styles.deviceMeta}>
@@ -718,11 +742,21 @@ const ModernBLEManager = ({ navigation }) => {
         </View>
       </View>
 
-      {/* Data Row */}
+      {/* Data Row - Live/Synced Data */}
       {(item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined || 
         item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined || 
         item.deviceData?.steps !== null && item.deviceData?.steps !== undefined) && (
         <View style={styles.dataRow}>
+          {/* Data Source Indicator */}
+          {item.deviceData?.dataSource && (
+            <View style={styles.dataSourceBadge}>
+              <Text style={styles.dataSourceText}>
+                {item.deviceData.dataSource === 'live' ? '🔴 LIVE' : 
+                 item.deviceData.dataSource === 'synced' ? '💾 SYNCED' : '📦 CACHED'}
+              </Text>
+            </View>
+          )}
+          
           {item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined && (
             <View style={styles.dataItem}>
               <Text style={styles.dataLabel}>🔋 Battery</Text>
@@ -743,9 +777,18 @@ const ModernBLEManager = ({ navigation }) => {
 
           {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
             <View style={styles.dataItem}>
-              <Text style={styles.dataLabel}>👟 Steps</Text>
+              <Text style={styles.dataLabel}>👟 Latest</Text>
               <Text style={styles.dataValue}>
                 {item.deviceData.steps?.toLocaleString()}
+              </Text>
+            </View>
+          )}
+
+          {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
+            <View style={styles.dataItem}>
+              <Text style={styles.dataLabel}>🏃 Total</Text>
+              <Text style={[styles.dataValue, styles.totalStepsValue]}>
+                {item.deviceData.totalSteps?.toLocaleString()}
               </Text>
             </View>
           )}
@@ -1178,6 +1221,23 @@ const styles = StyleSheet.create({
     color: Colors.lightText,
     fontFamily: Fonts.type.regular,
   },
+  manufacturerDataContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 6,
+  },
+  manufacturerDataText: {
+    fontSize: Fonts.size.tiny,
+    color: Colors.lightText,
+    fontFamily: Fonts.type.regular,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginRight: 8,
+    marginBottom: 4,
+    overflow: 'hidden',
+  },
   smartTagBadge: {
     backgroundColor: Colors.successLight,
     paddingHorizontal: Metrics.smallMargin,
@@ -1229,10 +1289,24 @@ const styles = StyleSheet.create({
   dataRow: {
     flexDirection: 'row',
     justifyContent: 'space-around',
+    alignItems: 'center',
     backgroundColor: Colors.backgroundSecondary,
     borderRadius: 12,
     padding: Metrics.smallMargin,
     marginBottom: Metrics.baseMargin,
+  },
+  dataSourceBadge: {
+    backgroundColor: 'rgba(76, 175, 80, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    marginRight: 8,
+    alignSelf: 'center',
+  },
+  dataSourceText: {
+    fontSize: 9,
+    color: '#4CAF50',
+    fontFamily: Fonts.type.bold,
   },
   dataItem: {
     alignItems: 'center',
@@ -1247,6 +1321,10 @@ const styles = StyleSheet.create({
     fontSize: Fonts.size.medium,
     color: Colors.text,
     fontFamily: Fonts.type.bold,
+  },
+  totalStepsValue: {
+    color: Colors.primary,
+    fontWeight: 'bold',
   },
   buttonContainer: {
     flexDirection: 'row',

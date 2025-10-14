@@ -74,7 +74,7 @@ export const getPetHealthBLEDetails = async (petId = 1059773) => {
         "Password": "xxxaeexrkp"
       }
     });
-    console.log('✅ Pet health BLE details fetched successfully:', response.data);
+    console.log('✅ Pet health BLE details fetched successfully:');
     return response.data;
   } catch (error) {
     console.error('❌ Failed to fetch pet health BLE details:', error);

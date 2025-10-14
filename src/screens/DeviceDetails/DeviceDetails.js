@@ -108,7 +108,7 @@ const DeviceDetails = ({ route, navigation }) => {
 
       // Listen for data updates from GET API
       const handleDataUpdate = (data) => {
-        console.log(`📱 [GET API] Received server data update:`, data);
+        // console.log(`📱 [GET API] Received server data update:`, data);
         // You can update your UI here with server data if needed
         // For now, we'll just log it
       };
@@ -383,6 +383,20 @@ const DeviceDetails = ({ route, navigation }) => {
           {device.deviceData?.isSmartTag ? 'Yes' : 'No'}
         </Text>
       </View>
+      
+      {/* Firmware Update Button */}
+      <TouchableOpacity
+        style={styles.firmwareUpdateButton}
+        onPress={() => {
+          navigation.navigate('DFU', {
+            deviceId: device.id,
+            deviceName: device.name,
+            currentFirmwareVersion: device.firmwareVersion || '1.0.0'
+          });
+        }}
+      >
+        <Text style={styles.firmwareUpdateButtonText}>🔧 Check for Firmware Updates</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -415,19 +429,33 @@ const DeviceDetails = ({ route, navigation }) => {
 
         {deviceData.steps !== null && (
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Steps:</Text>
+            <Text style={styles.infoLabel}>Latest Steps:</Text>
             <Text style={[styles.infoValue, styles.stepsText]}>
               {deviceData.steps?.toLocaleString()}
             </Text>
           </View>
         )}
 
-        {deviceData.timestamp && (
+        {deviceData.totalSteps !== null && deviceData.totalSteps !== undefined && (
           <View style={styles.infoRow}>
-            <Text style={styles.infoLabel}>Last Update:</Text>
-            <Text style={styles.infoValue}>
-              {deviceData.timestamp.toLocaleString()}
+            <Text style={styles.infoLabel}>Total Steps ({deviceData.recordCount || 0} records):</Text>
+            <Text style={[styles.infoValue, styles.totalStepsText]}>
+              {deviceData.totalSteps?.toLocaleString()}
             </Text>
+          </View>
+        )}
+
+        {deviceData.lastUpdate && (
+          <View style={styles.infoRow}>
+            <Text style={styles.infoLabel}>Last Update (Device RTC):</Text>
+            <Text style={styles.infoValue}>
+              {deviceData.lastUpdate.toLocaleString()}
+            </Text>
+            {deviceData.deviceRTC && (
+              <Text style={[styles.infoValue, {fontSize: 12, opacity: 0.7}]}>
+                (Unix: {deviceData.deviceRTC})
+              </Text>
+            )}
           </View>
         )}
       </View>
@@ -437,6 +465,15 @@ const DeviceDetails = ({ route, navigation }) => {
 
 
   const renderServices = () => {
+    // Debug: Log device services info
+    console.log('🔍 [renderServices] Device services debug:', {
+      device: !!device,
+      connectionState: device?.connectionState,
+      hasServices: !!device?.services,
+      servicesLength: device?.services?.length || 0,
+      services: device?.services?.map(s => ({ uuid: s.uuid, characteristics: s.characteristics?.length || 0 })) || []
+    });
+    
     if (!device || !device.services || device.services.length === 0) {
       return (
         <View style={styles.section}>
@@ -445,6 +482,9 @@ const DeviceDetails = ({ route, navigation }) => {
             {device && device.connectionState === CONNECTION_STATES.CONNECTED 
               ? 'No services discovered' 
               : 'Connect to device to view services'}
+          </Text>
+          <Text style={[styles.emptyText, {fontSize: 12, marginTop: 10}]}>
+            Debug: Device={!!device}, Services={device?.services?.length || 0}, Connected={device?.connectionState === CONNECTION_STATES.CONNECTED}
           </Text>
         </View>
       );
@@ -461,8 +501,8 @@ const DeviceDetails = ({ route, navigation }) => {
             <Text style={styles.refreshButtonText}>Refresh</Text>
           </TouchableOpacity>
         </View>
-        {device.services.map((service) => (
-          <View key={service.uuid} style={styles.serviceCard}>
+        {device.services.map((service, index) => (
+          <View key={`${service.uuid}-${index}`} style={styles.serviceCard}>
             <TouchableOpacity
               style={styles.serviceHeader}
               onPress={() => toggleServiceExpansion(service.uuid)}
@@ -481,18 +521,27 @@ const DeviceDetails = ({ route, navigation }) => {
             {expandedServices.has(service.uuid) && (
               <View style={styles.characteristicsContainer}>
                 {service.characteristics && service.characteristics.length > 0 ? (
-                  service.characteristics.map((char) => (
-                    <View key={char.uuid} style={styles.characteristicCard}>
+                  service.characteristics.map((char, index) => (
+                    <View key={`${char.uuid}-${index}-${service.uuid}`} style={styles.characteristicCard}>
                       <View style={styles.characteristicHeader}>
                         <Text style={styles.characteristicName}>
                           Characteristic ({char.uuid.substring(0, 8)}...)
                         </Text>
                         <Text style={styles.characteristicUuid}>{char.uuid}</Text>
+                        <Text style={styles.characteristicProperties}>
+                          Properties: {JSON.stringify(char.properties || {})}
+                        </Text>
                       </View>
                     </View>
                   ))
                 ) : (
-                  <Text style={styles.emptyText}>No characteristics found</Text>
+                  <View>
+                    <Text style={styles.emptyText}>No characteristics found</Text>
+                    <Text style={[styles.emptyText, {fontSize: 12, marginTop: 5}]}>
+                      Debug: service.characteristics = {service.characteristics ? 'exists' : 'null'}, 
+                      length = {service.characteristics?.length || 0}
+                    </Text>
+                  </View>
                 )}
               </View>
             )}
@@ -502,6 +551,170 @@ const DeviceDetails = ({ route, navigation }) => {
     );
   };
 
+  const renderDebugSection = () => (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>🔧 Debug Tools</Text>
+      
+      <View style={styles.debugButtonContainer}>
+        <TouchableOpacity
+          style={[styles.debugButton, styles.primaryButton]}
+          onPress={() => {
+            console.log('🔍 [UI] Testing device data availability...');
+            const result = BLEService.testDeviceDataAvailability(deviceId);
+            Alert.alert('Debug Result', `Connected: ${result.connected}\nScanned: ${result.scanned}\nServices: ${result.servicesCount}\nCharacteristics: ${result.characteristicsCount}`);
+          }}
+        >
+          <Text style={styles.debugButtonText}>Check Device Data</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.secondaryButton]}
+          onPress={() => {
+            console.log('🔍 [UI] Testing system command lookup...');
+            BLEService.testSystemCommandLookup(deviceId);
+            Alert.alert('Debug', 'Check console for system command lookup results');
+          }}
+        >
+          <Text style={styles.debugButtonText}>Test Command Lookup</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.warningButton]}
+          onPress={() => {
+            console.log('🧪 [UI] Testing single system command...');
+            BLEService.testSingleSystemCommand(deviceId, 0x1).then(result => {
+              Alert.alert('System Command Test', `Success: ${result.success}\nError: ${result.error || 'None'}`);
+            });
+          }}
+        >
+          <Text style={styles.debugButtonText}>Test Set Time Command</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.infoButton]}
+          onPress={() => {
+            console.log('🧪 [UI] Testing full system command sequence...');
+            BLEService.testSystemCommands(deviceId);
+            Alert.alert('Debug', 'Check console for full system command sequence results');
+          }}
+        >
+          <Text style={styles.debugButtonText}>Test All Commands</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, {backgroundColor: '#007AFF'}]}
+          onPress={() => {
+            console.log('🔔 [UI] Checking notification status...');
+            const stats = BLEService.getNotificationStats(deviceId);
+            const isActive = BLEService.areNotificationsActive(deviceId);
+            Alert.alert(
+              'Notification Status', 
+              `Active: ${isActive ? 'Yes' : 'No'}\n` +
+              `Device Status: ${stats.deviceStatus}\n` +
+              `Battery: ${stats.batteryLevel}\n` +
+              `Data Transfer: ${stats.dataTransfer}\n` +
+              `System Command: ${stats.systemCommand}\n` +
+              `Total: ${stats.total}\n` +
+              `Last Update: ${stats.lastUpdate ? stats.lastUpdate.toLocaleTimeString() : 'Never'}`
+            );
+          }}
+        >
+          <Text style={styles.debugButtonText}>Check Notifications</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.warningButton]}
+          onPress={() => {
+            console.log('🕐 [UI] Checking device RTC status...');
+            BLEService.checkDeviceRTCStatus(deviceId);
+            Alert.alert('Debug', 'Check console for RTC status');
+          }}
+        >
+          <Text style={styles.debugButtonText}>Check RTC Status</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.successButton]}
+          onPress={async () => {
+            console.log('🕐 [UI] Syncing device time...');
+            try {
+              const result = await BLEService.syncDeviceTime(deviceId);
+              console.log('🕐 [UI] Time sync result:', result);
+              Alert.alert('Time Sync', result?.success ? 'Time synced successfully!' : 'Time sync failed');
+            } catch (error) {
+              console.error('🕐 [UI] Time sync error:', error);
+              Alert.alert('Time Sync', 'Time sync failed: ' + error.message);
+            }
+          }}
+        >
+          <Text style={styles.debugButtonText}>Sync Device Time</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.errorButton]}
+          onPress={async () => {
+            console.log('🧪 [UI] Testing different timestamp formats...');
+            try {
+              const result = await BLEService.testTimeSyncFormats(deviceId);
+              console.log('🧪 [UI] Test result:', result);
+              Alert.alert('Time Sync Test', result?.success ? `Success with format: ${result.format}` : 'No format worked');
+            } catch (error) {
+              console.error('🧪 [UI] Test error:', error);
+              Alert.alert('Time Sync Test', 'Test failed: ' + error.message);
+            }
+          }}
+        >
+          <Text style={styles.debugButtonText}>Test Time Formats</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.primaryButton]}
+          onPress={() => {
+            console.log('🔍 [UI] Force refreshing device data and services...');
+            updateDeviceData();
+            refreshServices();
+            Alert.alert('Debug', 'Device data and services refreshed. Check console for details.');
+          }}
+        >
+          <Text style={styles.debugButtonText}>Force Refresh Services</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.successButton]}
+          onPress={() => {
+            console.log('🔍 [UI] Expanding all services to show characteristics...');
+            if (device?.services) {
+              const allServiceUuids = device.services.map(s => s.uuid);
+              setExpandedServices(new Set(allServiceUuids));
+              Alert.alert('Debug', `Expanded ${allServiceUuids.length} services. Characteristics should now be visible.`);
+            } else {
+              Alert.alert('Debug', 'No services found to expand');
+            }
+          }}
+        >
+          <Text style={styles.debugButtonText}>Expand All Services</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.debugButton, styles.warningButton]}
+          onPress={() => {
+            console.log('🔧 [UI] Fixing service characteristics mapping...');
+            if (device?.id) {
+              BLEService.fixServiceCharacteristics(device.id);
+              // Refresh the device data to show the fix
+              updateDeviceData();
+              Alert.alert('Debug', 'Service characteristics mapping fixed. Check console for details.');
+            } else {
+              Alert.alert('Debug', 'No device ID found');
+            }
+          }}
+        >
+          <Text style={styles.debugButtonText}>Fix Service Characteristics</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+  
   const getConnectionStateStyle = (state) => {
     switch (state) {
       case CONNECTION_STATES.CONNECTED:
@@ -552,6 +765,7 @@ const DeviceDetails = ({ route, navigation }) => {
       {renderDeviceInfo()}
       {renderDeviceData()}
       {renderServices()}
+      {renderDebugSection()}
     </ScrollView>
   );
 };
@@ -691,6 +905,10 @@ const styles = StyleSheet.create({
   stepsText: {
     color: Colors.secondary,
   },
+  totalStepsText: {
+    color: Colors.primary,
+    fontWeight: 'bold',
+  },
 
   emptyText: {
     fontSize: Fonts.size.medium,
@@ -747,7 +965,66 @@ const styles = StyleSheet.create({
     color: Colors.lightText,
     marginTop: 2,
   },
+  characteristicProperties: {
+    fontSize: Fonts.size.small,
+    color: Colors.lightText,
+    marginTop: 2,
+    fontFamily: Fonts.type.mono,
+  },
 
+  // Firmware Update Button
+  firmwareUpdateButton: {
+    backgroundColor: Colors.primary,
+    padding: Metrics.baseMargin,
+    borderRadius: Metrics.borderRadius,
+    marginTop: Metrics.baseMargin,
+    alignItems: 'center',
+  },
+  firmwareUpdateButtonText: {
+    color: Colors.white,
+    fontSize: Fonts.size.medium,
+    fontWeight: '600',
+  },
+  
+  // Button Styles
+  debugButtonContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginTop: Metrics.baseMargin,
+  },
+  debugButton: {
+    paddingVertical: Metrics.smallMargin,
+    paddingHorizontal: Metrics.baseMargin,
+    borderRadius: Metrics.borderRadius,
+    marginBottom: Metrics.smallMargin,
+    minWidth: '48%',
+    alignItems: 'center',
+  },
+  debugButtonText: {
+    color: Colors.white,
+    fontSize: Fonts.size.small,
+    fontFamily: Fonts.type.medium,
+    textAlign: 'center',
+  },
+  primaryButton: {
+    backgroundColor: Colors.primary,
+  },
+  secondaryButton: {
+    backgroundColor: Colors.secondary,
+  },
+  successButton: {
+    backgroundColor: Colors.success,
+  },
+  warningButton: {
+    backgroundColor: Colors.warning,
+  },
+  infoButton: {
+    backgroundColor: Colors.info,
+  },
+  errorButton: {
+    backgroundColor: Colors.error,
+  },
 
   // 🎯 GET API Status Styles
 

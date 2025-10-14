@@ -69,9 +69,28 @@ class BLEService {
     // Phone Battery Management
     this.phoneBatteryLevel = null;
 
-          // Adaptive API calling properties
-      this.adaptiveApiTimers = new Map(); // Timers for adaptive API calls
-      this.screenActiveStates = new Map(); // Track which screens are active for which devices
+    // Request device data mutex and debouncing
+    this.requestDataMutex = new Map(); // Prevent concurrent requestDeviceData calls per device
+    this.requestDataTimers = new Map(); // Debounce timers for requestDeviceData
+
+    // ✅ INDUSTRY STANDARD: Live Data Buffering System (5-minute batching)
+    this.liveDataBuffers = new Map();  // deviceId -> array of live records (max 10)
+    this.lastBatchUpload = new Map();  // deviceId -> timestamp of last upload
+    this.batchUploadTimers = new Map();  // deviceId -> interval timer
+    this.historicalSyncComplete = new Map();  // deviceId -> boolean (track if historical sync done)
+    this.liveDataConfig = {
+      bufferSize: 10,           // Buffer 10 readings (5 minutes at 30s intervals)
+      uploadInterval: 300000,   // Upload every 5 minutes (300000ms)
+      immediateThreshold: {     // Send immediately if:
+        tempChange: 2,          // Temperature changes > 2°C
+        stepChange: 50,         // Steps change > 50
+        batteryLow: 15          // Battery < 15%
+      }
+    };
+
+    // Adaptive API calling properties
+    this.adaptiveApiTimers = new Map(); // Timers for adaptive API calls
+    this.screenActiveStates = new Map(); // Track which screens are active for which devices
       this.appState = 'active'; // Current app state (active, background, inactive)
       this.isUpdatingAppState = false; // Flag to prevent recursive app state updates
       this.adaptiveApiCooldowns = new Map(); // Cooldown timers to prevent rapid restarts
@@ -106,146 +125,210 @@ class BLEService {
    * Setup Android event listeners for native bridge events
    */
   setupIOSEventListeners() {
-    console.log('📱 Setting up iOS event listeners');
     
     // Create event emitter for iOS native module
     this.iosEventEmitter = new NativeEventEmitter(BridgingCodeModule);
     
     // Device found event
     this.iosEventEmitter.addListener('DeviceFound', (deviceInfo) => {
-      console.log('📱 iOS Device Found:', deviceInfo);
       this.handleIOSDeviceFound(deviceInfo);
     });
     
     // Device connected event
     this.iosEventEmitter.addListener('DeviceConnected', (deviceInfo) => {
-      console.log('📱 iOS Device Connected:', deviceInfo);
       this.handleIOSDeviceConnected(deviceInfo);
     });
     
     // Device disconnected event
     this.iosEventEmitter.addListener('DeviceDisconnected', (deviceInfo) => {
-      console.log('📱 iOS Device Disconnected:', deviceInfo);
       this.handleIOSDeviceDisconnected(deviceInfo);
     });
     
     // Services discovered event
     this.iosEventEmitter.addListener('ServicesDiscovered', (eventData) => {
-      console.log('📱 iOS Services Discovered:', eventData);
       this.handleIOSServicesDiscovered(eventData);
     });
     
     // Characteristics discovered event
     this.iosEventEmitter.addListener('CharacteristicsDiscovered', (eventData) => {
-      console.log('📱 iOS Characteristics Discovered:', eventData);
       this.handleIOSCharacteristicsDiscovered(eventData);
     });
     
     // Characteristic data event
     this.iosEventEmitter.addListener('CharacteristicData', (eventData) => {
-      console.log('📱 iOS Characteristic Data:', eventData);
       this.handleIOSCharacteristicData(eventData);
+    });
+    
+    // ✅ CRITICAL FIX: Data transfer events (sync_start, sync_complete, records)
+    // This was missing for iOS! Native sends it but we weren't listening
+    this.iosEventEmitter.addListener('DataTransfer', (eventData) => {
+      this.handleNativeDataTransferEvent(eventData);
+    });
+    
+    // ✅ NEW: Service discovery complete event - triggers command sequence
+    this.iosEventEmitter.addListener('ServiceDiscoveryComplete', (eventData) => {
+      this.handleServiceDiscoveryComplete(eventData);
+    });
+    
+    // ✅ System command response event (for consistency with Android)
+    this.iosEventEmitter.addListener('SystemCommandResponse', (eventData) => {
+      this.handleNativeSystemCommandResponse(eventData);
     });
     
     // RSSI update event
     this.iosEventEmitter.addListener('RSSIUpdate', (eventData) => {
-      console.log('📱 iOS RSSI Update:', eventData);
       this.handleIOSRSSIUpdate(eventData);
     });
     
     // Auto-connect events
     this.iosEventEmitter.addListener('AutoConnectDeviceConnected', (deviceInfo) => {
-      console.log('📱 iOS Auto-Connect Device Connected:', deviceInfo);
       this.handleIOSDeviceConnected(deviceInfo);
     });
     
     this.iosEventEmitter.addListener('AutoConnectDeviceDisconnected', (deviceInfo) => {
-      console.log('📱 iOS Auto-Connect Device Disconnected:', deviceInfo);
       this.handleIOSDeviceDisconnected(deviceInfo);
+    });
+    
+    // DFU (Device Firmware Update) events
+    this.iosEventEmitter.addListener('DFUProgress', (eventData) => {
+      console.log(`📊 [DFU] Progress: ${eventData.progress}%`);
+      this.emit('DFUProgress', eventData);
+    });
+    
+    this.iosEventEmitter.addListener('DFUStateChanged', (eventData) => {
+      console.log(`🔧 [DFU] State: ${eventData.state}`);
+      this.emit('DFUStateChanged', eventData);
+    });
+    
+    this.iosEventEmitter.addListener('DFUCompleted', (eventData) => {
+      console.log('🎉 [DFU] Completed successfully!');
+      this.emit('DFUCompleted', eventData);
+    });
+    
+    this.iosEventEmitter.addListener('DFUAborted', (eventData) => {
+      console.log('🛑 [DFU] Aborted');
+      this.emit('DFUAborted', eventData);
+    });
+    
+    this.iosEventEmitter.addListener('DFUError', (eventData) => {
+      console.error('❌ [DFU] Error:', eventData);
+      this.emit('DFUError', eventData);
     });
   }
 
   setupAndroidEventListeners() {
     if (Platform.OS !== 'android') return;
 
-    console.log('🤖 Setting up Android BLE event listeners');
 
     // Listen for device discovery events
     DeviceEventEmitter.addListener('DeviceFound', (deviceInfo) => {
-      console.log('📱 Android: Device found event received:', deviceInfo);
       this.handleAndroidDeviceFound(deviceInfo);
     });
 
     // Listen for connection state changes
     DeviceEventEmitter.addListener('ConnectionStateChanged', (event) => {
-      console.log('📱 Android: Connection state changed:', event);
       this.handleAndroidConnectionStateChange(event);
     });
 
-    // Listen for characteristic data updates
+    // ✅ Listen for characteristic data updates (handles both event names)
+    // CharacteristicDataReceived: Legacy event name
+    // CharacteristicChanged: Current event name (both route to same handler)
     DeviceEventEmitter.addListener('CharacteristicDataReceived', (event) => {
-      console.log('📱 Android: Characteristic data received:', event);
+      this.handleAndroidCharacteristicData(event);
+    });
+    DeviceEventEmitter.addListener('CharacteristicChanged', (event) => {
       this.handleAndroidCharacteristicData(event);
     });
 
     // Listen for device data updates (steps, temperature, etc.)
     DeviceEventEmitter.addListener('DeviceDataUpdated', (event) => {
-      console.log('📱 Android: Device data updated:', event);
       this.handleAndroidDeviceDataUpdated(event);
     });
 
     // Listen for health data API requests from native side
     DeviceEventEmitter.addListener('HealthDataApiRequest', (eventData) => {
-      console.log('📱 Android: Received health data API request from native side:', eventData);
       this.handleNativeHealthDataApiRequest(eventData);
+    });
+
+    // Listen for system command responses from native side
+    DeviceEventEmitter.addListener('SystemCommandEvent', (eventData) => {
+      this.handleNativeSystemCommandResponse(eventData);
+    });
+
+    // Listen for data transfer events from native side
+    DeviceEventEmitter.addListener('DataTransferEvent', (eventData) => {
+      this.handleNativeDataTransferEvent(eventData);
+    });
+
+    // ✅ CRITICAL: Service discovery complete event - triggers command sequence (matching iOS)
+    DeviceEventEmitter.addListener('ServiceDiscoveryComplete', (eventData) => {
+      this.handleServiceDiscoveryComplete(eventData);
     });
 
     // Listen for services discovered
     DeviceEventEmitter.addListener('ServicesDiscovered', (event) => {
-      console.log('📱 Android: Services discovered:', event);
       this.handleAndroidServicesDiscovered(event);
     });
 
     // Listen for RSSI updates
     DeviceEventEmitter.addListener('RSSIUpdated', (event) => {
-      console.log('📱 Android: RSSI updated:', event);
       this.handleAndroidRSSIUpdate(event);
     });
 
     // Listen for scan state changes
     DeviceEventEmitter.addListener('ScanStateChanged', (event) => {
-      console.log('📱 Android: Scan state changed:', event);
       this.handleAndroidScanStateChange(event);
     });
 
     // Listen for device disconnection events
     DeviceEventEmitter.addListener('DeviceDisconnected', (event) => {
-      console.log('📱 Android: Device disconnected event received:', event);
       this.handleAndroidDeviceDisconnected(event);
     });
 
     // Listen for device reconnection events
     DeviceEventEmitter.addListener('DeviceReconnected', (event) => {
-      console.log('📱 Android: Device reconnected event received:', event);
       this.handleAndroidDeviceReconnected(event);
     });
 
     // Listen for device connection events
     DeviceEventEmitter.addListener('DeviceConnected', (event) => {
-      console.log('📱 Android: Device connected event received:', event);
       this.handleAndroidDeviceConnected(event);
     });
 
     // Listen for auto-connect device connected events (CRITICAL FIX)
     DeviceEventEmitter.addListener('AutoConnectDeviceConnected', (deviceInfo) => {
-      console.log('🤖 Android: Auto-Connect Device Connected:', deviceInfo);
       this.handleAutoConnectedDevice(deviceInfo);
     });
 
     // Listen for auto-connect device disconnected events
     DeviceEventEmitter.addListener('AutoConnectDeviceDisconnected', (deviceInfo) => {
-      console.log('🤖 Android: Auto-Connect Device Disconnected:', deviceInfo);
       this.handleAutoDisconnectedDevice(deviceInfo);
+    });
+    
+    // DFU (Device Firmware Update) events
+    DeviceEventEmitter.addListener('DFUProgress', (eventData) => {
+      console.log(`📊 [DFU] Progress: ${eventData.progress}%`);
+      this.emit('DFUProgress', eventData);
+    });
+    
+    DeviceEventEmitter.addListener('DFUStateChanged', (eventData) => {
+      console.log(`🔧 [DFU] State: ${eventData.state}`);
+      this.emit('DFUStateChanged', eventData);
+    });
+    
+    DeviceEventEmitter.addListener('DFUCompleted', (eventData) => {
+      console.log('🎉 [DFU] Completed successfully!');
+      this.emit('DFUCompleted', eventData);
+    });
+    
+    DeviceEventEmitter.addListener('DFUAborted', (eventData) => {
+      console.log('🛑 [DFU] Aborted');
+      this.emit('DFUAborted', eventData);
+    });
+    
+    DeviceEventEmitter.addListener('DFUError', (eventData) => {
+      console.error('❌ [DFU] Error:', eventData);
+      this.emit('DFUError', eventData);
     });
   }
 
@@ -255,7 +338,6 @@ class BLEService {
       // Check actual BLE state after permissions
       this.isBLEReady().then(ready => {
         this.bleState = ready ? BLE_STATES.POWERED_ON : BLE_STATES.POWERED_OFF;
-        console.log(`📱 ${Platform.OS} BLE state initialized:`, this.bleState);
       });
     });
 
@@ -277,18 +359,401 @@ class BLEService {
     this.startPruning();
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // ✅ INDUSTRY STANDARD: Live Data Buffering Methods
+  // ═══════════════════════════════════════════════════════════════
+
+  /**
+   * Add live data to buffer (called on every 30s Device Status notification)
+   */
+  addToLiveBuffer(deviceId, data) {
+    // Initialize buffer if needed
+    if (!this.liveDataBuffers.has(deviceId)) {
+      this.liveDataBuffers.set(deviceId, []);
+    }
+    
+    const buffer = this.liveDataBuffers.get(deviceId);
+    buffer.push({
+      timestamp: data.timestamp,
+      timestampDate: data.timestampDate || new Date(data.timestamp * 1000),
+      steps: data.steps,
+      temperature: data.temperature,
+      batteryLevel: data.batteryLevel || null,
+      flags: data.flags || 0,
+      capturedAt: new Date().toISOString(),
+      source: 'live'
+    });
+    
+    console.log(`📊 [LIVE BUFFER] Added record to buffer for ${deviceId}: ${buffer.length}/${this.liveDataConfig.bufferSize}`);
+  }
+
+  /**
+   * Check if should upload batch (buffer full or time elapsed)
+   */
+  shouldUploadBatch(deviceId) {
+    const buffer = this.liveDataBuffers.get(deviceId) || [];
+    const lastUpload = this.lastBatchUpload.get(deviceId) || 0;
+    const timeSinceLastUpload = Date.now() - lastUpload;
+    
+    // Upload if:
+    // 1. Buffer is full (10 records = 5 minutes of data)
+    // 2. OR 5 minutes elapsed since last upload
+    // 3. OR buffer has data and app going to background
+    return buffer.length >= this.liveDataConfig.bufferSize || 
+           timeSinceLastUpload >= this.liveDataConfig.uploadInterval ||
+           (buffer.length > 0 && this.appState !== 'active');
+  }
+
+  /**
+   * Upload batched live data to server
+   */
+  async uploadLiveBatch(deviceId) {
+    const buffer = this.liveDataBuffers.get(deviceId);
+    if (!buffer || buffer.length === 0) return;
+    
+    console.log(`📤 [LIVE BATCH] Uploading ${buffer.length} buffered live records for ${deviceId}`);
+    
+    // Calculate aggregates
+    const oldestRecord = buffer[0];
+    const newestRecord = buffer[buffer.length - 1];
+    
+    // ✅ STEPS: Cumulative (use latest, calculate delta)
+    const stepsDelta = newestRecord.steps - oldestRecord.steps;
+    const currentSteps = newestRecord.steps;
+    
+    // ✅ TEMPERATURE: Latest for current, average for trends
+    const latestTemperature = newestRecord.temperature;
+    const averageTemperature = buffer.reduce((sum, r) => sum + r.temperature, 0) / buffer.length;
+    const minTemperature = Math.min(...buffer.map(r => r.temperature));
+    const maxTemperature = Math.max(...buffer.map(r => r.temperature));
+    
+    const device = this.scannedDevices.get(deviceId);
+    
+    try {
+      // ✅ BACKWARD COMPATIBLE: Use latest record for main fields + add new fields
+      const payload = {
+        PetId: 1059773,
+        Steps: currentSteps,  // Latest cumulative value
+        Temperature: latestTemperature ? latestTemperature.toString() : null,
+        BatteryLevel: newestRecord.batteryLevel ? newestRecord.batteryLevel.toString() : null,
+        TimeStamp: newestRecord.timestampDate.toISOString(),
+        Status: device?.connectionState === CONNECTION_STATES.CONNECTED ? 'Connected' : 'Disconnected',
+        Characteristic: device?.services ? device.services.map(service => ({
+          Characteristic: service.uuid,
+          ServiceType: this.getServiceType(service.uuid),
+          CharacteristicsCount: service.characteristics ? service.characteristics.length : 0
+        })) : [],
+        
+        // ✅ NEW: Additional fields for industry-standard approach
+        SyncType: "live_batch",
+        BatchedAt: new Date().toISOString(),
+        
+        // ✅ ALL buffered records (for server to store complete history)
+        AllRecords: buffer.map(r => ({
+          Timestamp: r.timestampDate.toISOString(),
+          Steps: r.steps,
+          Temperature: r.temperature,
+          BatteryLevel: r.batteryLevel,
+          Flags: r.flags,
+          RecordType: "live"
+        })),
+        
+        // ✅ Aggregates (for quick dashboard)
+        Summary: {
+          StepsDelta: stepsDelta,
+          CurrentSteps: currentSteps,
+          LatestTemperature: latestTemperature,
+          AverageTemperature: Math.round(averageTemperature * 10) / 10,
+          MinTemperature: minTemperature,
+          MaxTemperature: maxTemperature,
+          LatestBattery: newestRecord.batteryLevel,
+          RecordCount: buffer.length
+        }
+      };
+      
+      const result = await postPetHealthBLEData(payload);
+      
+      console.log(`✅ [LIVE BATCH] Uploaded successfully: ${buffer.length} records, ${stepsDelta} steps gained`);
+      
+      // Clear buffer and update timestamp
+      this.liveDataBuffers.set(deviceId, []);
+      this.lastBatchUpload.set(deviceId, Date.now());
+      
+    } catch (error) {
+      console.error(`❌ [LIVE BATCH] Upload failed:`, error);
+      // Keep buffer for retry on next cycle
+    }
+  }
+
+  /**
+   * Check for immediate alerts (critical thresholds)
+   */
+  async checkImmediateAlert(deviceId, currentData) {
+    const buffer = this.liveDataBuffers.get(deviceId);
+    if (!buffer || buffer.length === 0) return;
+    
+    const previousData = buffer[buffer.length - 1];
+    const config = this.liveDataConfig.immediateThreshold;
+    
+    // Check temperature spike
+    if (previousData) {
+      const tempDiff = Math.abs(currentData.temperature - previousData.temperature);
+      if (tempDiff > config.tempChange) {
+        console.log(`🚨 [IMMEDIATE ALERT] Temperature spike: ${tempDiff}°C (${previousData.temperature}°C → ${currentData.temperature}°C)`);
+        await this.sendImmediateAlert(deviceId, currentData, 'temperature_spike', {
+          previousTemp: previousData.temperature,
+          currentTemp: currentData.temperature,
+          change: tempDiff
+        });
+        return true;
+      }
+    }
+    
+    // Check low battery
+    if (currentData.batteryLevel !== null && currentData.batteryLevel < config.batteryLow) {
+      console.log(`🚨 [IMMEDIATE ALERT] Low battery: ${currentData.batteryLevel}%`);
+      await this.sendImmediateAlert(deviceId, currentData, 'low_battery', {
+        batteryLevel: currentData.batteryLevel
+      });
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Send immediate alert for critical events
+   */
+  async sendImmediateAlert(deviceId, data, alertType, alertData) {
+    const device = this.scannedDevices.get(deviceId);
+    
+    try {
+      // ✅ BACKWARD COMPATIBLE: Use standard API format + add alert fields
+      const timestampISO = data.timestampDate && data.timestampDate instanceof Date ? 
+        data.timestampDate.toISOString() : 
+        new Date().toISOString();
+      
+      const payload = {
+        PetId: 1059773,
+        Steps: data.steps,
+        Temperature: data.temperature ? data.temperature.toString() : null,
+        BatteryLevel: data.batteryLevel ? data.batteryLevel.toString() : null,
+        TimeStamp: timestampISO,
+        Status: device?.connectionState === CONNECTION_STATES.CONNECTED ? 'Connected' : 'Disconnected',
+        Characteristic: device?.services ? device.services.map(service => ({
+          Characteristic: service.uuid,
+          ServiceType: this.getServiceType(service.uuid),
+          CharacteristicsCount: service.characteristics ? service.characteristics.length : 0
+        })) : [],
+        
+        // ✅ NEW: Alert metadata
+        SyncType: "immediate_alert",
+        AlertType: alertType,
+        AlertData: alertData,
+        AlertedAt: new Date().toISOString()
+      };
+      
+      const result = await postPetHealthBLEData(payload);
+      
+      console.log(`✅ [IMMEDIATE ALERT] Sent: ${alertType}`);
+    } catch (error) {
+      console.error(`❌ [IMMEDIATE ALERT] Failed to send:`, error);
+    }
+  }
+
+  /**
+   * Send historical records after data sync complete
+   */
+  async sendHistoricalRecords(deviceId, records) {
+    if (!records || records.length === 0) {
+      console.log(`⚠️ [HISTORICAL SYNC] No records to send for ${deviceId}`);
+      return;
+    }
+    
+    console.log(`📤 [HISTORICAL SYNC] Sending ${records.length} records + aggregates for ${deviceId}`);
+    
+    // Calculate aggregates
+    const totalSteps = records[records.length - 1].steps;  // Latest (cumulative)
+    const latestTemperature = records[records.length - 1].temperature;
+    const averageTemperature = records.reduce((sum, r) => sum + r.temperature, 0) / records.length;
+    const minTemperature = Math.min(...records.map(r => r.temperature));
+    const maxTemperature = Math.max(...records.map(r => r.temperature));
+    
+    // Step delta (first to last record)
+    const stepsDelta = records.length > 1 ? 
+      records[records.length - 1].steps - records[0].steps : 
+      records[0].steps;
+    
+    const device = this.scannedDevices.get(deviceId);
+    
+    try {
+      // ✅ Use latest record for API (server expects single record format)
+      const latestRecord = records[records.length - 1];
+      
+      // Convert timestamp safely
+      let timestampISO;
+      if (latestRecord.timestampDate && latestRecord.timestampDate instanceof Date) {
+        timestampISO = latestRecord.timestampDate.toISOString();
+      } else if (typeof latestRecord.timestamp === 'number') {
+        timestampISO = new Date(latestRecord.timestamp * 1000).toISOString();
+      } else {
+        timestampISO = new Date().toISOString();
+      }
+      
+      // ✅ BACKWARD COMPATIBLE: Keep original API format + add new fields
+      const payload = {
+        PetId: 1059773,
+        Steps: totalSteps,  // Latest cumulative value
+        Temperature: latestTemperature ? latestTemperature.toString() : null,
+        BatteryLevel: device?.deviceData?.batteryLevel ? device.deviceData.batteryLevel.toString() : null,
+        TimeStamp: timestampISO,
+        Status: device?.connectionState === CONNECTION_STATES.CONNECTED ? 'Connected' : 'Disconnected',
+        Characteristic: device?.services ? device.services.map(service => ({
+          Characteristic: service.uuid,
+          ServiceType: this.getServiceType(service.uuid),
+          CharacteristicsCount: service.characteristics ? service.characteristics.length : 0
+        })) : [],
+        
+        // ✅ NEW: Additional fields for industry-standard approach
+        SyncType: "historical_sync",
+        SyncedAt: new Date().toISOString(),
+        
+        // ✅ ALL raw records (for server to store complete history)
+        AllRecords: records.map(r => {
+          const ts = r.timestampDate ? r.timestampDate : new Date(r.timestamp * 1000);
+          return {
+            Timestamp: ts instanceof Date ? ts.toISOString() : new Date(ts).toISOString(),
+            Steps: r.steps,
+            Temperature: r.temperature,
+            Flags: r.flags || 0,
+            RecordType: "historical"
+          };
+        }),
+        
+        // ✅ Aggregates (for quick dashboard)
+        Summary: {
+          TotalSteps: totalSteps,
+          StepsDelta: stepsDelta,
+          LatestTemperature: latestTemperature,
+          AverageTemperature: Math.round(averageTemperature * 10) / 10,
+          MinTemperature: minTemperature,
+          MaxTemperature: maxTemperature,
+          RecordCount: records.length
+        }
+      };
+      
+      const result = await postPetHealthBLEData(payload);
+      
+      console.log(`✅ [HISTORICAL SYNC] Sent ${records.length} records successfully`);
+      console.log(`   Total Steps: ${totalSteps}, Temp: ${latestTemperature}°C (avg: ${Math.round(averageTemperature * 10) / 10}°C)`);
+      
+      // Mark historical sync as complete
+      this.historicalSyncComplete.set(deviceId, true);
+      
+      // Start periodic batch upload timer for live updates
+      this.startBatchUploadTimer(deviceId);
+      
+    } catch (error) {
+      console.error(`❌ [HISTORICAL SYNC] Upload failed:`, error);
+    }
+  }
+
+  /**
+   * Start periodic batch upload timer
+   */
+  startBatchUploadTimer(deviceId) {
+    // Clear existing timer
+    this.stopBatchUploadTimer(deviceId);
+    
+    console.log(`⏰ [BATCH TIMER] Starting 5-minute batch upload timer for ${deviceId}`);
+    
+    const timer = setInterval(() => {
+      if (this.shouldUploadBatch(deviceId)) {
+        console.log(`⏰ [BATCH TIMER] Triggering batch upload for ${deviceId}`);
+        this.uploadLiveBatch(deviceId);
+      }
+    }, 60000);  // Check every minute if upload needed
+    
+    this.batchUploadTimers.set(deviceId, timer);
+  }
+
+  /**
+   * Stop batch upload timer
+   */
+  stopBatchUploadTimer(deviceId) {
+    const timer = this.batchUploadTimers.get(deviceId);
+    if (timer) {
+      clearInterval(timer);
+      this.batchUploadTimers.delete(deviceId);
+      console.log(`🛑 [BATCH TIMER] Stopped for ${deviceId}`);
+    }
+  }
+
+  /**
+   * Debug: Get buffer status for all devices
+   */
+  getBufferStatus() {
+    const status = [];
+    for (const [deviceId, buffer] of this.liveDataBuffers.entries()) {
+      const lastUpload = this.lastBatchUpload.get(deviceId) || 0;
+      const timeSinceUpload = lastUpload ? (Date.now() - lastUpload) / 1000 : 0;
+      const historicalComplete = this.historicalSyncComplete.get(deviceId) || false;
+      
+      status.push({
+        deviceId,
+        bufferSize: buffer.length,
+        maxBufferSize: this.liveDataConfig.bufferSize,
+        timeSinceLastUpload: Math.round(timeSinceUpload),
+        uploadIntervalSeconds: this.liveDataConfig.uploadInterval / 1000,
+        historicalSyncComplete: historicalComplete,
+        shouldUpload: this.shouldUploadBatch(deviceId),
+        oldestRecord: buffer.length > 0 ? buffer[0].timestampDate : null,
+        newestRecord: buffer.length > 0 ? buffer[buffer.length - 1].timestampDate : null
+      });
+    }
+    return status;
+  }
+
+  /**
+   * Debug: Force upload all buffers (for testing)
+   */
+  async forceUploadAllBuffers() {
+    console.log(`🧪 [DEBUG] Force uploading all live data buffers...`);
+    for (const [deviceId, buffer] of this.liveDataBuffers.entries()) {
+      if (buffer.length > 0) {
+        await this.uploadLiveBatch(deviceId);
+      }
+    }
+  }
+
   /**
    * iOS event handlers
    */
   handleIOSDeviceFound(deviceInfo) {
-    console.log('📱 iOS Device Found:', deviceInfo);
+    
+    // ✅ Extract and format manufacturer data for easy UI display
+    const manufacturerInfo = deviceInfo.manufacturerData || {};
+    const formattedManufacturerData = {
+      raw: manufacturerInfo,
+      // Parsed values for UI display
+      batteryLevel: manufacturerInfo.batteryLevel || null,
+      batteryMillivolts: manufacturerInfo.batteryMillivolts || null,
+      recordCount: manufacturerInfo.recordCount || 0,
+      companyId: manufacturerInfo.companyId || null,
+      deviceStatus: manufacturerInfo.deviceStatus || 0,
+      indication: manufacturerInfo.indication || 0,
+      // User-friendly status
+      statusText: manufacturerInfo.deviceStatus === 0 ? 'Good' : 'Problem',
+      hasRecords: (manufacturerInfo.recordCount || 0) > 0,
+      batteryStatus: this.getBatteryStatus(manufacturerInfo.batteryLevel)
+    };
     
     // Create device object similar to ble-plx format
     const device = {
       id: deviceInfo.id,
       name: deviceInfo.name || 'Unknown',
       rssi: deviceInfo.rssi,
-      manufacturerData: deviceInfo.advertisementData?.manufacturerData,
+      manufacturerData: formattedManufacturerData,  // ✅ Enhanced manufacturer data
       serviceUUIDs: deviceInfo.advertisementData?.serviceUUIDs || [],
       advertisementData: deviceInfo.advertisementData || {},
       isConnectable: true,
@@ -308,8 +773,16 @@ class BLEService {
     this.emit('deviceFound', device);
   }
 
+  // Helper to get battery status text
+  getBatteryStatus(batteryPercent) {
+    if (!batteryPercent) return 'Unknown';
+    if (batteryPercent >= 80) return 'Excellent';
+    if (batteryPercent >= 50) return 'Good';
+    if (batteryPercent >= 20) return 'Low';
+    return 'Critical';
+  }
+
   handleIOSDeviceConnected(deviceInfo) {
-    console.log('📱 iOS Device Connected:', deviceInfo);
     
     const deviceId = deviceInfo.deviceId;
     const device = this.scannedDevices.get(deviceId) || {
@@ -328,10 +801,8 @@ class BLEService {
     // Check if this is an auto-connect event and handle accordingly
     // For now, assume all iOS connections are auto-connect since we have auto-connect enabled
     if (deviceInfo.isAutoConnect || deviceInfo.connectionType === 'auto' || this.isAutoConnectEnabled()) {
-      console.log('🔗 iOS auto-connect detected, delegating to handleAutoConnectedDevice');
       this.handleAutoConnectedDevice(deviceInfo);
     } else {
-      console.log('📱 iOS manual connection detected');
     }
     
     // Trigger device list update callback
@@ -344,7 +815,6 @@ class BLEService {
   }
 
   handleIOSDeviceDisconnected(deviceInfo) {
-    console.log('📱 iOS Device Disconnected:', deviceInfo);
     
     const deviceId = deviceInfo.deviceId;
     const device = this.scannedDevices.get(deviceId);
@@ -368,22 +838,74 @@ class BLEService {
   }
 
   handleIOSServicesDiscovered(eventData) {
-    console.log('📱 iOS Services Discovered:', eventData);
     
     const deviceId = eventData.deviceId;
     const device = this.scannedDevices.get(deviceId);
     
     if (device) {
-      device.services = eventData.services || [];
+      // Add services with duplicate prevention
+      const newServices = eventData.services || [];
+      if (!device.services) {
+        device.services = [];
+      }
+      
+      // Add only new services to avoid duplicates
+      let addedServiceCount = 0;
+      let duplicateServiceCount = 0;
+      newServices.forEach(newService => {
+        const exists = device.services.some(existing => 
+          existing.uuid === newService.uuid
+        );
+        if (!exists) {
+          device.services.push(newService);
+          addedServiceCount++;
+        } else {
+          duplicateServiceCount++;
+        }
+      });
+      
+      
+      // If this is a complete service discovery (with characteristics), update characteristics too
+      if (eventData.complete && eventData.services) {
+        
+        // Initialize characteristics array if it doesn't exist
+        if (!device.characteristics) {
+          device.characteristics = [];
+        }
+        
+        // Add characteristics from each service (avoid duplicates)
+        eventData.services.forEach(service => {
+          if (service.characteristics) {
+            const serviceCharacteristics = service.characteristics.map(char => ({
+              uuid: char.uuid,
+              serviceUUID: service.uuid,
+              properties: char.properties,
+              isNotifying: char.isNotifying
+            }));
+            
+            // Add only new characteristics to avoid duplicates
+            serviceCharacteristics.forEach(newChar => {
+              const exists = device.characteristics.some(existing => 
+                existing.uuid === newChar.uuid && existing.serviceUUID === newChar.serviceUUID
+              );
+              if (!exists) {
+                device.characteristics.push(newChar);
+              }
+            });
+            
+          }
+        });
+        
+      }
+      
       this.scannedDevices.set(deviceId, device);
       
       // Emit services discovered event
-      this.emit('servicesDiscovered', { deviceId, services: eventData.services });
+      this.emit('servicesDiscovered', { deviceId, services: eventData.services, complete: eventData.complete });
     }
   }
 
   handleIOSCharacteristicsDiscovered(eventData) {
-    console.log('📱 iOS Characteristics Discovered:', eventData);
     
     const deviceId = eventData.deviceId;
     const device = this.scannedDevices.get(deviceId);
@@ -393,15 +915,44 @@ class BLEService {
         device.characteristics = [];
       }
       
-      // Add characteristics to device
-      const newCharacteristics = eventData.characteristics.map(char => ({
-        uuid: char.uuid,
-        serviceUUID: eventData.serviceUuid, // Use the service UUID from the event data
-        properties: char.properties,
-        isNotifying: char.isNotifying
-      }));
+      // Add characteristics to device with proper property mapping
+      const newCharacteristics = eventData.characteristics.map(char => {
+        // Extract individual property flags from the properties object
+        const properties = char.properties || {};
+        
+        // Debug logging to see what properties we're receiving from iOS
+        
+        return {
+          uuid: char.uuid,
+          serviceUUID: eventData.serviceUuid, // Use the service UUID from the event data
+          properties: properties,
+          isNotifying: char.isNotifying,
+          // Map individual property flags for compatibility
+          isReadable: properties.read || false,
+          isWritable: properties.write || false,
+          isWritableWithResponse: properties.writeWithResponse || false,
+          isWritableWithoutResponse: properties.writeWithoutResponse || false,
+          isNotifiable: properties.notify || false,
+          isIndicatable: properties.indicate || false
+        };
+      });
       
-      device.characteristics.push(...newCharacteristics);
+      // Add only new characteristics to avoid duplicates
+      let addedCount = 0;
+      let duplicateCount = 0;
+      newCharacteristics.forEach(newChar => {
+        const exists = device.characteristics.some(existing => 
+          existing.uuid === newChar.uuid && existing.serviceUUID === newChar.serviceUUID
+        );
+        if (!exists) {
+          device.characteristics.push(newChar);
+          addedCount++;
+        } else {
+          duplicateCount++;
+        }
+      });
+      
+      
       this.scannedDevices.set(deviceId, device);
       
       // Emit characteristics discovered event
@@ -414,7 +965,6 @@ class BLEService {
   }
 
   handleIOSCharacteristicData(eventData) {
-    console.log('📱 iOS Characteristic Data:', eventData);
     
     const deviceId = eventData.deviceId;
     const characteristicUuid = eventData.characteristicUuid;
@@ -426,18 +976,42 @@ class BLEService {
       // Data is hex string, convert to base64
       const buffer = Buffer.from(data, 'hex');
       processedData = buffer.toString('base64');
-      console.log(`📱 iOS: Converted hex data to base64: ${data} -> ${processedData}`);
     }
     
     // Handle different characteristic types (same as Android)
-    if (characteristicUuid.toLowerCase() === BLE_CHARACTERISTICS.DEVICE_STATUS.toLowerCase()) {
-      console.log(`📱 iOS: Routing DEVICE_STATUS data to handler`);
+    // Normalize UUIDs for comparison (handle both upper and lower case)
+    const normalizedCharUuid = characteristicUuid.toLowerCase().replace(/-/g, '');
+    const normalizedDeviceStatus = BLE_CHARACTERISTICS.DEVICE_STATUS.toLowerCase().replace(/-/g, '');
+    const normalizedBatteryLevel = BLE_CHARACTERISTICS.BATTERY_LEVEL.toLowerCase().replace(/-/g, '');
+    const normalizedDataTransfer = BLE_CHARACTERISTICS.DATA_TRANSFER.toLowerCase().replace(/-/g, '');
+    const normalizedSystemCommand = BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '');
+    
+    // Also check for short form UUIDs (without dashes)
+    const shortCharUuid = characteristicUuid.replace(/-/g, '').toLowerCase();
+    const shortDeviceStatus = BLE_CHARACTERISTICS.DEVICE_STATUS.replace(/-/g, '').toLowerCase();
+    const shortBatteryLevel = BLE_CHARACTERISTICS.BATTERY_LEVEL.replace(/-/g, '').toLowerCase();
+    const shortDataTransfer = BLE_CHARACTERISTICS.DATA_TRANSFER.replace(/-/g, '').toLowerCase();
+    const shortSystemCommand = BLE_CHARACTERISTICS.SYSTEM_COMMAND.replace(/-/g, '').toLowerCase();
+    
+    // Check for 4-character short form UUIDs (e.g., 2A19 for battery level)
+    const shortFormCharUuid = normalizedCharUuid.length <= 4 ? normalizedCharUuid : normalizedCharUuid.slice(-4);
+
+    // Check both normalized and short form UUIDs
+    if (normalizedCharUuid === normalizedDeviceStatus || shortCharUuid === shortDeviceStatus) {
       this.handleDeviceStatusUpdate(deviceId, processedData);
-    } else if (characteristicUuid.toLowerCase() === BLE_CHARACTERISTICS.BATTERY_LEVEL.toLowerCase()) {
-      console.log(`📱 iOS: Routing BATTERY_LEVEL data to handler`);
+    } else if (normalizedCharUuid === normalizedBatteryLevel || shortCharUuid === shortBatteryLevel || shortFormCharUuid === '2a19') {
       this.handleBatteryUpdate(deviceId, processedData);
+    } else if (normalizedCharUuid === normalizedDataTransfer || shortCharUuid === shortDataTransfer) {
+      // ✅ FIX: Don't process here - handled by dedicated DataTransfer/DataTransferEvent
+      // this.handleDataTransfer(deviceId, processedData);
+      // Native now sends DataTransferEvent which is handled by handleNativeDataTransferEvent()
+      // Processing here would create duplicates!
+      console.log(`📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead`);
+    } else if (normalizedCharUuid === normalizedSystemCommand || shortCharUuid === shortSystemCommand) {
+      // ✅ FIX: Don't process here - handled by dedicated SystemCommandEvent
+      // this.handleSystemCommandResponse(deviceId, processedData);
+      console.log(`🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead`);
     } else {
-      console.log(`📱 iOS: Unknown characteristic UUID: ${characteristicUuid}`);
     }
     
     // Emit characteristic data event
@@ -450,7 +1024,6 @@ class BLEService {
   }
 
   handleIOSRSSIUpdate(eventData) {
-    console.log('📱 iOS RSSI Update:', eventData);
     
     const deviceId = eventData.deviceId;
     const device = this.scannedDevices.get(deviceId);
@@ -464,19 +1037,84 @@ class BLEService {
     }
   }
 
+  // ✅ NEW: Handle service discovery complete - triggers native command sequence
+  handleServiceDiscoveryComplete = async (eventData) => {
+    const { deviceId, hasSystemCommand, hasDeviceStatus, hasDataTransfer } = eventData;
+    
+    
+    // 🔒 MUTEX: Check if already running
+    if (this.requestDataMutex.get(deviceId)) {
+      return;
+    }
+    
+    // Set mutex
+    this.requestDataMutex.set(deviceId, true);
+    
+    try {
+      // Only start command sequence if device has system command characteristic
+      if (hasSystemCommand) {
+        
+        // ✅ PLATFORM-SPECIFIC: Call appropriate native method
+        let result;
+        if (Platform.OS === 'android') {
+          // Android uses SampleBridgeAndroid
+          result = await SampleBridgeAndroid.startCommandSequence(deviceId);
+        } else {
+          // iOS uses BridgingCodeModule
+          result = await BridgingCodeModule.startCommandSequence(deviceId);
+        }
+        
+        if (result.status === 'success') {
+        } else if (result.status === 'already_running') {
+        } else {
+        }
+      } else {
+      }
+      
+      // Read initial characteristics via JS (battery, device status, etc.)
+      setTimeout(() => {
+        this.readAllCharacteristics(deviceId);
+      }, 1000);
+      
+    } catch (error) {
+    } finally {
+      // Release mutex after a delay (native sequence takes time)
+      setTimeout(() => {
+        this.requestDataMutex.delete(deviceId);
+      }, 2000);
+    }
+  }
+
   /**
    * Android event handlers
    */
   handleAndroidDeviceFound(deviceInfo) {
-    console.log('📱 Android: Processing device found:', deviceInfo);
+    
+    // ✅ Extract and format manufacturer data for easy UI display (same as iOS)
+    const manufacturerInfo = deviceInfo.manufacturerData || {};
+    const formattedManufacturerData = {
+      raw: manufacturerInfo,
+      // Parsed values for UI display
+      batteryLevel: manufacturerInfo.batteryLevel || null,
+      batteryMillivolts: manufacturerInfo.batteryMillivolts || null,
+      recordCount: manufacturerInfo.recordCount || 0,
+      companyId: manufacturerInfo.companyId || null,
+      deviceStatus: manufacturerInfo.deviceStatus || 0,
+      indication: manufacturerInfo.indication || 0,
+      // User-friendly status
+      statusText: manufacturerInfo.deviceStatus === 0 ? 'Good' : 'Problem',
+      hasRecords: (manufacturerInfo.recordCount || 0) > 0,
+      batteryStatus: this.getBatteryStatus(manufacturerInfo.batteryLevel)
+    };
     
     const device = {
       id: deviceInfo.deviceId,
       name: deviceInfo.deviceName || 'Unknown Device',
       rssi: deviceInfo.rssi || -100,
       isConnectable: deviceInfo.isConnectable !== false,
+      manufacturerData: formattedManufacturerData,  // ✅ Enhanced manufacturer data
       deviceData: {
-        batteryLevel: null,
+        batteryLevel: manufacturerInfo.batteryLevel || null,  // ✅ Pre-populate from manufacturer data
         temperature: null,
         steps: null,
         lastUpdate: new Date()
@@ -485,16 +1123,12 @@ class BLEService {
       isSmartTag: this.isSmartTag(deviceInfo)
     };
 
-    console.log('📱 Android: Created device object:', device);
     this.scannedDevices.set(device.id, device);
-    console.log('📱 Android: Added to scannedDevices. Total devices:', this.scannedDevices.size);
     
     // Trigger device list update callback
     if (this.onDeviceListUpdated) {
-      console.log('📱 Android: Triggering device list update callback');
       this.onDeviceListUpdated();
     } else {
-      console.log('📱 Android: No device list update callback registered');
     }
   }
 
@@ -522,14 +1156,28 @@ class BLEService {
     const { deviceId, characteristicUuid, data } = event;
     
     // Handle different characteristic types
-    if (characteristicUuid.toLowerCase() === BLE_CHARACTERISTICS.DEVICE_STATUS.toLowerCase()) {
-      console.log(`📱 Android: Routing DEVICE_STATUS data to handler`);
+    // Normalize UUIDs for comparison (handle both upper and lower case)
+    const normalizedCharUuid = characteristicUuid.toLowerCase().replace(/-/g, '');
+    const normalizedDeviceStatus = BLE_CHARACTERISTICS.DEVICE_STATUS.toLowerCase().replace(/-/g, '');
+    const normalizedBatteryLevel = BLE_CHARACTERISTICS.BATTERY_LEVEL.toLowerCase().replace(/-/g, '');
+    const normalizedDataTransfer = BLE_CHARACTERISTICS.DATA_TRANSFER.toLowerCase().replace(/-/g, '');
+    const normalizedSystemCommand = BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '');
+
+    if (normalizedCharUuid === normalizedDeviceStatus) {
       this.handleDeviceStatusUpdate(deviceId, data);
-    } else if (characteristicUuid.toLowerCase() === BLE_CHARACTERISTICS.BATTERY_LEVEL.toLowerCase()) {
-      console.log(`📱 Android: Routing BATTERY_LEVEL data to handler`);
+    } else if (normalizedCharUuid === normalizedBatteryLevel) {
       this.handleBatteryUpdate(deviceId, data);
+    } else if (normalizedCharUuid === normalizedDataTransfer) {
+      // ✅ FIX: Don't process here - handled by dedicated DataTransferEvent
+      // this.handleDataTransfer(deviceId, data);
+      // Native now sends DataTransferEvent which is handled by handleNativeDataTransferEvent()
+      // Processing here would create duplicates!
+      console.log(`📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead`);
+    } else if (normalizedCharUuid === normalizedSystemCommand) {
+      // ✅ FIX: Don't process here - handled by dedicated SystemCommandEvent
+      // this.handleSystemCommandResponse(deviceId, data);
+      console.log(`🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead`);
     } else {
-      console.log(`📱 Android: Unknown characteristic UUID: ${characteristicUuid}`);
     }
   }
 
@@ -550,7 +1198,6 @@ class BLEService {
   }
 
   handleAndroidDeviceDisconnected(event) {
-    console.log('🔌 Android: Handling device disconnection:', event);
     
     const { deviceId, deviceName, error } = event;
     
@@ -563,7 +1210,6 @@ class BLEService {
   }
 
   handleAndroidDeviceReconnected(event) {
-    console.log('🔗 Android: Handling device reconnection:', event);
     
     const { deviceId, deviceName } = event;
     
@@ -583,12 +1229,10 @@ class BLEService {
         this.onDeviceListUpdated();
       }
       
-      console.log(`✅ Android: Device ${deviceId} reconnected successfully`);
     }
   }
 
   handleAndroidDeviceConnected(event) {
-    console.log('🔗 Android: Handling manual device connection:', event);
     
     const { deviceId, deviceName } = event;
     
@@ -604,26 +1248,19 @@ class BLEService {
       // Add to connected devices
       this.connectedDevices.set(deviceId, device);
       
-      // Load device services and request data for manual connections
+      // ✅ CLEAN ARCHITECTURE: Just load services, native handles command sequence
       setTimeout(async () => {
         try {
-          console.log(`🔍 Loading services for manual connected device: ${deviceId}`);
           await this.loadDeviceServices(deviceId);
           
-          // Request initial data after service discovery
-          setTimeout(() => {
-            console.log(`📊 Requesting initial data for manual connected device: ${deviceId}`);
-            this.requestDeviceData(deviceId, { enableSystemCommands: true });
-          }, 1000);
+          // ServiceDiscoveryComplete event will trigger native command sequence
           
           // Start adaptive API calling
           setTimeout(() => {
-            console.log(`🔄 Starting adaptive API calling for device ${deviceId} after manual connection`);
             this.startAdaptiveApiCalling(deviceId);
           }, 3000);
           
         } catch (error) {
-          console.warn('⚠️ Error setting up manual connected device:', error.message);
         }
       }, 500);
       
@@ -632,18 +1269,36 @@ class BLEService {
         this.onDeviceListUpdated();
       }
       
-      console.log(`✅ Android: Device ${deviceId} connected successfully`);
     }
   }
 
-  handleAndroidDeviceDataUpdated(event) {
+  async handleAndroidDeviceDataUpdated(event) {
     const { deviceId, batteryLevel, steps, temperature, timestamp } = event;
     
-    console.log('📱 Android: Processing device data update:', { deviceId, batteryLevel, steps, temperature });
     
     const device = this.scannedDevices.get(deviceId);
     if (!device) {
-      console.warn(`📱 Android: Device not found for data update: ${deviceId}`);
+      return;
+    }
+
+    // ✅ CRITICAL: Don't overwrite synced data with stale characteristic reads!
+    // Check if incoming data is stale (before 2020) and we already have synced data
+    const incomingDate = timestamp ? new Date(timestamp * 1000) : null;
+    const isStaleData = incomingDate && incomingDate < new Date('2020-01-01');
+    const hasSyncedData = device.deviceData?.dataSource === 'synced';
+    
+    if (isStaleData && hasSyncedData) {
+      console.log(`⏭️ [ANDROID] Skipping stale read (${incomingDate.toISOString()}) - already have synced data`);
+      
+      // Only update battery level (it doesn't come from sync)
+      if (batteryLevel !== undefined) {
+        device.deviceData.batteryLevel = batteryLevel;
+        this.scannedDevices.set(deviceId, device);
+        
+        if (this.onDeviceListUpdated) {
+          this.onDeviceListUpdated();
+        }
+      }
       return;
     }
 
@@ -665,8 +1320,9 @@ class BLEService {
       batteryLevel: batteryLevel !== undefined ? batteryLevel : device.deviceData.batteryLevel,
       steps: steps !== undefined ? steps : device.deviceData.steps,
       temperature: temperature !== undefined ? temperature : device.deviceData.temperature,
-      timestamp: timestamp ? new Date(timestamp) : device.deviceData.timestamp,
-      lastUpdate: new Date()
+      timestamp: timestamp ? new Date(timestamp * 1000) : device.deviceData.timestamp,
+      // Preserve existing lastUpdate (device RTC) if available, otherwise use current time
+      lastUpdate: device.deviceData.lastUpdate || new Date()
     };
 
     this.scannedDevices.set(deviceId, device);
@@ -677,14 +1333,18 @@ class BLEService {
       previousData.batteryLevel !== device.deviceData.batteryLevel;
 
     if (dataChanged) {
-      console.log(`📊 Android: Data update for ${device.name}: Steps=${device.deviceData.steps}, Temp=${device.deviceData.temperature?.toFixed(1)}°C, Battery=${device.deviceData.batteryLevel}%`);
+      console.log(`📊 [ANDROID] Device data updated - Steps: ${device.deviceData.steps}, Temp: ${device.deviceData.temperature}°C, Battery: ${device.deviceData.batteryLevel}%`);
+    }
+
+    // ✅ CRITICAL FIX: Trigger device list update callback to refresh UI (matching iOS behavior)
+    if (this.onDeviceListUpdated) {
+      this.onDeviceListUpdated();
     }
 
     // Trigger UI update callback if available and app is active
     if (this.onDeviceDataUpdated && this.appState === 'active') {
       this.onDeviceDataUpdated(deviceId, device.deviceData);
     } else if (this.onDeviceDataUpdated && this.appState !== 'active') {
-      console.log('📱 [BLEService] Skipping UI callback - app is in background');
       
       // Store the latest data for when app comes back to foreground
       if (!this.pendingUIUpdates) {
@@ -692,16 +1352,49 @@ class BLEService {
       }
       this.pendingUIUpdates.set(deviceId, device.deviceData);
     }
+    
+    // ✅ INDUSTRY STANDARD: Buffer live data for periodic batch upload
+    // Only buffer if historical sync is complete and timestamp is valid
+    const isHistoricalSyncComplete = this.historicalSyncComplete.get(deviceId);
+    const timestampValue = timestamp ? new Date(timestamp).getTime() / 1000 : 0;
+    const isLiveData = timestampValue > 1577836800; // After 2020-01-01
+    
+    if (dataChanged && isHistoricalSyncComplete && isLiveData) {
+      console.log(`📊 [LIVE DATA] Buffering Device Status update for ${deviceId}`);
+      
+      // Add to live buffer
+      this.addToLiveBuffer(deviceId, {
+        timestamp: timestampValue,
+        timestampDate: timestamp ? new Date(timestamp) : new Date(),
+        steps: device.deviceData.steps,
+        temperature: device.deviceData.temperature,
+        batteryLevel: device.deviceData.batteryLevel
+      });
+      
+      // Check for immediate alerts
+      const alertSent = await this.checkImmediateAlert(deviceId, {
+        temperature: device.deviceData.temperature,
+        steps: device.deviceData.steps,
+        batteryLevel: device.deviceData.batteryLevel,
+        timestampDate: timestamp ? new Date(timestamp) : new Date()
+      });
+      
+      // Upload batch if needed
+      if (this.shouldUploadBatch(deviceId)) {
+        console.log(`📤 [AUTO UPLOAD] Batch upload triggered for ${deviceId}`);
+        await this.uploadLiveBatch(deviceId);
+      }
+    } else if (!isLiveData) {
+      console.log(`📦 [CACHED DATA] Skipping buffer - timestamp: ${timestampValue}`);
+    }
   }
 
   handleAndroidServicesDiscovered(event) {
     const { deviceId, services, characteristics } = event;
     
-    console.log('📱 Android: Processing services discovered:', { deviceId, servicesCount: services?.length, characteristicsCount: characteristics?.length });
     
     const device = this.scannedDevices.get(deviceId);
     if (!device) {
-      console.warn(`📱 Android: Device not found for services discovery: ${deviceId}`);
       return;
     }
 
@@ -730,7 +1423,6 @@ class BLEService {
     
     this.scannedDevices.set(deviceId, device);
 
-    console.log(`✅ Android: Services discovered for ${device.name}: ${device.services.length} services, ${device.characteristics.length} characteristics`);
 
     // Start monitoring now that services are discovered
     this.startMonitoring(deviceId);
@@ -743,7 +1435,6 @@ class BLEService {
 
   setLowPowerMode(enabled) {
     this.profile = (enabled ? POWER_PROFILE?.lowPower : POWER_PROFILE?.default) || this.profile;
-    console.log('⚡ Power profile set to', enabled ? 'lowPower' : 'default');
     if (this.connectedDevices.size > 0) {
       this.stopConnectionHealthCheck();
       this.startConnectionHealthCheck();
@@ -752,17 +1443,14 @@ class BLEService {
 
   // Enhanced power mode with ultra-low power option
   setPowerProfile(profileName) {
-    console.log(`⚡ setPowerProfile called with: ${profileName}`);
     
     const profile = POWER_PROFILE[profileName];
     if (!profile) {
-      console.warn('⚠️ Invalid power profile:', profileName);
       return;
     }
     
     const oldProfile = this.getCurrentProfileName();
     this.profile = profile;
-    console.log(`⚡ Power profile changed: ${oldProfile} → ${profileName}`);
     
     // Update all timing configurations based on new power profile
     this.updateApiTimingForPowerProfile();
@@ -790,18 +1478,15 @@ class BLEService {
    */
   startRssiCycle() {
     if (this.rssiCycleActive) {
-      console.log('📡 RSSI cycle already active');
       return;
     }
 
     if (this.connectedDevices.size === 0) {
-      console.log('📡 No connected devices, skipping RSSI cycle start');
       return;
     }
 
     const currentProfile = this.getCurrentProfileName();
     const interval = this.profile.rssiCycleIntervalMs || 30000;
-    console.log(`📡 Starting RSSI cycle - Profile: ${currentProfile}, Interval: ${interval}ms, Devices: ${this.connectedDevices.size}`);
 
     this.rssiCycleActive = true;
     this.rssiCycleTimer = setInterval(() => {
@@ -809,7 +1494,6 @@ class BLEService {
     }, interval);
 
     // Perform initial RSSI measurement
-    console.log('📡 Performing initial RSSI measurement');
     this.performRssiCycle();
   }
 
@@ -818,12 +1502,10 @@ class BLEService {
    */
   stopRssiCycle() {
     if (!this.rssiCycleActive) {
-      console.log('📡 RSSI cycle already stopped');
       return;
     }
 
     const currentProfile = this.getCurrentProfileName();
-    console.log(`📡 Stopping RSSI cycle - Profile: ${currentProfile}, Devices: ${this.connectedDevices.size}`);
     this.rssiCycleActive = false;
 
     if (this.rssiCycleTimer) {
@@ -838,14 +1520,12 @@ class BLEService {
   restartRssiCycle() {
     const currentProfile = this.getCurrentProfileName();
     const interval = this.profile.rssiCycleIntervalMs || 30000;
-    console.log(`📡 Restarting RSSI cycle - Profile: ${currentProfile}, New Interval: ${interval}ms`);
     
     this.stopRssiCycle();
     
     // Small delay to ensure clean restart
     setTimeout(() => {
       if (this.connectedDevices.size > 0) {
-        console.log(`📡 RSSI cycle restart completed - ${this.connectedDevices.size} devices`);
         this.startRssiCycle();
       }
     }, 100);
@@ -856,20 +1536,17 @@ class BLEService {
    */
   async performRssiCycle() {
     if (!this.rssiCycleActive || this.connectedDevices.size === 0) {
-      console.log('📡 RSSI cycle not active or no devices connected');
       return;
     }
 
     const currentProfile = this.getCurrentProfileName();
     const interval = this.profile.rssiCycleIntervalMs || 30000;
-    console.log(`📡 Performing RSSI cycle for ${this.connectedDevices.size} device(s) - Profile: ${currentProfile}, Interval: ${interval}ms`);
     
     const cycleDuration = this.profile.rssiCycleDurationMs || 3000;
     const startTime = Date.now();
     
     // Measure RSSI for each connected device
     const deviceIds = Array.from(this.connectedDevices.keys());
-    console.log(`📡 Device IDs for RSSI measurement:`, deviceIds);
     
     const rssiPromises = deviceIds.map(deviceId => 
       this.measureDeviceRssi(deviceId)
@@ -879,7 +1556,6 @@ class BLEService {
       await Promise.allSettled(rssiPromises);
       
       const cycleTime = Date.now() - startTime;
-      console.log(`📡 RSSI cycle completed in ${cycleTime}ms (target: ${cycleDuration}ms)`);
       
       // Emit RSSI cycle completed event
       this.emit('rssiCycleCompleted', {
@@ -889,7 +1565,6 @@ class BLEService {
       });
       
     } catch (error) {
-      console.error('📡 RSSI cycle error:', error);
     }
   }
 
@@ -898,37 +1573,28 @@ class BLEService {
    */
   async measureDeviceRssi(deviceId) {
     try {
-      console.log(`📡 Measuring RSSI for device: ${deviceId}`);
       const device = this.connectedDevices.get(deviceId);
       if (!device) {
-        console.log(`📡 Device not found in connectedDevices: ${deviceId}`);
         return;
       }
 
-      console.log(`📡 Device found, reading RSSI...`);
       
       let rssi;
       if (Platform.OS === 'android') {
         // Use native Android RSSI reading
-        console.log(`📡 Using Android native RSSI reading for ${deviceId}`);
         try {
           const result = await SampleBridgeAndroid.readDeviceRSSI(deviceId);
           rssi = result;
-          console.log(`📡 Android RSSI result for ${deviceId}:`, result);
         } catch (error) {
-          console.error(`📡 Android RSSI reading failed for ${deviceId}:`, error);
           return { success: false, error: 'SMART_TAG service not available' };
         }
       } else {
         // iOS uses native bridge RSSI reading
-        console.log(`📡 Using iOS native RSSI reading for ${deviceId}`);
         try {
           const result = await BridgingCodeModule.readRSSI(deviceId);
           // Handle both object and direct value responses
           rssi = typeof result === 'object' && result.rssi !== undefined ? result.rssi : result;
-          console.log(`📡 iOS RSSI result for ${deviceId}:`, result);
         } catch (error) {
-          console.error(`📡 iOS RSSI reading failed for ${deviceId}:`, error);
           return { success: false, error: 'SMART_TAG service not available' };
         }
       }
@@ -962,7 +1628,6 @@ class BLEService {
         // Update last RSSI update time
         this.lastRssiUpdate.set(deviceId, Date.now());
         
-        console.log(`📡 Device ${deviceId} RSSI: ${rssi}dBm`);
         
         // Emit RSSI updated event
         this.emit('rssiUpdated', {
@@ -975,11 +1640,9 @@ class BLEService {
         this.checkRssiConnectionQuality(deviceId, rssi);
         
       } else {
-        console.warn(`📡 Could not read RSSI for device ${deviceId}`);
       }
       
     } catch (error) {
-      console.error(`📡 Error measuring RSSI for device ${deviceId}:`, error);
     }
   }
 
@@ -1016,18 +1679,8 @@ class BLEService {
       quality = 'critical';
     }
     
-    console.log(`📡 RSSI Quality Assessment for ${deviceId}: ${rssi}dBm → ${quality}`);
-    console.log(`📡 Thresholds: Excellent(≥${thresholds.excellent}), Good(≥${thresholds.good}), Fair(≥${thresholds.fair}), Poor(≥${thresholds.poor}), VeryPoor(≥${thresholds.veryPoor})`);
     
     // Debug: Show exact calculation for this RSSI value
-    console.log(`📡 Debug Calculation:`);
-    console.log(`📡   RSSI: ${rssi}dBm`);
-    console.log(`📡   Is ${rssi} >= ${thresholds.excellent} (-50)? ${rssi >= thresholds.excellent}`);
-    console.log(`📡   Is ${rssi} >= ${thresholds.good} (-70)? ${rssi >= thresholds.good}`);
-    console.log(`📡   Is ${rssi} >= ${thresholds.fair} (-80)? ${rssi >= thresholds.fair}`);
-    console.log(`📡   Is ${rssi} >= ${thresholds.poor} (-90)? ${rssi >= thresholds.poor}`);
-    console.log(`📡   Is ${rssi} >= ${thresholds.veryPoor} (-100)? ${rssi >= thresholds.veryPoor}`);
-    console.log(`📡   Final Quality: ${quality}`);
 
     // Store quality in device info (both connectedDevices and scannedDevices)
     const connectedDevice = this.connectedDevices.get(deviceId);
@@ -1053,25 +1706,20 @@ class BLEService {
         break;
         
       case 'fair':
-        console.log(`⚠️ Device ${deviceId} has fair connection quality (RSSI: ${rssi}dBm)`);
         break;
         
       case 'poor':
-        console.log(`⚠️ Device ${deviceId} has poor connection quality (RSSI: ${rssi}dBm)`);
         this.emit('rssiPoorConnection', { deviceId, rssi, quality });
         break;
         
       case 'veryPoor':
       case 'critical':
-        console.log(`🚨 Device ${deviceId} has very poor connection quality (RSSI: ${rssi}dBm)`);
         this.emit('rssiCriticalConnection', { deviceId, rssi, quality });
         
         // Only disconnect if connection is truly unusable (very rare)
         if (quality === 'critical' && rssi < -120) {
-          console.log(`🔌 Disconnecting device ${deviceId} due to extremely poor connection quality (RSSI: ${rssi}dBm)`);
           this.disconnectFromDevice(deviceId);
         } else if (quality === 'critical') {
-          console.log(`⚠️ Device ${deviceId} has critical connection quality but keeping connection (RSSI: ${rssi}dBm)`);
         }
         break;
     }
@@ -1184,9 +1832,7 @@ class BLEService {
    * Manually trigger RSSI measurement for all connected devices (for testing)
    */
   async triggerManualRssiMeasurement() {
-    console.log('📡 Manual RSSI measurement triggered');
     if (this.connectedDevices.size === 0) {
-      console.log('📡 No connected devices for manual RSSI measurement');
       return { success: false, message: 'No connected devices' };
     }
 
@@ -1194,7 +1840,6 @@ class BLEService {
       await this.performRssiCycle();
       return { success: true, message: 'Manual RSSI measurement completed' };
     } catch (error) {
-      console.error('📡 Manual RSSI measurement failed:', error);
       return { success: false, error: error.message };
     }
   }
@@ -1207,12 +1852,10 @@ class BLEService {
   handleRestoredState(restoredState) {
     try {
       if (!restoredState) {
-        console.log('ℹ️ No BLE state to restore');
         return;
       }
 
       const restoredDevices = restoredState.connectedPeripherals || restoredState.peripherals || [];
-      console.log(`🔄 iOS restoration: ${restoredDevices.length} peripheral(s)`);
 
       restoredDevices.forEach((device) => {
         try {
@@ -1224,11 +1867,9 @@ class BLEService {
 
           this.reattachMonitorsForRestoredDevice(device, deviceId);
         } catch (e) {
-          console.warn('⚠️ Error processing restored peripheral:', e?.message || e);
         }
       });
     } catch (e) {
-      console.warn('⚠️ handleRestoredState failed:', e?.message || e);
     }
   }
 
@@ -1253,7 +1894,6 @@ class BLEService {
       const deviceName = deviceOrId?.name || 'Restored Device';
       const isVerified = await this.isVerifiedTag(deviceId, deviceName);
       if (!isVerified) {
-        console.log('⚠️ Background restoration blocked: Unverified tag detected:', deviceName);
         
         // TODO: TAG VERIFICATION COMMENTED OUT - ALLOW ALL TAGS
         // Read location data from nearby tag without full connection
@@ -1263,19 +1903,15 @@ class BLEService {
         try {
           const device = await this.manager.connectToDevice(deviceId, { timeout: 3000 });
           await device.cancelConnection();
-          console.log('✅ Disconnected from unverified restored tag');
         } catch (error) {
-          console.warn('⚠️ Could not disconnect from unverified restored tag:', error.message);
         }
         return; // Exit early - don't proceed with restoration
       }
       
-      console.log('✅ Background restoration allowed: Verified tag detected:', deviceName);
       */
 
       // For native iOS implementation, we don't need to acquire BLE-PLX handles
       // The native iOS implementation handles state restoration automatically
-      console.log('📱 iOS native state restoration: Device will be handled by native layer');
       
       // Track in maps for downstream APIs
       this.connectedDevices.set(deviceId, { id: deviceId });
@@ -1294,11 +1930,9 @@ class BLEService {
       try {
         const initialRssi = await deviceHandle.readRSSI();
         if (initialRssi !== null && initialRssi !== undefined) {
-          console.log(`📡 Initial RSSI for restored device ${deviceId}: ${initialRssi}dBm`);
           this.checkRssiConnectionQuality(deviceId, initialRssi);
         }
       } catch (rssiError) {
-        console.warn(`⚠️ Could not read initial RSSI for restored device ${deviceId}:`, rssiError?.message || rssiError);
       }
 
       // Prevent duplicate monitors by clearing any stale subscriptions
@@ -1308,7 +1942,6 @@ class BLEService {
       try {
         await deviceHandle.discoverAllServicesAndCharacteristics();
       } catch (e) {
-        console.warn('⚠️ discoverAllServicesAndCharacteristics failed (restored):', e?.message || e);
       }
 
       try {
@@ -1316,12 +1949,11 @@ class BLEService {
       } catch { }
 
       this.startRSSIPolling(deviceId);
-      setTimeout(() => this.requestDeviceData(deviceId, { enableSystemCommands: true }), 1000);
+      // ✅ REMOVED: requestDeviceData call - native handles command sequence via ServiceDiscoveryComplete
 
       // Ensure we detect out-of-range after restoration as well
       try {
         const disconnectSub = deviceHandle.onDisconnected((error, dev) => {
-          console.log('🔌 BLE-PLX onDisconnected (restored) for', deviceId, error?.message || '');
           this.handleAutoDisconnectedDevice({
             deviceId,
             deviceName: dev?.name || 'Unknown Device',
@@ -1335,9 +1967,7 @@ class BLEService {
         this.onDeviceListUpdated();
       }
 
-      console.log(`✅ Reattached monitors for restored peripheral ${deviceId}`);
     } catch (e) {
-      console.warn('⚠️ reattachMonitorsForRestoredDevice failed:', e?.message || e);
     }
   }
   // ================= END iOS STATE RESTORATION =================
@@ -1345,21 +1975,17 @@ class BLEService {
   // Permission handling
   async requestPermissions() {
     try {
-      console.log('🔐 BLEService: Requesting permissions...');
 
       if (Platform.OS === 'android') {
         // Use native Android permission request
         const result = await SampleBridgeAndroid.requestPermissions();
-        console.log('🤖 Android permissions result:', result);
         return result.granted || false;
       } else {
         // iOS uses native bridge
         const result = await BridgingCodeModule.requestPermissions();
-        console.log('📱 iOS permissions result:', result);
         return result.status === 'granted';
       }
     } catch (error) {
-      console.error('❌ BLEService: Error requesting permissions:', error);
       return false;
     }
   }
@@ -1375,10 +2001,8 @@ class BLEService {
       try {
         const result = await SampleBridgeAndroid.isBLEReady();
         this.bleState = result.ready ? BLE_STATES.POWERED_ON : BLE_STATES.POWERED_OFF;
-        console.log('🤖 Android BLE state refreshed:', this.bleState);
         return this.bleState;
       } catch (error) {
-        console.error('❌ Error refreshing BLE state:', error);
         this.bleState = BLE_STATES.UNKNOWN;
         return this.bleState;
       }
@@ -1386,7 +2010,6 @@ class BLEService {
       // iOS uses native bridge state check
       const result = await BridgingCodeModule.isBLEReady();
       this.bleState = result.isReady ? BLE_STATES.POWERED_ON : BLE_STATES.POWERED_OFF;
-      console.log('📱 iOS BLE state refreshed:', this.bleState);
       return this.bleState;
     }
   }
@@ -1418,7 +2041,6 @@ class BLEService {
       }
 
       if (this.scanState === SCAN_STATES.SCANNING) {
-        console.log('Already scanning');
         return;
       }
 
@@ -1442,14 +2064,9 @@ class BLEService {
       // Store original devices for logging before replacing
       const originalDevices = new Map(this.scannedDevices);
 
-      console.log(`📋 Scan preservation analysis:`);
-      console.log(`  - Total devices before scan: ${originalDevices.size}`);
-      console.log(`  - Preserved devices: ${preservedDevices.size}`);
-      console.log(`  - Cutoff time: ${new Date(fiveMinutesAgo).toLocaleTimeString()}`);
 
       preservedDevices.forEach((device, id) => {
         const lastSeenTime = device.lastSeen ? new Date(device.lastSeen).toLocaleTimeString() : 'Never';
-        console.log(`  ✅ Preserved: ${device.name || 'Unknown'} (${device.connectionState}) - Last seen: ${lastSeenTime}`);
       });
 
       // Log devices that were NOT preserved
@@ -1461,14 +2078,12 @@ class BLEService {
             : device.lastSeen && device.lastSeen > fiveMinutesAgo
               ? 'Should have been preserved (Recent)'
               : 'Too old or no lastSeen';
-          console.log(`  ❌ NOT Preserved: ${device.name || 'Unknown'} (${device.connectionState}) - Last seen: ${lastSeenTime} - Reason: ${reason}`);
         }
       });
 
       // Now assign the preserved devices
       this.scannedDevices = preservedDevices;
 
-      console.log('Starting BLE scan...');
 
       // Refresh bonded/known devices cache (iOS)
       if (Platform.OS === 'ios') {
@@ -1488,17 +2103,13 @@ class BLEService {
 
       if (Platform.OS === 'android') {
         // Use native Android scanning
-        console.log('🤖 Starting Android native scan...');
         const result = await SampleBridgeAndroid.startScanning();
-        console.log('🤖 Android scan started:', result);
         
         // Android scanning is handled by native events, no subscription needed
         this.scanSubscription = { remove: () => {} }; // Dummy subscription for compatibility
       } else {
         // iOS uses native bridge scanning
-        console.log('📱 Starting iOS native scan...');
         const result = await BridgingCodeModule.startScanning();
-        console.log('📱 iOS scan started:', result);
         
       // iOS scanning is handled by native events, no subscription needed
       this.scanSubscription = { remove: () => {} }; // Dummy subscription for compatibility
@@ -1511,17 +2122,13 @@ class BLEService {
           allowDuplicates: true
         };
         
-        console.log(`⚡ Using iOS power profile scan options:`, scanOptions);
         // Check if the method exists before calling it
         if (BridgingCodeModule.startScanningWithOptions) {
           await BridgingCodeModule.startScanningWithOptions(scanOptions);
-          console.log(`✅ iOS power profile scan started with ${scanOptions.maxScanDurationMs}ms duration`);
         } else {
-          console.log(`⚠️ startScanningWithOptions not available, using fallback`);
           await BridgingCodeModule.startScanning();
         }
       } catch (error) {
-        console.warn('⚠️ Power profile scan failed, using fallback:', error.message);
         // Fallback to regular scanning
         await BridgingCodeModule.startScanning();
       }
@@ -1535,12 +2142,10 @@ class BLEService {
         setTimeout(() => {
           this.stopScanning();
         }, scanDuration);
-        console.log(`⏱️ Auto-stop scan scheduled in ${scanDuration}ms`);
       }
     }
 
     } catch (error) {
-      console.error('Error starting scan:', error);
       this.scanState = SCAN_STATES.STOPPED;
       if (onError) onError(error);
     }
@@ -1551,16 +2156,13 @@ class BLEService {
     if (Platform.OS === 'android') {
       // Use native Android stop scanning
       SampleBridgeAndroid.stopScanning().catch(error => {
-        console.error('🤖 Error stopping Android scan:', error);
       });
     } else {
       // iOS uses native bridge stop scanning
       BridgingCodeModule.stopScanning().catch(error => {
-        console.error('📱 Error stopping iOS scan:', error);
       });
     }
     this.scanState = SCAN_STATES.STOPPED;
-    console.log('Stopped BLE scan');
   }
 
   // Debounced list update to avoid UI thrash
@@ -1586,7 +2188,6 @@ class BLEService {
           // Only prune very old disconnected devices (older than 10 minutes) to allow reconnection
           const isVeryOld = dev.lastSeen && dev.lastSeen < cutoff;
           if (!isConnected && isVeryOld) {
-            console.log('🧹 Pruning very old disconnected device:', dev.name, 'lastSeen:', new Date(dev.lastSeen).toLocaleTimeString());
             this.scannedDevices.delete(id);
             deleted = true;
           }
@@ -1625,7 +2226,6 @@ class BLEService {
   //     const response = await this.verifyTagOwnership(deviceId, deviceName);
   //     return response.isVerified;
   //   } catch (error) {
-  //     console.warn(`⚠️ Could not verify tag ownership for ${deviceId}:`, error.message);
   //     return false; // Fail safe - don't connect to unverified tags
   //   }
   // }
@@ -1644,7 +2244,6 @@ class BLEService {
   //     // return await response.json();
 
   //     // For now, return mock data - replace with actual API
-  //     console.log(`🔍 Verifying tag ownership: ${deviceId} (${deviceName})`);
 
   //     // Mock verification - replace with real API call
   //     return {
@@ -1654,7 +2253,6 @@ class BLEService {
   //       purchaseDate: null
   //     };
   //   } catch (error) {
-  //     console.error('❌ Tag verification API error:', error);
   //     return { isVerified: false, error: error.message };
   //   }
   // }
@@ -1662,20 +2260,16 @@ class BLEService {
   // Read location data from nearby tag without connecting
   async readNearbyTagLocation(deviceId) {
     try {
-      console.log(`📍 Reading location from nearby tag: ${deviceId}`);
 
       if (Platform.OS === 'ios') {
         // For iOS native implementation, we can't easily read without connecting
         // This functionality would need to be implemented in the native layer
-        console.log('📱 iOS: Location reading requires full connection - not implemented in native layer yet');
         return null;
       } else {
         // Android implementation would go here
-        console.log('🤖 Android: Location reading not implemented yet');
         return null;
       }
     } catch (error) {
-      console.warn(`⚠️ Could not read location from nearby tag ${deviceId}:`, error.message);
       return null;
     }
   }
@@ -1699,7 +2293,6 @@ class BLEService {
 
       return location;
     } catch (error) {
-      console.error('❌ Error parsing location data:', error);
       return null;
     }
   }
@@ -1720,12 +2313,10 @@ class BLEService {
       //   })
       // });
 
-      console.log(`📤 Sending nearby tag location to server: ${deviceId}`, locationData);
 
       // For now, just log - replace with actual API call
       return { success: true, message: 'Location data sent to server' };
     } catch (error) {
-      console.error('❌ Failed to send location to server:', error);
       return { success: false, error: error.message };
     }
   }
@@ -1733,13 +2324,11 @@ class BLEService {
   // Handle nearby tag (not user's purchased tag)
   async handleNearbyTag(deviceId, deviceName) {
     try {
-      console.log(`📍 Processing nearby tag: ${deviceName} (${deviceId})`);
 
       // Read location data without connecting
       const locationData = await this.readNearbyTagLocation(deviceId);
 
       if (locationData) {
-        console.log(`✅ Successfully read location from nearby tag: ${deviceName}`);
 
         // Store nearby tag data for UI display
         const nearbyTag = {
@@ -1760,10 +2349,8 @@ class BLEService {
           this.onDeviceListUpdated();
         }
       } else {
-        console.log(`⚠️ Could not read location from nearby tag: ${deviceName}`);
       }
     } catch (error) {
-      console.warn(`⚠️ Error handling nearby tag ${deviceId}:`, error.message);
     }
   }
 
@@ -1783,7 +2370,6 @@ class BLEService {
   // Set current user ID for tag verification
   setCurrentUserId(userId) {
     this.currentUserId = userId;
-    console.log(`👤 Current user ID set: ${userId}`);
   }
 
   // Get current user ID
@@ -1795,12 +2381,9 @@ class BLEService {
   async forceRefreshAutoConnectStatus() {
     if (Platform.OS === 'ios') {
       try {
-        console.log('🔄 Force refreshing auto-connect status...');
         const status = await AutoConnectService.getAutoConnectStatus();
-        console.log('📊 Refreshed auto-connect status:', status);
         return status;
       } catch (error) {
-        console.warn('⚠️ Could not refresh auto-connect status:', error.message);
         return null;
       }
     }
@@ -1848,16 +2431,11 @@ class BLEService {
           deviceData: this.deviceDataStore.get(deviceId) || deviceInfo.deviceData || {}
         };
         connectedDevicesList.push(enhancedDeviceInfo);
-        console.log('📱 Found auto-connected device in scannedDevices:', deviceInfo.name);
       }
     }
 
     // Debug: Show all devices in scannedDevices
-    console.log(`🔍 All devices in scannedDevices (${this.scannedDevices.size}):`,
-      Array.from(this.scannedDevices.values()).map(d => `${d.name} (${d.connectionState})`));
 
-    console.log(`🔗 getConnectedDevices() returning ${connectedDevicesList.length} devices:`,
-      connectedDevicesList.map(d => `${d.name} (${d.connectionState})`));
 
     return connectedDevicesList;
   }
@@ -1874,10 +2452,8 @@ class BLEService {
       try {
         const forgottenDevices = await AutoConnectService.getForgottenDevices();
         if (forgottenDevices.success && forgottenDevices.devices.includes(deviceId)) {
-          console.log('🔄 Manual connection to forgotten device - will remove from forgotten list: ' + deviceId);
         }
       } catch (error) {
-        console.warn('⚠️ Could not check forgotten devices list:', error.message);
         // Continue with connection attempt if we can't check the list
       }
 
@@ -1894,7 +2470,6 @@ class BLEService {
         onConnectionStateChange(deviceId, CONNECTION_STATES.CONNECTING);
       }
 
-      console.log('Connecting to verified device:', device.name);
       this.markDeviceKnown(deviceId);
 
       // Stop scanning to free resources
@@ -1903,7 +2478,6 @@ class BLEService {
       // Acquire connection from pool
       const connectionAcquired = await this.acquireConnection(deviceId, 'high');
       if (!connectionAcquired) {
-        console.log(`⏳ Connection pool full for device ${deviceId}, waiting for available slot...`);
         // Wait for connection to become available
         await new Promise(resolve => {
           const checkPool = setInterval(() => {
@@ -1919,15 +2493,12 @@ class BLEService {
       let connectedDevice;
       if (Platform.OS === 'android') {
         // Use native Android connection
-        console.log('🤖 Connecting to device via Android native bridge:', deviceId);
         const result = await SampleBridgeAndroid.connectToDevice(deviceId);
-        console.log('🤖 Android connection result:', result);
         
         // Android connection is handled by native events
         connectedDevice = { id: deviceId }; // Dummy device object for compatibility
       } else {
         // iOS uses native bridge connection with power profile optimization
-        console.log('📱 Connecting to device via iOS native bridge:', deviceId);
         
         try {
           const connectionOptions = {
@@ -1937,15 +2508,11 @@ class BLEService {
             isManualConnection: true // Flag this as a manual connection
           };
           
-          console.log(`⚡ Using iOS power profile connection options:`, connectionOptions);
           const result = await BridgingCodeModule.connectToDeviceWithOptions(deviceId, connectionOptions);
-          console.log('📱 iOS power profile connection result:', result);
         } catch (error) {
-          console.warn('⚠️ Power profile connection failed, using fallback:', error.message);
           // Fallback to regular connection with manual flag
           const fallbackOptions = { isManualConnection: true };
           const result = await BridgingCodeModule.connectToDeviceWithOptions(deviceId, fallbackOptions);
-          console.log('📱 iOS fallback connection result:', result);
         }
         
         // iOS connection is handled by native events
@@ -1955,7 +2522,6 @@ class BLEService {
       // Negotiate MTU for optimal data transfer based on power profile
       const mtuSize = this.profile.mtuSize || 512;
       await this.negotiateMTU(deviceId, mtuSize);
-      console.log(`⚡ MTU negotiated to ${mtuSize} bytes (power profile: ${this.getCurrentProfileName()})`);
 
       // Update device state
       device.connectionState = CONNECTION_STATES.CONNECTED;
@@ -1979,43 +2545,34 @@ class BLEService {
           // Handle RSSI object vs number
           const rssiValue = typeof initialRssi === 'object' ? initialRssi.rssi : initialRssi;
           if (rssiValue !== null && rssiValue !== undefined) {
-            console.log(`📡 Initial RSSI for ${deviceId}: ${rssiValue}dBm`);
             this.checkRssiConnectionQuality(deviceId, rssiValue);
           } else {
-            console.warn(`⚠️ Invalid RSSI value for ${deviceId}:`, initialRssi);
           }
         }
       } catch (rssiError) {
-        console.warn(`⚠️ Could not read initial RSSI for ${deviceId}:`, rssiError?.message || rssiError);
       }
 
       // Clear any manual disconnect cooldown since user manually connected
       if (this.manualDisconnectCooldown.has(deviceId)) {
         this.manualDisconnectCooldown.delete(deviceId);
-        console.log('🔄 Cleared manual disconnect cooldown - user manually reconnected');
       }
 
       // Clear any reconnection attempts since device is now connected
       if (this.reconnectionAttempts && this.reconnectionAttempts.has(deviceId)) {
         this.reconnectionAttempts.delete(deviceId);
-        console.log('🔄 Cleared reconnection attempts - device successfully connected');
       }
       if (this.reconnectionTimers && this.reconnectionTimers.has(deviceId)) {
         const timer = this.reconnectionTimers.get(deviceId);
         if (timer) clearTimeout(timer);
         this.reconnectionTimers.delete(deviceId);
-        console.log('🔄 Cleared reconnection timer - device successfully connected');
       }
 
-      console.log('Connected to device:', device.name);
 
       // Add device to bonded list for auto-connect (iOS only)
       if (Platform.OS === 'ios') {
         try {
           await this.addDeviceToBondedList(deviceId);
-          console.log(`✅ Device ${device.name} added to auto-connect bonded list`);
         } catch (error) {
-          console.warn('⚠️ Failed to add device to bonded list:', error.message);
         }
       }
 
@@ -2023,7 +2580,6 @@ class BLEService {
       try {
         // Ensure device is properly added to connectedDevices before loading services
         if (!this.connectedDevices.has(deviceId)) {
-          console.warn(`⚠️ Device ${deviceId} not found in connectedDevices, adding it now`);
           this.connectedDevices.set(deviceId, connectedDevice);
         }
         
@@ -2032,7 +2588,6 @@ class BLEService {
         
         await this.loadDeviceServices(deviceId);
       } catch (error) {
-        console.error(`❌ Failed to load services for ${deviceId}:`, error.message);
         // Don't fail the entire connection if services can't be loaded
         // The device is still connected, just without service discovery
       }
@@ -2040,28 +2595,24 @@ class BLEService {
       // Start heartbeat monitoring for connection health
       this.startHeartbeatMonitoring(deviceId);
 
-      // Request initial data from the device
-      setTimeout(() => {
-        this.requestDeviceData(deviceId, { enableSystemCommands: true });
-      }, 1000); // Wait 1 second after connection before requesting data
+      // ✅ CLEAN ARCHITECTURE: Native handles command sequence via ServiceDiscoveryComplete
+      // JS only handles API calls and UI updates
+      
+      // ❌ DISABLED: Old immediate API call (replaced by buffering system)
+      // setTimeout(() => {
+      //   this.sendPetHealthDataToServer(deviceId);
+      // }, 8000);
 
-      // Send initial pet health data to server after successful connection
-      setTimeout(() => {
-        console.log(`📤 Sending initial pet health data to server after manual connection`);
-        this.sendPetHealthDataToServer(deviceId);
-      }, 3000); // Wait 3 seconds after connection to ensure data is available
-
-      // Start adaptive API calling for this device
-      setTimeout(() => {
-        console.log(`🔄 Starting adaptive API calling for device ${deviceId} after manual connection`);
-        this.startAdaptiveApiCalling(deviceId);
-      }, 5000); // Start adaptive API calling 5 seconds after connection
+      // ❌ DISABLED: Old adaptive API calling (replaced by buffering system)
+      // Native buffering system handles all API calls more efficiently
+      // setTimeout(() => {
+      //   this.startAdaptiveApiCalling(deviceId);
+      // }, 5000);
 
       // Start GET API calling for this device
       setTimeout(() => {
-        console.log(`📥 Starting GET API calling for device ${deviceId} after manual connection`);
         this.startGetApiCalling(deviceId);
-      }, 6000); // Start GET API calling 6 seconds after connection
+      }, 6000);
 
       // Start connection health monitoring
       this.startConnectionHealthCheck();
@@ -2069,7 +2620,6 @@ class BLEService {
       // Subscribe to disconnection to update UI promptly on out-of-range
       // Note: For native iOS implementation, disconnection is handled by native events
       // No need to set BLE-PLX onDisconnected listener since we're not using BLE-PLX
-      console.log('📱 iOS native implementation - disconnection handled by native events');
 
       if (onConnectionStateChange) {
         onConnectionStateChange(deviceId, CONNECTION_STATES.CONNECTED);
@@ -2078,7 +2628,6 @@ class BLEService {
       return connectedDevice;
 
     } catch (error) {
-      console.error('Connection error:', error);
 
       // Update device state
       const device = this.scannedDevices.get(deviceId);
@@ -2098,11 +2647,23 @@ class BLEService {
   // Disconnect from device
   async disconnectFromDevice(deviceId, onConnectionStateChange) {
     try {
-      console.log('🔌 Manual disconnect requested for device:', deviceId);
+      // ✅ INDUSTRY STANDARD: Upload any pending buffered data before disconnect
+      const buffer = this.liveDataBuffers.get(deviceId);
+      if (buffer && buffer.length > 0) {
+        console.log(`📤 [DISCONNECT] Uploading ${buffer.length} pending live records before disconnect`);
+        await this.uploadLiveBatch(deviceId);
+      }
+      
+      // Stop batch upload timer
+      this.stopBatchUploadTimer(deviceId);
+      
+      // Clear buffer state
+      this.liveDataBuffers.delete(deviceId);
+      this.lastBatchUpload.delete(deviceId);
+      this.historicalSyncComplete.delete(deviceId);
 
       let device = this.scannedDevices.get(deviceId);
       if (!device) {
-        console.warn('⚠️ Disconnect requested for device not in scanned list; proceeding with fallback');
         // Create a basic device entry so it can be tracked
         const connectedDevice = this.connectedDevices.get(deviceId);
         if (connectedDevice) {
@@ -2115,12 +2676,10 @@ class BLEService {
             isSmartTag: connectedDevice.name?.toLowerCase().includes('tag') || false
           };
           this.scannedDevices.set(deviceId, device);
-          console.log('📝 Created device entry for tracking:', device.name);
         }
       } else {
         device.connectionState = CONNECTION_STATES.DISCONNECTING;
         this.scannedDevices.set(deviceId, device);
-        console.log('📝 Updated device state to DISCONNECTING:', device.name);
       }
 
       if (onConnectionStateChange) {
@@ -2132,6 +2691,12 @@ class BLEService {
       this.stopHeartbeatMonitoring(deviceId);
       this.stopRSSIPolling(deviceId);
       this.stopAdaptiveApiCalling(deviceId);
+      
+      // Clear command sent flag to allow re-sending commands on reconnect
+      const commandKey = `commands_sent_${deviceId}`;
+      if (this[commandKey]) {
+        delete this[commandKey];
+      }
 
       // Stop connection health check if no more devices
       if (this.connectedDevices.size <= 1) { // Will be 0 after we delete this device
@@ -2144,21 +2709,15 @@ class BLEService {
       if (Platform.OS === 'android') {
         // Use native Android disconnection
         try {
-          console.log('🤖 Disconnecting via Android native bridge:', deviceId);
           await SampleBridgeAndroid.cancelConnection(deviceId);
-          console.log('✅ Disconnected from Android native side');
         } catch (e) {
-          console.warn('⚠️ Android disconnect failed:', e.message);
         }
         this.connectedDevices.delete(deviceId);
       } else {
         // iOS uses native bridge disconnection
         try {
-          console.log('📱 Disconnecting via iOS native bridge:', deviceId);
           await BridgingCodeModule.disconnectFromDevice(deviceId);
-          console.log('✅ Disconnected from iOS native side');
         } catch (e) {
-          console.warn('⚠️ iOS disconnect failed:', e.message);
         }
         this.connectedDevices.delete(deviceId);
       }
@@ -2169,11 +2728,8 @@ class BLEService {
       // Also disconnect from native iOS CoreBluetooth to ensure system Bluetooth shows disconnected
       if (Platform.OS === 'ios') {
         try {
-          console.log('🔌 Disconnecting from native iOS CoreBluetooth...');
           await AutoConnectService.disconnectFromNative(deviceId);
-          console.log('✅ Disconnected from native iOS CoreBluetooth');
         } catch (error) {
-          console.warn('⚠️ Could not disconnect from native iOS:', error.message);
         }
       }
 
@@ -2185,18 +2741,7 @@ class BLEService {
         // device.rssi is kept intact - don't clear it
         this.scannedDevices.set(deviceId, device);
         this.markDeviceKnown(deviceId);
-        console.log('✅ Manual disconnect completed for device:', device.name);
-        console.log('📊 Device state:', {
-          id: deviceId,
-          name: device.name,
-          connectionState: device.connectionState,
-          lastSeen: device.lastSeen,
-          rssi: device.rssi, // Log RSSI to confirm it's preserved
-          isSmartTag: device.isSmartTag || false
-        });
-        console.log('📱 scannedDevices now contains:', Array.from(this.scannedDevices.keys()).length, 'devices');
       } else {
-        console.log('Disconnected from device (fallback path)');
       }
 
       if (onConnectionStateChange) {
@@ -2211,80 +2756,61 @@ class BLEService {
       }
 
       // Set manual disconnect cooldown to prevent immediate auto-reconnect
-      console.log('🕒 Setting manual disconnect cooldown for device:', deviceId);
       this.manualDisconnectCooldown.set(deviceId, Date.now());
 
       // Temporarily disable auto-connect to prevent immediate reconnection
       if (Platform.OS === 'ios') {
         try {
-          console.log('⏸️ Temporarily disabling auto-connect to prevent immediate reconnection...');
           await AutoConnectService.stopAutoConnect();
-          console.log('✅ Auto-connect temporarily disabled');
 
           // Re-enable auto-connect after cooldown period
           setTimeout(async () => {
             try {
-              console.log('🔄 Re-enabling auto-connect after cooldown...');
               await AutoConnectService.startAutoConnect();
-              console.log('✅ Auto-connect re-enabled');
             } catch (error) {
-              console.warn('⚠️ Could not re-enable auto-connect:', error.message);
             }
           }, 30000); // 30 second cooldown
         } catch (error) {
-          console.warn('⚠️ Could not temporarily disable auto-connect:', error.message);
         }
       }
 
       // Clear cooldown after 30 seconds
       setTimeout(() => {
         this.manualDisconnectCooldown.delete(deviceId);
-        console.log('✅ Manual disconnect cooldown cleared for device:', deviceId);
       }, 30000);
 
       // Check if this device is bonded and auto-connect is enabled
       if (Platform.OS === 'ios') {
-        console.log('📱 iOS detected - checking auto-connect eligibility...');
 
         // Sync connection state with native iOS to fix the count mismatch
         try {
           // Use getAutoConnectStatus to trigger cleanup of stale connections
           await AutoConnectService.getAutoConnectStatus();
-          console.log('🔄 Connection state cleaned up via status refresh');
 
           // Wait a moment for the cleanup to complete
           await new Promise(resolve => setTimeout(resolve, 100));
         } catch (error) {
-          console.warn('⚠️ Could not refresh connection status:', error.message);
         }
 
         const isBonded = await this.isDeviceBonded(deviceId);
         const autoConnectStatus = await this.getAutoConnectStatus();
 
-        console.log('🔍 Device bonded status:', isBonded);
-        console.log('🔍 Auto-connect status:', autoConnectStatus);
 
         // IMPORTANT: Don't start auto-reconnection immediately after manual disconnect
         // This prevents the device from reconnecting in milliseconds
         if (isBonded && autoConnectStatus.enabled) {
-          console.log('⏸️ Device was manually disconnected - auto-connect temporarily disabled');
-          console.log('🎯 Target device ID:', deviceId);
-          console.log('⏰ Auto-connect will resume after 30 second cooldown');
 
           // Don't start exponential backoff reconnection immediately
           // The cooldown will prevent this from happening
         } else {
           if (!isBonded) {
-            console.log('⚠️ Device not bonded - no auto-connect');
           }
           if (!autoConnectStatus.enabled) {
-            console.log('⚠️ Auto-connect disabled - no auto-connect');
           }
         }
       }
 
     } catch (error) {
-      console.error('Disconnection error:', error);
       // Do not throw: avoid surfacing Device not found to UI in edge cases
       return;
     }
@@ -2304,7 +2830,6 @@ class BLEService {
     try {
       // Prevent multiple simultaneous service discovery calls
       if (this.serviceDiscoveryInProgress && this.serviceDiscoveryInProgress.has(deviceId)) {
-        console.log(`⏳ Service discovery already in progress for ${deviceId} - skipping duplicate call`);
         return;
       }
       
@@ -2316,7 +2841,6 @@ class BLEService {
       
       const connectedDevice = this.connectedDevices.get(deviceId);
       if (!connectedDevice) {
-        console.warn(`⚠️ Cannot load services - device ${deviceId} is not in connectedDevices`);
         throw new Error('Device not in connected devices map');
       }
 
@@ -2328,23 +2852,19 @@ class BLEService {
         // since we use native bridge, not BLE-PLX device objects
         const device = this.scannedDevices.get(deviceId);
         isConnected = device && device.connectionState === CONNECTION_STATES.CONNECTED;
-        console.log(`🤖 Android connection check for ${deviceId}: ${isConnected ? 'CONNECTED' : 'DISCONNECTED'}`);
       } else {
         // For iOS, check connection state from our internal state
         // since we use native bridge, not BLE-PLX device objects
         const device = this.scannedDevices.get(deviceId);
         isConnected = device && device.connectionState === CONNECTION_STATES.CONNECTED;
-        console.log(`📱 iOS connection check for ${deviceId}: ${isConnected ? 'CONNECTED' : 'DISCONNECTED'}`);
       }
 
       if (!isConnected) {
-        console.warn(`⚠️ Cannot load services - device ${deviceId} connection lost`);
         throw new Error('Device connection lost');
       }
 
       const device = this.scannedDevices.get(deviceId);
       if (!device) {
-        console.warn(`⚠️ Device ${deviceId} not found in scanned devices`);
         throw new Error('Device not found in scanned list');
       }
 
@@ -2353,12 +2873,10 @@ class BLEService {
       
       if (Platform.OS === 'android') {
         // For Android, use real native service discovery instead of mocks
-        console.log(`🤖 Android: Getting real services from native layer for ${deviceId}`);
         
         try {
           // Get real services and characteristics from Android native layer
           const serviceData = await SampleBridgeAndroid.getDeviceServices(deviceId);
-          console.log(`🤖 Android: Received service data:`, serviceData);
           
           if (serviceData && serviceData.services && Array.isArray(serviceData.services)) {
             services = serviceData.services.map(service => ({
@@ -2366,9 +2884,7 @@ class BLEService {
               isPrimary: service.isPrimary || true,
               characteristics: service.characteristics || []
             }));
-            console.log(`🤖 Android: Using ${services.length} real services from native layer`);
           } else {
-            console.warn(`🤖 Android: No service data received, falling back to essential services`);
             // Fallback to essential services if native discovery fails
             services = [
               {
@@ -2390,7 +2906,6 @@ class BLEService {
             ];
           }
         } catch (error) {
-          console.warn(`🤖 Android: Error getting real services, using fallback:`, error.message);
           // Fallback to essential services if native discovery fails
           services = [
             {
@@ -2413,7 +2928,6 @@ class BLEService {
         }
       } else {
         // For iOS, use native bridge to discover services
-        console.log(`📱 iOS: Discovering services for ${deviceId}`);
         
         // First trigger service discovery with timeout
         const discoveryPromise = BridgingCodeModule.discoverServices(deviceId);
@@ -2422,26 +2936,22 @@ class BLEService {
         );
         
         await Promise.race([discoveryPromise, timeoutPromise]);
-        console.log(`📱 iOS: Service discovery triggered for ${deviceId}`);
         
         // Wait a bit for services to be discovered (reduced timeout)
         await new Promise(resolve => setTimeout(resolve, 500));
         
         // Services and characteristics are already discovered and stored in device object
         // No need to call native methods anymore
-        console.log(`📱 iOS: Services and characteristics already discovered and stored`);
         
         // Use the services and characteristics from the device object
         if (device.services && device.services.length > 0) {
-          console.log(`📱 iOS: Using ${device.services.length} services from device object`);
           
-          // Map services with their characteristics
-          services = device.services.map(service => {
+          // Map services with their characteristics and UPDATE the device.services array
+          device.services = device.services.map(service => {
             // Find characteristics that belong to this service
             const serviceCharacteristics = device.characteristics ? 
               device.characteristics.filter(char => char.serviceUUID === service.uuid) : [];
             
-            console.log(`📱 iOS: Service ${service.uuid} has ${serviceCharacteristics.length} characteristics`);
             
             return {
               uuid: service.uuid,
@@ -2453,9 +2963,10 @@ class BLEService {
               }))
             };
           });
-          console.log(`📱 iOS: Using ${services.length} discovered services with characteristics`);
+          
+          // Also set the services variable for consistency
+          services = device.services;
         } else {
-          console.warn(`📱 iOS: No services found, using fallback`);
           // Fallback to basic structure if no services discovered
           services = [
             {
@@ -2478,10 +2989,13 @@ class BLEService {
         }
       }
 
-      device.services = [];
-      device.characteristics = [];
+      // For iOS, we already have the services properly structured above
+      // Skip the Android rebuilding logic
+      if (Platform.OS === 'android') {
+        device.services = [];
+        device.characteristics = [];
 
-      for (const service of services) {
+        for (const service of services) {
         const serviceInfo = {
           uuid: service.uuid,
           isPrimary: service.isPrimary,
@@ -2499,12 +3013,15 @@ class BLEService {
           // Get characteristics from the device's characteristics array for this service
           const device = this.scannedDevices.get(deviceId);
           if (device && device.characteristics) {
-            console.log(`🔍 Debug: Filtering characteristics for service ${service.uuid}`);
-            console.log(`🔍 Debug: Available characteristics:`, device.characteristics.map(c => ({ uuid: c.uuid, serviceUUID: c.serviceUUID })));
-            characteristics = device.characteristics.filter(c => c.serviceUUID === service.uuid);
-            console.log(`📱 iOS: Found ${characteristics.length} characteristics for service ${service.uuid}`);
+            characteristics = device.characteristics.filter(c => {
+              const cServiceUuid = c.serviceUUID.toLowerCase().replace(/-/g, '');
+              const serviceUuid = service.uuid.toLowerCase().replace(/-/g, '');
+              const matches = cServiceUuid === serviceUuid;
+              if (matches) {
+              }
+              return matches;
+            });
           } else {
-            console.warn(`📱 iOS: No characteristics found for service ${service.uuid}`);
             characteristics = [];
           }
         }
@@ -2526,13 +3043,12 @@ class BLEService {
         }
 
         device.services.push(serviceInfo);
+        }
       }
 
       this.scannedDevices.set(deviceId, device);
-      console.log(`✅ Loaded ${device.services.length} services and ${device.characteristics.length} characteristics for ${device.name}`);
 
     } catch (error) {
-      console.error('❌ Error loading services:', error);
       throw error;
     } finally {
       // Clear service discovery in progress flag
@@ -2546,7 +3062,6 @@ class BLEService {
   startMonitoring(deviceId) {
     const device = this.connectedDevices.get(deviceId);
     if (!device) {
-      console.warn(`⚠️ Cannot start monitoring - device ${deviceId} not connected`);
       return;
     }
 
@@ -2564,24 +3079,31 @@ class BLEService {
       }
       
       if (!isConnected) {
-        console.warn(`⚠️ Cannot start monitoring - device ${deviceId} connection lost`);
         return;
       }
     } catch (error) {
-      console.warn(`⚠️ Cannot check connection status for ${deviceId}:`, error.message);
       return;
     }
 
-    // Monitor device status characteristic (only if available)
-    try {
-      this.monitorCharacteristic(
-        deviceId,
-        BLE_SERVICES.SMART_TAG,
-        BLE_CHARACTERISTICS.DEVICE_STATUS,
-        (data) => this.handleDeviceStatusUpdate(deviceId, data)
-      );
-    } catch (error) {
-      console.log(`📭 Device status monitoring not available: ${error.message}`);
+    // Monitor device status characteristic (try multiple service UUIDs)
+    const smartTagServices = [BLE_SERVICES.SMART_TAG, BLE_SERVICES.SMART_TAG_ALT, BLE_SERVICES.CUSTOM_SERVICE];
+    let deviceStatusMonitored = false;
+    
+    for (const serviceUuid of smartTagServices) {
+      try {
+        this.monitorCharacteristic(
+          deviceId,
+          serviceUuid,
+          BLE_CHARACTERISTICS.DEVICE_STATUS,
+          (data) => this.handleDeviceStatusUpdate(deviceId, data)
+        );
+        deviceStatusMonitored = true;
+        break;
+      } catch (error) {
+      }
+    }
+    
+    if (!deviceStatusMonitored) {
     }
 
     // Monitor battery level (only if available)
@@ -2593,31 +3115,46 @@ class BLEService {
         (data) => this.handleBatteryUpdate(deviceId, data)
       );
     } catch (error) {
-      console.log(`📭 Battery monitoring not available: ${error.message}`);
     }
 
-    // Monitor data transfer characteristic (only if available)
-    try {
-      this.monitorCharacteristic(
-        deviceId,
-        BLE_SERVICES.SMART_TAG,
-        BLE_CHARACTERISTICS.DATA_TRANSFER,
-        (data) => this.handleDataTransfer(deviceId, data)
-      );
-    } catch (error) {
-      console.log(`📭 Data transfer monitoring not available: ${error.message}`);
+    // Monitor data transfer characteristic (try multiple service UUIDs)
+    let dataTransferMonitored = false;
+    
+    for (const serviceUuid of smartTagServices) {
+      try {
+        this.monitorCharacteristic(
+          deviceId,
+          serviceUuid,
+          BLE_CHARACTERISTICS.DATA_TRANSFER,
+          (data) => this.handleDataTransfer(deviceId, data)
+        );
+        dataTransferMonitored = true;
+        break;
+      } catch (error) {
+      }
+    }
+    
+    if (!dataTransferMonitored) {
     }
 
-    // Monitor system command responses (only if available)
-    try {
-      this.monitorCharacteristic(
-        deviceId,
-        BLE_SERVICES.SMART_TAG,
-        BLE_CHARACTERISTICS.SYSTEM_COMMAND,
-        (data) => this.handleSystemCommandResponse(deviceId, data)
-      );
-    } catch (error) {
-      console.log(`📭 System command monitoring not available: ${error.message}`);
+    // Monitor system command responses (try multiple service UUIDs)
+    let systemCommandMonitored = false;
+    
+    for (const serviceUuid of smartTagServices) {
+      try {
+        this.monitorCharacteristic(
+          deviceId,
+          serviceUuid,
+          BLE_CHARACTERISTICS.SYSTEM_COMMAND,
+          (data) => this.handleSystemCommandResponse(deviceId, data)
+        );
+        systemCommandMonitored = true;
+        break;
+      } catch (error) {
+      }
+    }
+    
+    if (!systemCommandMonitored) {
     }
   }
 
@@ -2626,13 +3163,11 @@ class BLEService {
     try {
       if (Platform.OS === 'android') {
         // Use native Android characteristic monitoring
-        console.log(`🤖 Starting Android monitoring for ${characteristicUUID}`);
         const result = await SampleBridgeAndroid.monitorCharacteristicForService(
           deviceId, 
           serviceUUID, 
           characteristicUUID
         );
-        console.log(`🤖 Android monitoring started:`, result);
         
         // Android monitoring is handled by native events
         const monitorKey = `${deviceId}-${serviceUUID}-${characteristicUUID}`;
@@ -2641,16 +3176,13 @@ class BLEService {
       }
 
       // iOS uses native bridge monitoring
-      console.log(`📱 Starting iOS monitoring for ${characteristicUUID}`);
       const result = await BridgingCodeModule.enableNotifications(deviceId, characteristicUUID);
-      console.log(`📱 iOS monitoring started:`, result);
       
       // iOS monitoring is handled by native events
       const monitorKey = `${deviceId}-${serviceUUID}-${characteristicUUID}`;
       this.monitoringSubscriptions.set(monitorKey, { remove: () => {} }); // Dummy subscription for compatibility
 
     } catch (error) {
-      console.error('Error starting monitoring:', error);
     }
   }
 
@@ -2669,49 +3201,206 @@ class BLEService {
       this.monitoringSubscriptions.delete(key);
     });
 
-    console.log(`Stopped monitoring for device ${deviceId}`);
+  }
+
+  // Track notification counts for verification
+  notificationCounts = new Map();
+  
+  // Method to get notification statistics
+  getNotificationStats(deviceId) {
+    const deviceStats = this.notificationCounts.get(deviceId) || {
+      deviceStatus: 0,
+      batteryLevel: 0,
+      dataTransfer: 0,
+      systemCommand: 0,
+      total: 0,
+      lastUpdate: null
+    };
+    
+    
+    return deviceStats;
+  }
+  
+  // Method to check all notification stats for debugging
+  getAllNotificationStats() {
+    for (const [deviceId, stats] of this.notificationCounts.entries()) {
+      const device = this.scannedDevices.get(deviceId);
+      const deviceName = device ? device.name : 'Unknown';
+    }
+  }
+  
+  // Method to fix service characteristics mapping
+  fixServiceCharacteristics(deviceId) {
+    const device = this.scannedDevices.get(deviceId);
+    if (!device) {
+      return;
+    }
+    
+    
+    if (!device.services || device.services.length === 0) {
+      return;
+    }
+    
+    if (!device.characteristics || device.characteristics.length === 0) {
+      return;
+    }
+    
+    // Fix each service by attaching its characteristics
+    device.services = device.services.map(service => {
+      const serviceCharacteristics = device.characteristics.filter(char => 
+        char.serviceUUID === service.uuid
+      );
+      
+      
+      return {
+        ...service,
+        characteristics: serviceCharacteristics.map(char => ({
+          uuid: char.uuid,
+          properties: char.properties,
+          isNotifying: char.isNotifying,
+          serviceUUID: char.serviceUUID
+        }))
+      };
+    });
+    
+    this.scannedDevices.set(deviceId, device);
+    
+    // Log the fixed structure
+    device.services.forEach(service => {
+      service.characteristics?.forEach(char => {
+      });
+    });
+  }
+
+  // Method to check current device RTC status
+  checkDeviceRTCStatus(deviceId) {
+    const device = this.scannedDevices.get(deviceId);
+    if (!device || !device.deviceData) {
+      return;
+    }
+    
+    const deviceRTC = device.deviceData.deviceRTC;
+    const lastUpdate = device.deviceData.lastUpdate;
+    const currentTime = Math.floor(Date.now() / 1000);
+    
+    
+    // Analyze the 1979 timestamp to understand device epoch
+  }
+  
+  // Method to test different timestamp formats
+  async testTimeSyncFormats(deviceId) {
+    
+    const currentTime = Math.floor(Date.now() / 1000);
+    const deviceRTC = 287454020; // Current device RTC
+    
+    // Test different epoch calculations
+    const testTimestamps = [
+      { name: 'Unix Epoch (current)', value: currentTime },
+      { name: 'Unix Epoch + 1000', value: currentTime + 1000 },
+      { name: 'Unix Epoch - 1000', value: currentTime - 1000 },
+      { name: 'Device Epoch (1979)', value: Math.floor((Date.now() - new Date('1979-01-01').getTime()) / 1000) },
+      { name: 'Milliseconds as seconds', value: Math.floor(Date.now() / 1000) },
+    ];
+    
+    for (const test of testTimestamps) {
+      
+      try {
+        const timestampBytes = [
+          test.value & 0xFF,
+          (test.value >> 8) & 0xFF,
+          (test.value >> 16) & 0xFF,
+          (test.value >> 24) & 0xFF
+        ];
+        
+        const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SET_SYSTEM_TIME, timestampBytes);
+        
+        if (result.success) {
+          // Wait and check if RTC changed
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          const device = this.scannedDevices.get(deviceId);
+          const newRTC = device?.deviceData?.deviceRTC;
+          const changed = newRTC !== deviceRTC;
+          
+          if (changed) {
+            return { success: true, format: test.name, timestamp: test.value };
+          }
+        }
+      } catch (error) {
+      }
+    }
+    
+    return { success: false };
+  }
+
+  // Method to check if notifications are active (received in last 30 seconds)
+  areNotificationsActive(deviceId) {
+    const stats = this.getNotificationStats(deviceId);
+    const now = new Date();
+    const thirtySecondsAgo = new Date(now.getTime() - 30000);
+    
+    const isActive = stats.lastUpdate && stats.lastUpdate > thirtySecondsAgo;
+    
+    
+    return isActive;
   }
 
   // Handle device status updates
-  handleDeviceStatusUpdate(deviceId, data) {
+  async handleDeviceStatusUpdate(deviceId, data) {
     try {
+      // Track notification count
+      const currentStats = this.notificationCounts.get(deviceId) || {
+        deviceStatus: 0, batteryLevel: 0, dataTransfer: 0, systemCommand: 0, total: 0, lastUpdate: null
+      };
+      currentStats.deviceStatus++;
+      currentStats.total++;
+      currentStats.lastUpdate = new Date();
+      this.notificationCounts.set(deviceId, currentStats);
+      
+      // Log every 10th notification to avoid spam
+      if (currentStats.deviceStatus % 10 === 0) {
+      }
+      
+      // Log first few notifications with detailed info
+      if (currentStats.deviceStatus <= 3) {
+      }
+      
       const device = this.scannedDevices.get(deviceId);
       if (!device) {
-        console.log(`No device found for ID: ${deviceId}`);
         return;
       }
 
-      // Only log first few notifications to avoid spam, then every 10th
-      if (!this.notificationCount) this.notificationCount = new Map();
-      const count = (this.notificationCount.get(deviceId) || 0) + 1;
-      this.notificationCount.set(deviceId, count);
 
-      if (count <= 3 || count % 10 === 0) {
-        console.log(`🔔 Device status notification #${count} for ${deviceId}${count > 3 ? ' (showing every 10th)' : ''}`);
-      }
-
-      console.log(`🔍 [DEBUG] About to parse device status data:`, {
-        dataType: typeof data,
-        dataLength: data?.length,
-        dataPreview: data?.substring(0, 50),
-        isBase64: /^[A-Za-z0-9+/]*={0,2}$/.test(data)
-      });
       
       const parsedData = BLEDataParser.parseDeviceStatus(data);
       
-      console.log(`🔍 [DEBUG] Parse result:`, {
-        parsedData: parsedData ? 'SUCCESS' : 'FAILED',
-        hasData: !!parsedData,
-        dataKeys: parsedData ? Object.keys(parsedData) : []
-      });
 
       if (parsedData) {
         // Only log parsed data for first few notifications
-        if (count <= 2) {
-          console.log(`Parsed device status for ${deviceId}:`, parsedData);
+        if (currentStats.deviceStatus <= 2) {
         }
 
         if (BLEDataParser.validateData(parsedData)) {
+          // ✅ CRITICAL: Don't overwrite synced data with stale characteristic reads!
+          // Check if incoming data is stale (before 2020) and we already have synced data
+          const incomingDate = parsedData.lastUpdate;
+          const isStaleData = incomingDate && incomingDate < new Date('2020-01-01');
+          const hasSyncedData = device.deviceData?.dataSource === 'synced';
+          
+          if (isStaleData && hasSyncedData) {
+            console.log(`⏭️ [iOS] Skipping stale read (${incomingDate.toISOString()}) - already have synced data`);
+            
+            // Only update battery level (it doesn't come from sync)
+            if (parsedData.batteryLevel !== undefined) {
+              device.deviceData.batteryLevel = parsedData.batteryLevel;
+              this.scannedDevices.set(deviceId, device);
+              
+              if (this.onDeviceListUpdated) {
+                this.onDeviceListUpdated();
+              }
+            }
+            return;
+          }
+          
           const previousData = { ...device.deviceData };
 
           // Ensure deviceData is properly initialized
@@ -2724,10 +3413,19 @@ class BLEService {
             };
           }
 
+          // Debug: Check if device RTC timestamp is changing
+          const oldDeviceRTC = device.deviceData?.deviceRTC;
+          const newDeviceRTC = parsedData.deviceRTC;
+          
+          if (oldDeviceRTC && newDeviceRTC && oldDeviceRTC !== newDeviceRTC) {
+          } else if (newDeviceRTC) {
+          }
+
           device.deviceData = {
             ...device.deviceData,
             ...parsedData,
-            lastUpdate: new Date()
+            // Use device RTC timestamp for lastUpdate if available, otherwise use current time
+            lastUpdate: parsedData.lastUpdate || new Date()
           };
 
           this.scannedDevices.set(deviceId, device);
@@ -2737,48 +3435,83 @@ class BLEService {
             previousData.temperature !== device.deviceData.temperature ||
             previousData.batteryLevel !== device.deviceData.batteryLevel;
 
-          if (dataChanged || count <= 2) {
-            console.log(`📊 Data update for ${device.name}: Steps=${device.deviceData.steps}, Temp=${device.deviceData.temperature?.toFixed(1)}°C, Battery=${device.deviceData.batteryLevel}%`);
+          if (dataChanged) {
           }
 
           // Trigger UI update callback if available and app is active
           if (this.onDeviceDataUpdated && this.appState === 'active') {
             this.onDeviceDataUpdated(deviceId, device.deviceData);
           } else if (this.onDeviceDataUpdated && this.appState !== 'active') {
-            console.log('📱 [BLEService] Skipping UI callback - app is in background');
           }
 
-          // TODO: API call commented out to prevent calling on every notification
-          // Send pet health data to server after successful data update
-          // if (device.connectionState === CONNECTION_STATES.CONNECTED) {
-          //   const connectionType = device.connectionType || 'manual';
-          //   console.log(`📤 Sending pet health data to server after ${connectionType} connection data update`);
-          //   setTimeout(() => {
-          //     this.sendPetHealthDataToServer(deviceId);
-          //   }, 1000); // Wait 1 second to ensure data is stable
-          // }
+          // ✅ INDUSTRY STANDARD: Buffer live data instead of immediate API call
+          // Only buffer if historical sync is complete (avoid buffering stale 1979 data)
+          const isHistoricalSyncComplete = this.historicalSyncComplete.get(deviceId);
+          const isLiveData = parsedData.timestamp > 1577836800; // After 2020-01-01 (valid RTC)
+          
+          if (isHistoricalSyncComplete && isLiveData) {
+            // Add to live buffer
+            this.addToLiveBuffer(deviceId, {
+              timestamp: parsedData.timestamp,
+              timestampDate: parsedData.lastUpdate,
+              steps: parsedData.steps,
+              temperature: parsedData.temperature,
+              batteryLevel: parsedData.batteryLevel
+            });
+            
+            // Check for immediate alerts (temp spike, low battery)
+            const alertSent = await this.checkImmediateAlert(deviceId, {
+              temperature: parsedData.temperature,
+              steps: parsedData.steps,
+              batteryLevel: parsedData.batteryLevel,
+              timestampDate: parsedData.lastUpdate
+            });
+            
+            if (alertSent) {
+              console.log(`🚨 Immediate alert sent for ${deviceId}`);
+            }
+            
+            // Upload batch if buffer full or time elapsed
+            if (this.shouldUploadBatch(deviceId)) {
+              console.log(`📤 [AUTO UPLOAD] Buffer conditions met, uploading batch...`);
+              await this.uploadLiveBatch(deviceId);
+            }
+          } else if (!isLiveData) {
+            console.log(`📦 [CACHED DATA] Skipping buffer - waiting for live data with 2025 timestamp`);
+          } else {
+            console.log(`⏳ [WAITING] Historical sync not complete yet, skipping buffer`);
+          }
         } else {
-          console.warn(`Invalid device status data for ${deviceId}:`, parsedData);
         }
       } else {
-        console.warn(`Failed to parse device status data for ${deviceId}`);
       }
 
     } catch (error) {
-      console.error('Error parsing device status:', error);
     }
   }
 
   // Handle battery level updates
   handleBatteryUpdate(deviceId, data) {
     try {
+      // Track notification count
+      const currentStats = this.notificationCounts.get(deviceId) || {
+        deviceStatus: 0, batteryLevel: 0, dataTransfer: 0, systemCommand: 0, total: 0, lastUpdate: null
+      };
+      currentStats.batteryLevel++;
+      currentStats.total++;
+      currentStats.lastUpdate = new Date();
+      this.notificationCounts.set(deviceId, currentStats);
+      
+      
+      // Log first few battery notifications with detailed info
+      if (currentStats.batteryLevel <= 3) {
+      }
+      
       const device = this.scannedDevices.get(deviceId);
       if (!device) {
-        console.log(`No device found for battery update: ${deviceId}`);
         return;
       }
-
-      console.log(`🔋 BATTERY NOTIFICATION! Battery data for ${deviceId}:`, data);
+      
       const batteryLevel = BLEDataParser.parseBatteryLevel(data);
 
       if (batteryLevel !== null) {
@@ -2797,17 +3530,16 @@ class BLEService {
         device.deviceData = {
           ...device.deviceData,
           batteryLevel,
-          lastUpdate: new Date()
+          // Preserve existing lastUpdate (device RTC) if available, otherwise use current time
+          lastUpdate: device.deviceData.lastUpdate || new Date()
         };
 
         this.scannedDevices.set(deviceId, device);
-        console.log(`Battery update for ${device.name}: ${previousLevel}% → ${batteryLevel}%`);
 
         // Trigger UI update callback if available and app is active
         if (this.onDeviceDataUpdated && this.appState === 'active') {
           this.onDeviceDataUpdated(deviceId, device.deviceData);
         } else if (this.onDeviceDataUpdated && this.appState !== 'active') {
-          console.log('📱 [BLEService] Skipping UI callback - app is in background');
         }
 
         // Adjust tag-specific optimizations based on tag battery level
@@ -2817,33 +3549,26 @@ class BLEService {
         // Send pet health data to server after battery update
         // if (device.connectionState === CONNECTION_STATES.CONNECTED) {
         //   const connectionType = device.connectionType || 'manual';
-        //   console.log(`📤 Sending pet health data to server after ${connectionType} connection battery update`);
         //   setTimeout(() => {
         //     this.sendPetHealthDataToServer(deviceId);
         //   }, 1000); // Wait 1 second to ensure data is stable
         // }
       } else {
-        console.warn(`Failed to parse battery level from: ${data}`);
       }
 
     } catch (error) {
-      console.error('Error parsing battery data:', error);
     }
   }
 
   // Adjust tag-specific optimizations based on tag battery level
   adjustTagOptimizationsForBattery(deviceId, batteryLevel) {
-    console.log(`🔋 Tag ${deviceId} battery: ${batteryLevel}%`);
     
     // Tag battery only affects tag-specific optimizations, not phone power profile
     if (batteryLevel <= 15) {
-      console.log(`🔋 Tag ${deviceId} battery critical - applying ultra-low power optimizations`);
       // Could implement tag-specific power saving here
     } else if (batteryLevel <= 30) {
-      console.log(`🔋 Tag ${deviceId} battery low - applying low power optimizations`);
       // Could implement tag-specific power saving here
     } else if (batteryLevel >= 80) {
-      console.log(`🔋 Tag ${deviceId} battery good - using normal optimizations`);
       // Could implement tag-specific power saving here
     }
   }
@@ -2869,7 +3594,6 @@ class BLEService {
       }, 30000); // Check every 30 seconds
       
     } catch (error) {
-      console.warn('⚠️ Could not start phone battery monitoring:', error);
       this.phoneBatteryLevel = 100; // Assume full battery
       this.setPowerProfile('default');
     }
@@ -2881,20 +3605,16 @@ class BLEService {
       // Method 1: React Native DeviceInfo (most reliable for React Native)
       try {
         const batteryLevel = await DeviceInfo.getBatteryLevel();
-        console.log('📱 Battery level:', batteryLevel); 
         const newLevel = Math.round(batteryLevel * 100);
         
         if (newLevel !== this.phoneBatteryLevel) {
           this.phoneBatteryLevel = newLevel;
           this.adjustPhonePowerProfileForBattery(this.phoneBatteryLevel);
-          console.log(`📱 Phone battery updated via DeviceInfo: ${this.phoneBatteryLevel}%`);
         }
         
-        console.log('📱 DeviceInfo battery monitoring started');
         
         return;
       } catch (e) {
-        console.log('DeviceInfo not available, trying other methods');
       }
       
       // Method 2: Battery API (web fallback)
@@ -2905,20 +3625,17 @@ class BLEService {
         if (newLevel !== this.phoneBatteryLevel) {
           this.phoneBatteryLevel = newLevel;
           this.adjustPhonePowerProfileForBattery(this.phoneBatteryLevel);
-          console.log(`📱 Phone battery updated via Battery API: ${this.phoneBatteryLevel}%`);
         }
         
         // Set up event listeners for battery changes
         battery.addEventListener('levelchange', () => {
           this.phoneBatteryLevel = Math.round(battery.level * 100);
           this.adjustPhonePowerProfileForBattery(this.phoneBatteryLevel);
-          console.log(`📱 Phone battery changed via Battery API: ${this.phoneBatteryLevel}%`);
         });
         
         battery.addEventListener('chargingchange', () => {
           this.phoneBatteryLevel = Math.round(battery.level * 100);
           this.adjustPhonePowerProfileForBattery(this.phoneBatteryLevel);
-          console.log(`📱 Phone charging state changed: ${this.phoneBatteryLevel}%`);
         });
         
         return;
@@ -2926,8 +3643,6 @@ class BLEService {
       
       // Method 3: Manual input fallback
       if (this.phoneBatteryLevel === null || this.phoneBatteryLevel === 100) {
-        console.log('⚠️ Could not detect phone battery automatically');
-        console.log('💡 Please manually set battery level or check device compatibility');
         
         // Set a reasonable default based on current power profile
         if (this.profile === POWER_PROFILE.ultraLowPower) {
@@ -2938,42 +3653,48 @@ class BLEService {
           this.phoneBatteryLevel = 80; // Assume good battery
         }
         
-        console.log(`📱 Set phone battery to estimated level: ${this.phoneBatteryLevel}%`);
       }
       
     } catch (error) {
-      console.warn('⚠️ Error detecting phone battery level:', error);
     }
   }
 
   // Adjust phone power profile based on phone battery level
   adjustPhonePowerProfileForBattery(phoneBatteryLevel) {
-    console.log(`📱 adjustPhonePowerProfileForBattery called with: ${phoneBatteryLevel}%`);
     
     let newProfile = 'default';
     
     if (phoneBatteryLevel <= 15) {
       newProfile = 'ultraLowPower';
-      console.log(`📱 Phone battery critical (≤15%) - switching to ultra-low power mode`);
     } else if (phoneBatteryLevel <= 30) {
       newProfile = 'lowPower';
-      console.log(`📱 Phone battery low (≤30%) - switching to low power mode`);
     } else if (phoneBatteryLevel >= 80) {
       newProfile = 'default';
-      console.log(`📱 Phone battery good (≥80%) - switching to default power mode`);
     }
 
-    console.log(`📱 Calculated new profile: ${newProfile}`);
+    // ✅ INDUSTRY STANDARD: Adjust batch upload frequency based on phone battery
+    if (phoneBatteryLevel <= 15) {
+      // Critical battery: Upload every 10 minutes instead of 5
+      this.liveDataConfig.uploadInterval = 600000;  // 10 minutes
+      this.liveDataConfig.bufferSize = 20;  // 20 records (10 minutes at 30s intervals)
+      console.log(`🔋 [LOW BATTERY] Reduced upload frequency: 10 minutes`);
+    } else if (phoneBatteryLevel <= 30) {
+      // Low battery: Upload every 7 minutes
+      this.liveDataConfig.uploadInterval = 420000;  // 7 minutes
+      this.liveDataConfig.bufferSize = 14;  // 14 records
+      console.log(`🔋 [LOW BATTERY] Reduced upload frequency: 7 minutes`);
+    } else {
+      // Normal battery: Upload every 5 minutes (default)
+      this.liveDataConfig.uploadInterval = 300000;  // 5 minutes
+      this.liveDataConfig.bufferSize = 10;  // 10 records
+    }
 
     // Only change if different from current profile
     const currentProfileName = this.getCurrentProfileName();
-    console.log(`📱 Current profile: ${currentProfileName}`);
     
     if (newProfile !== currentProfileName) {
-      console.log(`📱 Profile change needed: ${currentProfileName} → ${newProfile}`);
       this.setPowerProfile(newProfile);
     } else {
-      console.log(`📱 No profile change needed, already on ${currentProfileName}`);
     }
   }
 
@@ -2992,7 +3713,6 @@ class BLEService {
       this.getApiConfig.BACKGROUND_INTERVAL = 0;               // No calls when in background
       this.getApiConfig.INACTIVE_SCREEN_INTERVAL = 0;           // No calls when screen not active
       
-      console.log('⚡ POST/GET API timing updated for ultra-low power mode: 60s/240s intervals');
     } else if (profile === POWER_PROFILE.lowPower) {
       this.adaptiveApiConfig.ACTIVE_SCREEN_INTERVAL = 30000;    // 30s intervals (2x slower)
       this.adaptiveApiConfig.BACKGROUND_INTERVAL = 120000;     // 120s intervals (2x slower)
@@ -3003,7 +3723,6 @@ class BLEService {
       this.getApiConfig.BACKGROUND_INTERVAL = 0;               // No calls when in background
       this.getApiConfig.INACTIVE_SCREEN_INTERVAL = 0;           // No calls when screen not active
       
-      console.log('⚡ POST/GET API timing updated for low power mode: 30s/120s intervals');
     } else {
       this.adaptiveApiConfig.ACTIVE_SCREEN_INTERVAL = 15000;    // 15s intervals (default)
       this.adaptiveApiConfig.BACKGROUND_INTERVAL = 60000;      // 60s intervals (default)
@@ -3014,7 +3733,6 @@ class BLEService {
       this.getApiConfig.BACKGROUND_INTERVAL = 0;               // No calls when in background
       this.getApiConfig.INACTIVE_SCREEN_INTERVAL = 0;           // No calls when screen not active
       
-      console.log('⚡ POST/GET API timing updated for default power mode: 15s/60s intervals');
     }
   }
 
@@ -3029,73 +3747,245 @@ class BLEService {
 
 
 
-  // Handle data transfer
+  // Handle data transfer (SDD Table 13 - Data Transfer Characteristic)
   handleDataTransfer(deviceId, data) {
     try {
+      
       const parsedTransfer = BLEDataParser.parseDataTransfer(data);
 
-      if (parsedTransfer) {
-        console.log(`Data transfer for ${deviceId}:`, parsedTransfer);
+      if (!parsedTransfer) {
+        return;
+      }
 
-        // Handle different transfer types
-        switch (parsedTransfer.type) {
-          case 'sync_start':
-            console.log(`Data sync started for device ${deviceId}, total records: ${parsedTransfer.totalRecords}`);
-            break;
-          case 'sync_complete':
-            console.log(`Data sync completed for device ${deviceId}, success: ${parsedTransfer.success}`);
-            break;
-          case 'record':
-            console.log(`Received data record for device ${deviceId}:`, parsedTransfer);
-            // Store record data if needed
-            break;
-          case 'read_error':
-            console.log(`Data read error for device ${deviceId}, error code: ${parsedTransfer.errorCode}`);
-            break;
-          default:
-            console.log(`Unknown data transfer type for device ${deviceId}:`, parsedTransfer);
-        }
+      // Handle different transfer types according to SDD
+      switch (parsedTransfer.typeString) {
+        case 'sync_start':
+          this.handleSyncStart(deviceId, parsedTransfer);
+          break;
+          
+        case 'sync_complete':
+          this.handleSyncComplete(deviceId, parsedTransfer);
+          break;
+          
+        case 'record':
+          this.handleDataRecord(deviceId, parsedTransfer);
+          break;
+          
+        case 'read_error':
+          this.handleReadError(deviceId, parsedTransfer);
+          break;
+          
+        default:
       }
 
     } catch (error) {
-      console.error('Error handling data transfer:', error);
     }
+  }
+
+  // Handle sync start (SDD: 0x01 - Data Sync Start)
+  handleSyncStart(deviceId, parsedTransfer) {
+    
+    // Check if data is corrupted
+    if (parsedTransfer.corrupted) {
+      return; // Don't proceed with sync if data is corrupted
+    }
+    
+    const syncState = this.dataSyncStates?.get(deviceId);
+    if (syncState) {
+      syncState.totalRecords = parsedTransfer.totalRecords;
+      syncState.recordsReceived = 0;
+      syncState.lastActivity = Date.now();
+    } else {
+      // Create sync state if it doesn't exist
+      if (!this.dataSyncStates) {
+        this.dataSyncStates = new Map();
+      }
+      this.dataSyncStates.set(deviceId, {
+        isActive: true,
+        startTime: Date.now(),
+        recordsReceived: 0,
+        totalRecords: parsedTransfer.totalRecords,
+        lastActivity: Date.now()
+      });
+    }
+    
+    // Emit sync start event for UI
+    this.emit('dataSyncStart', {
+      deviceId,
+      totalRecords: parsedTransfer.totalRecords
+    });
+  }
+
+  // Handle sync complete (SDD: 0x02 - Data Sync Complete)
+  async handleSyncComplete(deviceId, parsedTransfer) {
+    const syncState = this.dataSyncStates?.get(deviceId);
+    
+    if (parsedTransfer.success) {
+      
+      // ✅ UPDATE UI WITH LATEST SYNCED DATA
+      // This ensures UI shows the most recent data from flash, not stale Device Status notifications
+      const updated = this.updateDeviceDataFromSyncedRecords(deviceId);
+      
+      if (updated) {
+        const latestRecord = this.getLatestSyncedRecord(deviceId);
+        const device = this.scannedDevices.get(deviceId);
+        
+        // Emit event for UI refresh with synced data
+        this.emit('syncDataUpdated', {
+          deviceId,
+          latestRecord,
+          totalRecords: device?.syncRecords?.length || 0,
+          deviceData: device?.deviceData
+        });
+      }
+      
+      // NOTE: Native iOS now automatically sends DATA_SYNC_STOP (0x09) with Clear Flash flag
+      // No need to send it from JS - this prevents duplicate commands
+      // The native implementation waits 1 second after sync complete, then sends cleanup command
+      
+    } else {
+      
+      // Native will send DATA_SYNC_STOP without clearing flash
+      // No action needed from JS side
+    }
+    
+    // Clean up sync state
+    if (this.dataSyncStates) {
+      this.dataSyncStates.delete(deviceId);
+    }
+  }
+
+  // Handle data record (SDD: 0x03 - Record Data)
+  handleDataRecord(deviceId, parsedTransfer) {
+    const syncState = this.dataSyncStates?.get(deviceId);
+    if (syncState) {
+      // Update with actual number of records received in this packet
+      const recordsInPacket = parsedTransfer.recordCount || 0;
+      syncState.recordsReceived += recordsInPacket;
+      syncState.lastActivity = Date.now();
+    }
+
+    // Store or process the received records
+    if (parsedTransfer.records && parsedTransfer.records.length > 0) {
+      
+      // Store records to device data and emit event for UI updates
+      const device = this.getDevice(deviceId);
+      if (device) {
+        if (!device.syncRecords) {
+          device.syncRecords = [];
+        }
+        
+        // Add new records to device data
+        let validCount = 0;
+        let invalidCount = 0;
+        
+        parsedTransfer.records.forEach((record, index) => {
+          // ✅ FIX: Filter out invalid zero/padding records (same as line 6222)
+          const isValidRecord = (
+            record.steps > 0 ||  // Has meaningful steps
+            record.temperature > 0 ||  // Has meaningful temperature
+            (record.timestamp && record.timestamp > 1577836800)  // Has valid timestamp (after 2020)
+          );
+          
+          if (!isValidRecord) {
+            invalidCount++;
+            return;  // Skip padding records
+          }
+          
+          validCount++;
+          // Add to device records
+          device.syncRecords.push({
+            ...record,
+            receivedAt: new Date(),
+            deviceId
+          });
+        });
+        
+        if (invalidCount > 0) {
+          console.log(`🗑️ [FILTER] Removed ${invalidCount} padding records, kept ${validCount} valid records`);
+        }
+        
+        // Emit data update event for UI
+        this.emit('deviceDataUpdate', {
+          deviceId,
+          type: 'sync_records',
+          records: parsedTransfer.records,
+          totalRecords: device.syncRecords.length
+        });
+      }
+    }
+  }
+
+  // Handle read error (SDD: 0x04 - Data Read Error)
+  handleReadError(deviceId, parsedTransfer) {
+    
+    // Stop sync on read error
+    setTimeout(async () => {
+      try {
+        await this.stopDataSync(deviceId, false); // clearFlash = false
+      } catch (error) {
+      }
+    }, 1000);
+  }
+
+  // Update data sync state
+  updateDataSyncState(deviceId, parsedTransfer) {
+    if (!this.dataSyncStates) {
+      this.dataSyncStates = new Map();
+    }
+    
+    let syncState = this.dataSyncStates.get(deviceId);
+    if (!syncState) {
+      syncState = {
+        isActive: true,
+        startTime: Date.now(),
+        recordsReceived: 0,
+        totalRecords: null,
+        lastActivity: Date.now()
+      };
+      this.dataSyncStates.set(deviceId, syncState);
+    }
+    
+    syncState.lastActivity = Date.now();
   }
 
   // Handle system command responses
   handleSystemCommandResponse(deviceId, data) {
     try {
+      
       const response = BLEDataParser.parseSystemCommandResponse(data);
+      const commandName = this.getCommandName(response?.command);
 
       if (response && response.sddCompliant) {
-        console.log(`System command response for device ${deviceId}:`, response);
 
         if (response.success) {
-          console.log(`Command 0x${response.command.toString(16)} executed successfully`);
 
           // Handle specific command responses
           switch (response.command) {
+            case SYSTEM_COMMAND_CONSTANTS.CMD.SET_SYSTEM_TIME:
+              break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION:
-              console.log('Firmware version response:', response.data?.version || 'Unknown');
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION:
-              console.log('Hardware version response:', response.data?.version || 'Unknown');
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS:
-              console.log('Diagnostics response:', response.data?.diagnostics || 'Unknown');
+              break;
+            case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START:
+              break;
+            case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_STOP:
+              break;
+            case SYSTEM_COMMAND_CONSTANTS.CMD.SYSTEM_RESTART:
+              break;
+            case SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER:
               break;
             default:
-              console.log(`Response for command 0x${response.command.toString(16)}:`, response.data);
           }
         } else {
-          console.warn(`Command 0x${response.command.toString(16)} failed with status: ${response.statusText}`);
         }
       } else {
-        console.warn(`Invalid or non-SDD compliant system command response for device ${deviceId}`);
       }
 
     } catch (error) {
-      console.error('Error handling system command response:', error);
     }
   }
 
@@ -3112,17 +4002,23 @@ class BLEService {
           );
           return result;
         } else {
-          // iOS uses native bridge characteristic reading
-          const result = await BridgingCodeModule.readCharacteristic(deviceId, characteristicUUID);
+          // iOS uses native bridge characteristic reading with timeout
+          const readPromise = BridgingCodeModule.readCharacteristic(deviceId, characteristicUUID);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Characteristic read timeout after 5 seconds')), 5000)
+          );
+          
+          const result = await Promise.race([readPromise, timeoutPromise]);
           return result.data;
         }
       }));
     } catch (error) {
       if (error.message && error.message.includes('not found')) {
-        console.log(`📭 Characteristic ${characteristicUUID} not available on device`);
         return null;
       }
-      console.error('Error reading characteristic:', error);
+      if (error.message && error.message.includes('timeout')) {
+        return null;
+      }
       throw error;
     }
   }
@@ -3148,15 +4044,12 @@ class BLEService {
             .map(byte => byte.toString(16).padStart(2, '0'))
             .join('');
           
-          console.log(`🤖 Writing to characteristic ${characteristicUUID} via Android`);
-          console.log(`📦 Data length: ${dataToSend.length}, Hex: ${hexData}`);
           
           await SampleBridgeAndroid.writeCharacteristic(
             deviceId, 
             characteristicUUID, 
             hexData
           );
-          console.log(`🤖 Wrote to characteristic ${characteristicUUID} via Android`);
           return true;
         } else {
           // iOS uses native bridge characteristic writing
@@ -3175,119 +4068,564 @@ class BLEService {
             .map(byte => byte.toString(16).padStart(2, '0'))
             .join('');
           
-          console.log(`📱 Writing to characteristic ${characteristicUUID} via iOS native bridge`);
-          console.log(`📦 Data length: ${dataToSend.length}, Hex: ${hexData}`);
 
-          await BridgingCodeModule.writeCharacteristic(deviceId, characteristicUUID, hexData);
-          console.log(`📱 Wrote to characteristic ${characteristicUUID} via iOS native bridge`);
+          // iOS uses native bridge characteristic writing with timeout
+          const writePromise = BridgingCodeModule.writeCharacteristic(deviceId, characteristicUUID, hexData);
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Characteristic write timeout after 5 seconds')), 5000)
+          );
+          
+          await Promise.race([writePromise, timeoutPromise]);
           return true;
         }
       }));
     } catch (error) {
-      console.error('Error writing characteristic:', error);
+      if (error.message && error.message.includes('timeout')) {
+        throw new Error(`Write timeout for characteristic ${characteristicUUID}`);
+      }
       throw error;
     }
   }
 
-  // Send system command (SDD compliant format)
+  /**
+   * Sync device time with current system time
+   * @param {string} deviceId - Device ID
+   * @returns {Promise<Object>} Sync result
+   */
+  async syncDeviceTime(deviceId) {
+    try {
+      
+      // Get current Unix timestamp (seconds)
+      const currentTime = Math.floor(Date.now() / 1000);
+      
+      // Send SET_SYSTEM_TIME command (0x01) with 4-byte timestamp
+      const timestampBytes = [
+        currentTime & 0xFF,           // LSB
+        (currentTime >> 8) & 0xFF,
+        (currentTime >> 16) & 0xFF,
+        (currentTime >> 24) & 0xFF    // MSB
+      ];
+      
+      
+      const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SET_SYSTEM_TIME, timestampBytes);
+      
+      if (result.success) {
+        
+        // Wait a moment for the device to process the time sync
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Increased wait time
+        
+        // Try to trigger a device status update to verify the time was set
+        try {
+          const deviceStatusData = await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DEVICE_STATUS);
+          
+          if (deviceStatusData) {
+            const parsedData = BLEDataParser.parseDeviceStatus(deviceStatusData);
+            
+            if (parsedData && parsedData.timestamp) {
+              const deviceTime = Math.floor(parsedData.timestamp.getTime() / 1000);
+              const systemTime = Math.floor(Date.now() / 1000);
+              const timeDiff = Math.abs(deviceTime - systemTime);
+              
+              
+              if (timeDiff < 60) { // Within 1 minute
+              } else {
+              }
+            }
+          }
+        } catch (error) {
+        }
+      } else {
+      }
+      
+      return result;
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Manual time sync - can be called from UI
+   * @param {string} deviceId - Device ID
+   * @param {number} delayMs - Delay before sending command (default: 0)
+   * @returns {Promise<Object>} Sync result
+   */
+  async manualTimeSync(deviceId, delayMs = 0) {
+    
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+    
+    return await this.syncDeviceTime(deviceId);
+  }
+
+  // Check if device is bonded/paired securely
+  async checkBondingStatus(deviceId) {
+    try {
+      
+      if (Platform.OS === 'android' && SampleBridgeAndroid) {
+        // Use Android native bridge to check bonding status
+        const isBonded = await SampleBridgeAndroid.isDeviceBonded(deviceId);
+        return isBonded;
+      } else if (Platform.OS === 'ios') {
+        // iOS bonding check would go here
+        return false;
+      }
+      
+      return false;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Initiate secure pairing with device
+  async initiateSecurePairing(deviceId) {
+    try {
+      
+      if (Platform.OS === 'android' && SampleBridgeAndroid) {
+        // Use Android native bridge to initiate secure pairing
+        const pairingResult = await SampleBridgeAndroid.initiateSecurePairing(deviceId);
+        return { success: pairingResult, error: null };
+      } else if (Platform.OS === 'ios') {
+        // iOS secure pairing would go here
+        return { success: false, error: 'iOS secure pairing not implemented' };
+      }
+      
+      return { success: false, error: 'Platform not supported' };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // ✅ REMOVED: Duplicate complex startDataSync() and stopDataSync()
+  // Native code now handles data sync automatically via startCommandSequence
+  // Simple wrapper methods available below at line ~4458
+
+  // ✅ REMOVED: setupDataTransferMonitoring() and cleanupDataTransferMonitoring()
+  // Native code handles notification setup automatically during service discovery
+
+  // Get sync records from device
+  getSyncRecords(deviceId) {
+    const device = this.getDevice(deviceId);
+    if (device && device.syncRecords) {
+      return device.syncRecords;
+    }
+    return [];
+  }
+
+  // ✅ NEW: Get LATEST synced record (most recent timestamp)
+  getLatestSyncedRecord(deviceId) {
+    const records = this.getSyncRecords(deviceId);
+    if (!records || records.length === 0) {
+      return null;
+    }
+    
+    // Find record with most recent timestamp
+    const latestRecord = records.reduce((latest, current) => {
+      if (!latest) return current;
+      
+      // Compare timestamps (both should be Date objects or Unix seconds)
+      const latestTime = latest.timestamp instanceof Date ? latest.timestamp.getTime() : latest.timestamp * 1000;
+      const currentTime = current.timestamp instanceof Date ? current.timestamp.getTime() : current.timestamp * 1000;
+      
+      return currentTime > latestTime ? current : latest;
+    }, null);
+    
+    return latestRecord;
+  }
+
+  // ✅ NEW: Update device's live data with latest synced record
+  updateDeviceDataFromSyncedRecords(deviceId) {
+    console.log(`💾 [SYNC COMPLETE] Updating UI for ${deviceId} with latest synced data`);
+    
+    const latestRecord = this.getLatestSyncedRecord(deviceId);
+    if (!latestRecord) {
+      console.log(`⚠️ [SYNC COMPLETE] No latest record found for ${deviceId}`);
+      return false;
+    }
+    
+    const device = this.scannedDevices.get(deviceId);
+    if (!device) {
+      console.log(`⚠️ [SYNC COMPLETE] Device not found: ${deviceId}`);
+      return false;
+    }
+    
+    // ✅ NEW: Calculate total steps from all synced records
+    const totalSteps = (device.syncRecords || []).reduce((sum, record) => {
+      return sum + (record.steps || 0);
+    }, 0);
+    
+    const recordCount = device.syncRecords?.length || 0;
+    
+    console.log(`📊 [SYNC COMPLETE] Latest record:`, {
+      timestamp: latestRecord.timestamp,
+      timestampDate: latestRecord.timestampDate,
+      steps: latestRecord.steps,
+      temperature: latestRecord.temperature
+    });
+    
+    console.log(`📊 [SYNC COMPLETE] Total from ${recordCount} records: ${totalSteps} steps`);
+    
+    // Update device data with latest synced values
+    if (!device.deviceData) {
+      device.deviceData = {};
+    }
+    
+    // ✅ CRITICAL FIX: Ensure timestamp is ALWAYS a proper Date object
+    // latestRecord.timestamp is Unix SECONDS
+    // latestRecord.timestampDate is already a Date object (if available)
+    let syncedDate;
+    if (latestRecord.timestampDate && latestRecord.timestampDate instanceof Date) {
+      syncedDate = latestRecord.timestampDate;
+    } else if (typeof latestRecord.timestamp === 'number') {
+      // Convert Unix seconds to milliseconds
+      syncedDate = new Date(latestRecord.timestamp * 1000);
+    } else {
+      syncedDate = new Date(); // Fallback to now
+    }
+    
+    console.log(`📅 [SYNC COMPLETE] Synced date: ${syncedDate.toISOString()}`);
+    
+    // Use synced data to update current device state
+    device.deviceData = {
+      ...device.deviceData,
+      temperature: latestRecord.temperature || device.deviceData.temperature,
+      steps: latestRecord.steps || device.deviceData.steps,
+      totalSteps: totalSteps, // ✅ NEW: Total steps from all historical records
+      recordCount: recordCount, // ✅ NEW: Number of historical records
+      // ✅ ONLY store Date object, remove raw timestamp to avoid confusion
+      lastUpdate: syncedDate,
+      // Mark that this data came from sync, not live notifications
+      dataSource: 'synced',
+      syncedAt: new Date()
+    };
+    
+    console.log(`💾 [SYNC COMPLETE] Updated device data:`, {
+      temperature: device.deviceData.temperature,
+      steps: device.deviceData.steps,
+      totalSteps: device.deviceData.totalSteps,
+      recordCount: device.deviceData.recordCount,
+      lastUpdate: device.deviceData.lastUpdate
+    });
+    
+    this.scannedDevices.set(deviceId, device);
+    
+    // Trigger UI update
+    if (this.onDeviceDataUpdated && this.appState === 'active') {
+      this.onDeviceDataUpdated(deviceId, device.deviceData);
+    }
+    
+    // ✅ CRITICAL: Also trigger device list update for UI refresh
+    if (this.onDeviceListUpdated) {
+      this.onDeviceListUpdated();
+    }
+    
+    return true;
+  }
+
+  // Clear sync records from device
+  clearSyncRecords(deviceId) {
+    const device = this.getDevice(deviceId);
+    if (device) {
+      device.syncRecords = [];
+    }
+  }
+
+  // Get sync status for device
+  getSyncStatus(deviceId) {
+    const syncState = this.dataSyncStates?.get(deviceId);
+    const device = this.getDevice(deviceId);
+    const latestRecord = this.getLatestSyncedRecord(deviceId);
+    
+    return {
+      isActive: syncState?.isActive || false,
+      recordsReceived: syncState?.recordsReceived || 0,
+      totalRecords: syncState?.totalRecords || null,
+      startTime: syncState?.startTime || null,
+      lastActivity: syncState?.lastActivity || null,
+      notificationsEnabled: syncState?.notificationsEnabled || false,
+      storedRecords: device?.syncRecords?.length || 0,
+      latestRecordTimestamp: latestRecord?.timestamp || null,
+      latestRecordDate: latestRecord?.timestampDate || null
+    };
+  }
+
+  // ✅ REMOVED: Legacy manual sync methods - native code handles everything automatically
+  // Removed: triggerManualDataSync(), forceProperDataSync(), 
+  //          setupDataTransferMonitoring(), cleanupDataTransferMonitoring()
+  // Reason: Native code (iOS/Android) handles all data sync and notifications automatically
+  
+  // Verify data clearing and fresh data collection
+  async verifyDataClearingAndFreshData(deviceId) {
+    try {
+      
+      const verificationResults = {
+        dataCleared: false,
+        freshDataDetected: false,
+        notificationsActive: false,
+        dataSyncStatus: null,
+        lastDataTimestamp: null,
+        verificationTime: Date.now()
+      };
+
+      // 1. Check if data sync is active and get sync status
+      const syncState = this.dataSyncStates?.get(deviceId);
+      if (syncState) {
+        verificationResults.dataSyncStatus = {
+          isActive: syncState.isActive,
+          recordsReceived: syncState.recordsReceived,
+          totalRecords: syncState.totalRecords,
+          duration: Date.now() - syncState.startTime
+        };
+      }
+
+      // 2. Read current device status to check for fresh data
+      try {
+        const deviceStatusData = await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DEVICE_STATUS);
+        
+        if (deviceStatusData) {
+          // Parse the device status to get timestamp
+          const parsedData = BLEDataParser.parseDeviceStatus(deviceStatusData);
+          if (parsedData && parsedData.timestamp) {
+            verificationResults.lastDataTimestamp = parsedData.timestamp;
+            const timeDiff = Date.now() - (parsedData.timestamp.unix * 1000);
+            
+            // Consider data "fresh" if it's within the last 2 minutes (after clearing)
+            verificationResults.freshDataDetected = timeDiff < 120000; // 2 minutes
+            verificationResults.dataCleared = timeDiff < 300000; // 5 minutes
+          }
+        }
+      } catch (error) {
+      }
+
+      // 3. Check if notifications are active by reading battery level (which should trigger notifications)
+      try {
+        const batteryData = await this.readCharacteristic(deviceId, BLE_SERVICES.BATTERY, BLE_CHARACTERISTICS.BATTERY_LEVEL);
+        
+        if (batteryData) {
+          // If we can read battery data, notifications are likely working
+          verificationResults.notificationsActive = true;
+        }
+      } catch (error) {
+      }
+
+      // 4. Check monitoring subscriptions
+      const monitoringSub = this.monitoringSubscriptions.get(deviceId);
+      if (monitoringSub) {
+        verificationResults.notificationsActive = verificationResults.notificationsActive || (monitoringSub.characteristics?.length > 0);
+      }
+
+      // 5. Log verification results
+
+      return verificationResults;
+    } catch (error) {
+      return {
+        dataCleared: false,
+        freshDataDetected: false,
+        notificationsActive: false,
+        error: error.message,
+        verificationTime: Date.now()
+      };
+    }
+  }
+
+  // Helper function to get command name for logging
+  getCommandName(command) {
+    const commandNames = {
+      0x01: 'Set System Time',
+      0x02: 'Set Advertising Interval', 
+      0x03: 'Set Connection Interval',
+      0x04: 'Set Data Interval',
+      0x05: 'Get Firmware Version',
+      0x06: 'Get Hardware Version',
+      0x07: 'Get Diagnostics',
+      0x08: 'Data Sync Start',
+      0x09: 'Data Sync Stop',
+      0x10: 'System Restart',
+      0x11: 'Toggle Buzzer'
+    };
+    return commandNames[command] || `Unknown Command (0x${command.toString(16)})`;
+  }
+
+  // Send system command (SDD compliant format)  
   async sendSystemCommand(deviceId, command, payload = [], options = {}) {
     // Declare variables outside try block to avoid scope issues
     let payloadToSend = [];
     let smartTagService = null;
     let sysCmdChar = null;
     
+    const commandName = this.getCommandName(command);
+    const startTime = Date.now();
+    
     try {
-      console.log(`🔧 Attempting to send system command 0x${command.toString(16)} to device ${deviceId}`);
 
       // Ensure device is connected
       const device = this.connectedDevices.get(deviceId);
+      
       if (!device) {
-        console.log('❌ Device not connected for system command');
         return { success: false, error: 'Device not connected' };
       }
 
-      console.log('🔍 Checking for SMART_TAG service and SYSTEM_COMMAND characteristic...');
 
       if (Platform.OS === 'android') {
         // For Android, check the device's services and characteristics arrays
         const scannedDevice = this.scannedDevices.get(deviceId);
         if (!scannedDevice || !scannedDevice.services || !scannedDevice.characteristics) {
-          console.log('📭 Device services/characteristics not available - skipping system command');
           return { success: false, error: 'Device services/characteristics not available' };
         }
 
-        console.log('📋 Available services:', scannedDevice.services.map(s => s.uuid));
         
-        // Find SMART_TAG service - use exact UUID matching
-        smartTagService = scannedDevice.services.find(s => s.uuid === BLE_SERVICES.SMART_TAG);
+        // Find SMART_TAG service - prioritize the correct service UUID first
+        smartTagService = scannedDevice.services.find(s => {
+          const serviceUuid = s.uuid.toLowerCase().replace(/-/g, '');
+          return serviceUuid === BLE_SERVICES.SMART_TAG.toLowerCase().replace(/-/g, '') ||
+                 serviceUuid === BLE_SERVICES.SMART_TAG_ALT.toLowerCase().replace(/-/g, '');
+          // Removed CUSTOM_SERVICE from priority list as it's causing incorrect service selection
+        });
+        
+        
+        // If SMART_TAG service not found, try to find any service that contains the SYSTEM_COMMAND characteristic
         if (!smartTagService) {
-          console.log('📭 SMART_TAG service not available on device - skipping system command');
-          console.log('📋 Available services:', scannedDevice.services.map(s => s.uuid));
-          return { success: false, error: 'SMART_TAG service not available' };
+          
+          // Look for SYSTEM_COMMAND characteristic in any service
+          sysCmdChar = scannedDevice.characteristics.find(c => 
+            c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '')
+          );
+          
+          if (sysCmdChar) {
+            // Find the service that contains this characteristic
+            smartTagService = scannedDevice.services.find(s => 
+              s.uuid.toLowerCase().replace(/-/g, '') === sysCmdChar.serviceUUID.toLowerCase().replace(/-/g, '')
+            );
+          }
+        } else {
+          
+          // Find all characteristics in the SMART_TAG service using normalized UUID comparison
+          let smartTagCharacteristics = scannedDevice.characteristics.filter(c => 
+            c.serviceUUID.toLowerCase().replace(/-/g, '') === smartTagService.uuid.toLowerCase().replace(/-/g, '')
+          );
+          
+          // Find SYSTEM_COMMAND characteristic - use case-insensitive UUID matching
+          sysCmdChar = scannedDevice.characteristics.find(c => 
+            c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '') &&
+            c.serviceUUID.toLowerCase().replace(/-/g, '') === smartTagService.uuid.toLowerCase().replace(/-/g, '')
+          );
+          
+          if (sysCmdChar) {
+          } else {
+            // Debug: Check if the characteristic exists anywhere
+            let allSystemCommandChars = scannedDevice.characteristics.filter(c => 
+              c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '')
+            );
+          }
         }
-
-        console.log('📋 SMART_TAG service characteristics:', scannedDevice.characteristics.filter(c => c.serviceUUID === smartTagService.uuid).map(c => c.uuid));
         
-        // Find SYSTEM_COMMAND characteristic - use exact UUID matching
-        sysCmdChar = scannedDevice.characteristics.find(c => 
-          c.uuid === BLE_CHARACTERISTICS.SYSTEM_COMMAND &&
-          c.serviceUUID === smartTagService.uuid
-        );
-        if (!sysCmdChar) {
-          console.log('📭 SYSTEM_COMMAND characteristic not available on device - skipping system command');
-          console.log('📋 Available characteristics:', scannedDevice.characteristics.map(c => c.uuid));
+        if (!smartTagService || !sysCmdChar) {
           return { success: false, error: 'SYSTEM_COMMAND characteristic not available' };
         }
       } else {
         // iOS uses native bridge methods
         const scannedDevice = this.scannedDevices.get(deviceId);
         if (!scannedDevice || !scannedDevice.services) {
-          console.log('📭 Device services not available - skipping system command');
           return { success: false, error: 'Device services not available' };
         }
 
-        console.log('📋 Available services:', scannedDevice.services.map(s => s.uuid));
         
-        // Find SMART_TAG service - use exact UUID matching
-        smartTagService = scannedDevice.services.find(s => s.uuid === BLE_SERVICES.SMART_TAG);
+        // Find SMART_TAG service - prioritize the correct service UUID first
+        smartTagService = scannedDevice.services.find(s => {
+          const serviceUuid = s.uuid.toLowerCase().replace(/-/g, '');
+          return serviceUuid === BLE_SERVICES.SMART_TAG.toLowerCase().replace(/-/g, '') ||
+                 serviceUuid === BLE_SERVICES.SMART_TAG_ALT.toLowerCase().replace(/-/g, '');
+          // Removed CUSTOM_SERVICE from priority list as it's causing incorrect service selection
+        });
+        
+        
+        // If SMART_TAG service not found, try to find any service that contains the SYSTEM_COMMAND characteristic
         if (!smartTagService) {
-          console.log('📭 SMART_TAG service not available on device - skipping system command');
-          console.log('📋 Available services:', scannedDevice.services.map(s => s.uuid));
-          return { success: false, error: 'SMART_TAG service not available' };
+          
+          // Look for SYSTEM_COMMAND characteristic in any service
+          sysCmdChar = scannedDevice.characteristics.find(c => 
+            c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '')
+          );
+          
+          if (sysCmdChar) {
+            // Find the service that contains this characteristic
+            smartTagService = scannedDevice.services.find(s => 
+              s.uuid.toLowerCase().replace(/-/g, '') === sysCmdChar.serviceUUID.toLowerCase().replace(/-/g, '')
+            );
+          }
+        } else {
+          
+          // Find all characteristics in the SMART_TAG service using normalized UUID comparison
+          let smartTagCharacteristics = scannedDevice.characteristics.filter(c => 
+            c.serviceUUID.toLowerCase().replace(/-/g, '') === smartTagService.uuid.toLowerCase().replace(/-/g, '')
+          );
+          
+          // Find SYSTEM_COMMAND characteristic - use case-insensitive UUID matching
+          sysCmdChar = scannedDevice.characteristics.find(c => 
+            c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '') &&
+            c.serviceUUID.toLowerCase().replace(/-/g, '') === smartTagService.uuid.toLowerCase().replace(/-/g, '')
+          );
+          
+          if (sysCmdChar) {
+          } else {
+            // Debug: Check if the characteristic exists anywhere
+            let allSystemCommandChars = scannedDevice.characteristics.filter(c => 
+              c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '')
+            );
+          }
         }
-
-        console.log('📋 SMART_TAG service characteristics:', scannedDevice.characteristics.filter(c => c.serviceUUID === smartTagService.uuid).map(c => c.uuid));
         
-        // Find SYSTEM_COMMAND characteristic - use exact UUID matching
-        sysCmdChar = scannedDevice.characteristics.find(c => 
-          c.uuid === BLE_CHARACTERISTICS.SYSTEM_COMMAND &&
-          c.serviceUUID === smartTagService.uuid
-        );
-        if (!sysCmdChar) {
-          console.log('📭 SYSTEM_COMMAND characteristic not available on device - skipping system command');
-          console.log('📋 Available characteristics:', scannedDevice.characteristics.map(c => c.uuid));
+        if (!smartTagService || !sysCmdChar) {
           return { success: false, error: 'SYSTEM_COMMAND characteristic not available' };
         }
       }
 
-      console.log('✅ SYSTEM_COMMAND characteristic found, proceeding with command');
+      
+      // Debug characteristic properties
+      
+      // If device doesn't support writes, skip system commands
+      if (!sysCmdChar.isWritable && !sysCmdChar.isWritableWithResponse && !sysCmdChar.isWritableWithoutResponse) {
+        return { success: false, error: 'System Command characteristic not writable' };
+      }
+      
+      // Log write capability analysis
+      
+      // According to SDD: Enable notifications BEFORE sending system commands
+      // Device needs to know where to send responses (Device Status or Data Transfer)
+      try {
+        // Safely check characteristics array (use device.characteristics which is properly populated)
+        const device = this.scannedDevices.get(deviceId);
+        if (device && device.characteristics && Array.isArray(device.characteristics)) {
+          // Check if Device Status notifications are enabled
+          const deviceStatusChar = device.characteristics.find(c => 
+            c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.DEVICE_STATUS.toLowerCase().replace(/-/g, '')
+          );
+          if (deviceStatusChar && (deviceStatusChar.isNotifying || deviceStatusChar.isNotifiable)) {
+          } else {
+          }
+          
+          // Check if Data Transfer notifications are enabled  
+          const dataTransferChar = device.characteristics.find(c => 
+            c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.DATA_TRANSFER.toLowerCase().replace(/-/g, '')
+          );
+          if (dataTransferChar && (dataTransferChar.isNotifying || dataTransferChar.isNotifiable)) {
+          } else {
+          }
+        } else {
+        }
+        
+      } catch (error) {
+      }
 
       const packet = new Array(SYSTEM_COMMAND_CONSTANTS.PACKET_SIZE).fill(0);
 
-      // Some commands in the SDD specify "Length: 1, Data: No Data (0x00)".
-      // If caller passed no payload for such commands, auto-fill a single 0x00 byte.
-      const commandsRequiringZeroByte = new Set([
-        SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION,
-        SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION,
-        SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS,
-        SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START,
-        SYSTEM_COMMAND_CONSTANTS.CMD.SYSTEM_RESTART,
-      ]);
+      // According to SDD: Most commands have no payload unless specified
+      // Only specific commands like SET_SYSTEM_TIME (0x01) need payload
+      // For commands with no payload, don't add any bytes - just padding
+      
+      // Only add payload if explicitly provided
       payloadToSend = (Array.isArray(payload) ? payload : [])
         .slice(0); // shallow copy
-      if (payloadToSend.length === 0 && commandsRequiringZeroByte.has(command)) {
-        payloadToSend.push(0x00);
-      }
 
       // Format according to SDD specification
       // Byte 0: Request ID (0xAA)
@@ -3299,29 +4637,28 @@ class BLEService {
       // Byte 2: Command Length
       packet[SYSTEM_COMMAND_CONSTANTS.REQUEST_FORMAT.COMMAND_LENGTH_OFFSET] = payloadToSend.length;
 
-      // Bytes 3-19: Command Data (up to 17 bytes)
+      // Bytes 3-19: Command Data (up to 17 bytes) + padding
       for (let i = 0; i < payloadToSend.length && i < 17; i++) {
         packet[SYSTEM_COMMAND_CONSTANTS.REQUEST_FORMAT.COMMAND_DATA_OFFSET + i] = payloadToSend[i];
       }
+      
+      // Ensure packet is exactly 20 bytes with proper padding
 
       const packetHex = packet.map(b => b.toString(16).padStart(2, '0')).join('');
-      console.log(`📤 Sending system command 0x${command.toString(16)} with packet: ${packetHex}`);
-      console.log(`📍 Target (discovered): Service=${smartTagService.uuid}, Characteristic=${sysCmdChar.uuid}`);
-      console.log(`📦 Raw packet array:`, packet);
 
       // Convert packet array to Uint8Array for proper Buffer conversion
       const packetBytes = new Uint8Array(packet);
-      console.log(`📦 Packet as Uint8Array:`, Array.from(packetBytes));
 
       // Use native system command methods for better reliability
       if (Platform.OS === 'android') {
-        // Use Android native system command method
-        const result = await SampleBridgeAndroid.writeCharacteristic(
+        // According to SDD: Always use write with response for system commands
+        const result = await this.writeCharacteristic(
           deviceId,
           sysCmdChar.uuid,
-          packetHex
+          packet,
+          true, // withResponse = true (required by SDD)
+          BLE_SERVICES.SMART_TAG
         );
-        console.log(`🤖 Android system command result:`, result);
       } else {
         // Use iOS native system command method
         const result = await BridgingCodeModule.sendSystemCommand(
@@ -3329,23 +4666,15 @@ class BLEService {
           command,
           payloadToSend
         );
-        console.log(`📱 iOS system command result:`, result);
       }
 
-      console.log(`✅ Successfully sent system command 0x${command.toString(16)} to device ${deviceId}`);
-      return { success: true };
+      const duration = Date.now() - startTime;
+      return { success: true, duration, commandName };
 
     } catch (error) {
-      console.log('❌ Error sending system command:', error);
-      console.log('📍 Command details:', {
-        deviceId,
-        command: `0x${command.toString(16)}`,
-        payload: payloadToSend,
-        targetService: smartTagService?.uuid || BLE_SERVICES.SMART_TAG,
-        targetCharacteristic: sysCmdChar?.uuid || BLE_CHARACTERISTICS.SYSTEM_COMMAND
-      });
+      const duration = Date.now() - startTime;
       // Return error result instead of throwing
-      return { success: false, error: error.message };
+      return { success: false, error: error.message, duration, commandName };
     }
   }
 
@@ -3353,7 +4682,7 @@ class BLEService {
 
   // Manually read all important characteristics
   async readAllCharacteristics(deviceId) {
-    console.log(`Reading all characteristics for device ${deviceId}`);
+    try {
 
     const characteristicsToRead = [
       { service: BLE_SERVICES.BATTERY, characteristic: BLE_CHARACTERISTICS.BATTERY_LEVEL, name: 'Battery Level', optional: true },
@@ -3363,8 +4692,12 @@ class BLEService {
       { service: BLE_SERVICES.DEVICE_INFO, characteristic: BLE_CHARACTERISTICS.FIRMWARE_REVISION, name: 'Firmware', optional: true },
     ];
 
+    // Debug: Check device characteristics
+    const device = this.scannedDevices.get(deviceId);
+
     for (const { service, characteristic, name, optional } of characteristicsToRead) {
       try {
+        
         // Skip optional characteristics if not discovered on this device
         if (optional) {
           if (Platform.OS === 'android') {
@@ -3373,7 +4706,6 @@ class BLEService {
             if (device && device.characteristics) {
               const exists = device.characteristics.some(c => c.uuid.toLowerCase() === characteristic.toLowerCase());
               if (!exists) {
-                console.log(`Skipping optional characteristic not found: ${name} (${characteristic})`);
                 continue;
               }
             }
@@ -3383,57 +4715,289 @@ class BLEService {
             if (device && device.characteristics) {
               const exists = device.characteristics.some(c => c.uuid.toLowerCase() === characteristic.toLowerCase());
               if (!exists) {
-                console.log(`Skipping optional characteristic not found: ${name} (${characteristic})`);
                 continue;
               }
             }
           }
         }
+        
         const value = await this.readCharacteristic(deviceId, service, characteristic);
         if (value !== null) {
-          console.log(`${name} (${characteristic}):`, value);
 
-          // Process the data based on characteristic type
-          if (characteristic.toLowerCase() === BLE_CHARACTERISTICS.BATTERY_LEVEL.toLowerCase()) {
+          // Process the data based on characteristic type (case-insensitive)
+          const normalizedChar = characteristic.toLowerCase().replace(/-/g, '');
+          const normalizedBatteryLevel = BLE_CHARACTERISTICS.BATTERY_LEVEL.toLowerCase().replace(/-/g, '');
+          const normalizedDeviceStatus = BLE_CHARACTERISTICS.DEVICE_STATUS.toLowerCase().replace(/-/g, '');
+          
+          if (normalizedChar === normalizedBatteryLevel) {
             this.handleBatteryUpdate(deviceId, value);
-          } else if (characteristic.toLowerCase() === BLE_CHARACTERISTICS.DEVICE_STATUS.toLowerCase()) {
+          } else if (normalizedChar === normalizedDeviceStatus) {
             this.handleDeviceStatusUpdate(deviceId, value);
           }
+        } else {
         }
       } catch (error) {
-        console.log(`Cannot read ${name} (${characteristic}):`, error.message);
       }
+    }
+    } catch (error) {
     }
   }
 
-  // Request device to send current data
+  // ✅ SIMPLIFIED: Request device to send current data (just reads characteristics)
+  // Native side handles all command sequences, JS just reads data
   async requestDeviceData(deviceId, options = {}) {
     try {
-      console.log(`Requesting current data from device ${deviceId}`);
-
-      // Try to read all characteristics first
-      await this.readAllCharacteristics(deviceId);
-
-      // Enable system commands by default since we now have proper native implementations
-      const enableSystemCommands = options.enableSystemCommands !== false; // Default to true
-      
-      if (enableSystemCommands) {
-        // Send a command to request current status using native implementations
-        console.log('🔧 Attempting to send diagnostics command using native implementation...');
-        const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS);
-        if (result && !result.success) {
-          console.log('⚠️ System command failed (this is optional):', result.error);
-        } else if (result && result.success) {
-          console.log('✅ System command sent successfully via native layer');
-        } else {
-          console.log('⚠️ System command returned undefined (this is optional)');
-        }
-      } else {
-        console.log('⏭️ Skipping system commands as requested');
+      // 🔒 MUTEX: Check if already running
+      if (this.requestDataMutex.get(deviceId)) {
+        return;
       }
 
+      // Set mutex lock
+      this.requestDataMutex.set(deviceId, true);
+      
+
+      // Verify device is connected
+      const device = this.scannedDevices.get(deviceId);
+      if (!device || !this.isDeviceConnected(deviceId)) {
+        throw new Error(`Device ${deviceId} not connected`);
+      }
+      
+      // Wait for services to be discovered
+      let waitTime = 0;
+      while (waitTime < 5000) {
+        if (device.services && device.services.length > 0) {
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+        waitTime += 100;
+      }
+
+      // ✅ CLEAN ARCHITECTURE: Just read characteristics, no command sequence
+      // Native side handles all command sequencing via ServiceDiscoveryComplete event
+      await this.readAllCharacteristics(deviceId);
+
     } catch (error) {
-      console.error('Error requesting device data:', error);
+    } finally {
+      // Release mutex
+      this.requestDataMutex.delete(deviceId);
+    }
+  }
+
+  // Test method to manually trigger system commands
+  async testSystemCommands(deviceId) {
+    try {
+      // Reset the command sent flag to allow testing
+      const commandKey = `commands_sent_${deviceId}`;
+      this[commandKey] = false;
+      await this.requestDeviceData(deviceId, { enableSystemCommands: true });
+    } catch (error) {
+    }
+  }
+
+  // Test method to manually test system command lookup
+  async testSystemCommandLookup(deviceId) {
+    try {
+      const scannedDevice = this.scannedDevices.get(deviceId);
+      if (!scannedDevice) {
+        return;
+      }
+
+      
+      // Look for SYSTEM_COMMAND characteristic in any service
+      const sysCmdChar = scannedDevice.characteristics.find(c => 
+        c.uuid.toLowerCase().replace(/-/g, '') === BLE_CHARACTERISTICS.SYSTEM_COMMAND.toLowerCase().replace(/-/g, '')
+      );
+      
+      if (sysCmdChar) {
+        
+        // Find the service that contains this characteristic
+        const service = scannedDevice.services.find(s => 
+          s.uuid.toLowerCase().replace(/-/g, '') === sysCmdChar.serviceUUID.toLowerCase().replace(/-/g, '')
+        );
+      } else {
+      }
+    } catch (error) {
+    }
+  }
+
+  // Test method to manually trigger a single system command
+  async testSingleSystemCommand(deviceId, commandId = 0x1) {
+    try {
+      const result = await this.sendSystemCommand(deviceId, commandId, []);
+      return result;
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Test method to check device data availability
+  testDeviceDataAvailability(deviceId) {
+    
+    const connectedDevice = this.connectedDevices.get(deviceId);
+    const scannedDevice = this.scannedDevices.get(deviceId);
+    
+    
+    if (scannedDevice) {
+    }
+    
+    return {
+      connected: !!connectedDevice,
+      scanned: !!scannedDevice,
+      servicesCount: scannedDevice?.services?.length || 0,
+      characteristicsCount: scannedDevice?.characteristics?.length || 0
+    };
+  }
+
+  // High-level system command methods for easier usage
+  async getFirmwareVersion(deviceId) {
+    try {
+      // ✅ SDD Table 10: GET_FW_VERSION - Length=1, Data=0x00
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION, [0x00]);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getHardwareVersion(deviceId) {
+    try {
+      // ✅ SDD Table 10: GET_HW_VERSION - Length=1, Data=0x00
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION, [0x00]);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getDiagnostics(deviceId) {
+    try {
+      // ✅ SDD Table 10: GET_DIAGNOSTICS - Length=1, Data=0x00
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS, [0x00]);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async setSystemTime(deviceId, timestamp) {
+    try {
+      const payload = [
+        (timestamp >> 0) & 0xFF,
+        (timestamp >> 8) & 0xFF,
+        (timestamp >> 16) & 0xFF,
+        (timestamp >> 24) & 0xFF
+      ];
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SET_SYSTEM_TIME, payload);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async setAdvertisingInterval(deviceId, intervalMs) {
+    try {
+      const payload = [
+        (intervalMs >> 0) & 0xFF,
+        (intervalMs >> 8) & 0xFF,
+        (intervalMs >> 16) & 0xFF,
+        (intervalMs >> 24) & 0xFF
+      ];
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SET_ADV_INTERVAL, payload);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async setConnectionInterval(deviceId, intervalMs) {
+    try {
+      const payload = [
+        (intervalMs >> 0) & 0xFF,
+        (intervalMs >> 8) & 0xFF,
+        (intervalMs >> 16) & 0xFF,
+        (intervalMs >> 24) & 0xFF
+      ];
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SET_CONN_INTERVAL, payload);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async setDataAcquisitionInterval(deviceId, intervalSeconds) {
+    try {
+      const payload = [
+        (intervalSeconds >> 0) & 0xFF,
+        (intervalSeconds >> 8) & 0xFF,
+        (intervalSeconds >> 16) & 0xFF,
+        (intervalSeconds >> 24) & 0xFF
+      ];
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SET_DATA_INTERVAL, payload);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async startDataSync(deviceId) {
+    try {
+      // ✅ SDD Table 10: DATA_SYNC_START - Length=1, Data=0x00
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START, [0x00]);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async stopDataSync(deviceId, clearFlashData = false) {
+    try {
+      // ✅ SDD Table 10: DATA_SYNC_STOP - Length=1, Data varies
+      const payload = [clearFlashData ? 0x01 : 0x00];
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_STOP, payload);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async systemRestart(deviceId) {
+    try {
+      // ✅ SDD Table 10: SYSTEM_RESTART - Length=1, Data=0x00
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SYSTEM_RESTART, [0x00]);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async toggleBuzzer(deviceId, activate = true) {
+    try {
+      const payload = [activate ? 0x00 : 0x01]; // 0x00 = Activate, 0x01 = Deactivate
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER, payload);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Debug method to manually trigger data reading
+  async forceReadDeviceData(deviceId) {
+    try {
+      
+      // Read device status characteristic
+      const deviceStatusData = await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DEVICE_STATUS);
+      
+      if (deviceStatusData) {
+        this.handleDeviceStatusUpdate(deviceId, deviceStatusData);
+      }
+      
+      // Read battery level characteristic
+      const batteryData = await this.readCharacteristic(deviceId, BLE_SERVICES.BATTERY, BLE_CHARACTERISTICS.BATTERY_LEVEL);
+      
+      if (batteryData) {
+        this.handleBatteryUpdate(deviceId, batteryData);
+      }
+      
+      // Send system command to trigger notifications
+      await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS);
+      
+      return {
+        success: true,
+        deviceStatusData,
+        batteryData
+      };
+      
+    } catch (error) {
+      return { success: false, error: error.message };
     }
   }
 
@@ -3487,17 +5051,14 @@ class BLEService {
   // Set callback for device data updates (for UI refresh)
   setDeviceDataUpdateCallback = (callback) => {
     this.onDeviceDataUpdated = callback;
-    console.log('Device data update callback set:', typeof callback);
   }
 
   // Set device list update callback (for UI refresh when devices connect/disconnect)
   setDeviceListUpdateCallback = (callback) => {
     this.onDeviceListUpdated = callback;
-    console.log('Device list update callback set:', typeof callback);
 
     // If there's a pending auto-connect event, trigger it now
     if (callback && this.pendingAutoConnectDevice) {
-      console.log('🔄 Processing pending auto-connect device for UI refresh');
       setTimeout(() => {
         if (this.onDeviceListUpdated) {
           this.onDeviceListUpdated();
@@ -3513,7 +5074,6 @@ class BLEService {
     if (device && this.onDeviceDataUpdated && this.appState === 'active') {
       this.onDeviceDataUpdated(deviceId, device.deviceData);
     } else if (device && this.onDeviceDataUpdated && this.appState !== 'active') {
-      console.log('📱 [BLEService] Skipping UI refresh - app is in background');
     }
   }
 
@@ -3532,7 +5092,6 @@ class BLEService {
           try {
             updated = await SampleBridgeAndroid.readDeviceRSSI(deviceId);
           } catch (error) {
-            console.log(`📡 Android RSSI polling failed for ${deviceId}:`, error.message);
             return { success: false, error: 'SMART_TAG service not available' };
           }
         } else {
@@ -3540,7 +5099,6 @@ class BLEService {
           try {
             updated = await BridgingCodeModule.readRSSI(deviceId);
           } catch (error) {
-            console.log(`📡 iOS RSSI polling failed for ${deviceId}:`, error.message);
             return { success: false, error: 'SMART_TAG service not available' };
           }
         }
@@ -3560,7 +5118,6 @@ class BLEService {
 
         if (this.onDeviceListUpdated) this.onDeviceListUpdated();
       } catch (error) {
-        console.warn(`⚠️ RSSI polling failed for ${deviceId}:`, error?.message || error);
       }
     };
     const timer = setInterval(poll, 15000); // Increased to 15 seconds for battery optimization
@@ -3598,9 +5155,6 @@ class BLEService {
       }
     }
 
-    console.log(`📡 Notification Status for ${deviceId}:`);
-    console.log(`  Active subscriptions: ${activeSubscriptions.length}`);
-    activeSubscriptions.forEach(sub => console.log(`    - ${sub}`));
 
     return {
       deviceId,
@@ -3622,14 +5176,12 @@ class BLEService {
     if (Platform.OS === 'ios') {
       AutoConnectService.addDeviceConnectedCallback(this.handleAutoConnectedDevice);
       AutoConnectService.addDeviceDisconnectedCallback(this.handleAutoDisconnectedDevice);
-      console.log('🔗 Auto-connect callbacks setup complete');
 
       // Ensure callbacks are registered with native module
       setTimeout(async () => {
         try {
           await AutoConnectService.ensureCallbacksRegistered();
         } catch (error) {
-          console.warn('⚠️ Could not ensure callback registration:', error.message);
         }
       }, 1000); // Wait 1 second for React Native to be fully ready
     }
@@ -3639,8 +5191,6 @@ class BLEService {
 
   // Handle device connected via auto-connect
   handleAutoConnectedDevice = async (deviceInfo) => {
-    console.log('🔗 Auto-connected device detected:', deviceInfo);
-    console.log('🔗 Platform:', Platform.OS, 'Device ID:', deviceInfo.deviceId);
 
     // TODO: IMPLEMENT TAG VERIFICATION FOR AUTO-CONNECT
     // COMMENTED OUT FOR NOW - UNCOMMENT WHEN READY TO USE
@@ -3648,7 +5198,6 @@ class BLEService {
     // Verify if this is user's purchased tag before allowing auto-connect
     const isVerified = await this.isVerifiedTag(deviceInfo.deviceId, deviceInfo.deviceName);
     if (!isVerified) {
-      console.log('⚠️ Auto-connect blocked: Unverified tag detected:', deviceInfo.deviceName);
       
       // TODO: TAG VERIFICATION COMMENTED OUT - ALLOW ALL TAGS
       // Read location data from nearby tag without full connection
@@ -3658,14 +5207,11 @@ class BLEService {
       try {
         const device = await this.manager.connectToDevice(deviceInfo.deviceId, { timeout: 3000 });
         await device.cancelConnection();
-        console.log('✅ Disconnected from unverified auto-connect tag');
       } catch (error) {
-        console.warn('⚠️ Could not disconnect from unverified tag:', error.message);
       }
       return; // Exit early - don't proceed with connection
     }
     
-    console.log('✅ Auto-connect allowed: Verified tag detected:', deviceInfo.deviceName);
     */
 
     // Update our internal state to reflect the auto-connection
@@ -3687,44 +5233,33 @@ class BLEService {
     this.scannedDevices.set(deviceInfo.deviceId, device);
     this.connectedDevices.set(deviceInfo.deviceId, device);
 
-    console.log(`📱 ${Platform.OS} auto-connect: Device will be handled by native layer`);
     
     // Load device services using native implementation
     try {
-      console.log(`🔍 Loading services for auto-connected device: ${deviceInfo.deviceId}`);
       await this.loadDeviceServices(deviceInfo.deviceId);
-      console.log('✅ Loaded services for auto-connected device');
       
       // Start heartbeat monitoring for connection health
       this.startHeartbeatMonitoring(deviceInfo.deviceId);
       
-      // Request initial data after a short delay (CRITICAL FOR BACKGROUND)
-      setTimeout(() => {
-        console.log(`📊 Requesting initial data for auto-connected device: ${deviceInfo.deviceId}`);
-        this.requestDeviceData(deviceInfo.deviceId, { enableSystemCommands: true });
-      }, 2000); // Increased delay for background stability
+      // ✅ CLEAN ARCHITECTURE: Native handles command sequence via ServiceDiscoveryComplete
+      // No need to call requestDeviceData - it happens automatically
       
-      console.log('✅ Auto-connected device ready for monitoring');
     } catch (error) {
-      console.warn('⚠️ Error setting up auto-connected device:', error.message);
     }
     
     // Send pet health data to server after auto-connection (with retry mechanism)
-    // CRITICAL: This ensures API calls work in background
-    setTimeout(() => {
-      console.log(`📤 Attempting to send pet health data to server after auto-connection for device: ${deviceInfo.deviceId}`);
-      this.sendPetHealthDataToServerWithRetry(deviceInfo.deviceId, 'auto-connect');
-    }, 5000);
+    // ❌ DISABLED: Old immediate API call (replaced by buffering system)
+    // setTimeout(() => {
+    //   this.sendPetHealthDataToServerWithRetry(deviceInfo.deviceId, 'auto-connect');
+    // }, 5000);
     
-    // Start adaptive API calling for auto-connected device (CRITICAL FOR BACKGROUND)
-    setTimeout(() => {
-      console.log(`🔄 Starting adaptive API calling for device ${deviceInfo.deviceId} after auto-connection`);
-      this.startAdaptiveApiCalling(deviceInfo.deviceId);
-    }, 7000);
+    // ❌ DISABLED: Old adaptive API calling (replaced by buffering system)
+    // setTimeout(() => {
+    //   this.startAdaptiveApiCalling(deviceInfo.deviceId);
+    // }, 7000);
     
     // Start GET API calling for auto-connected device (CRITICAL FOR BACKGROUND)
     setTimeout(() => {
-      console.log(`📥 Starting GET API calling for device ${deviceInfo.deviceId} after auto-connection`);
       this.startGetApiCalling(deviceInfo.deviceId);
     }, 8000);
     
@@ -3734,14 +5269,11 @@ class BLEService {
     // Start connection health monitoring for auto-connected device
     this.startConnectionHealthCheck();
     
-    console.log(`✅ Auto-connected device ${deviceInfo.deviceName} registered in BLE service`);
     
     // Trigger device list update callback to refresh UI immediately
     if (this.onDeviceListUpdated) {
-      console.log('🔄 Triggering device list update for UI refresh (immediate)');
       this.onDeviceListUpdated();
     } else {
-      console.warn('⚠️ No device list update callback registered - will retry when UI mounts');
       // Store the auto-connect event for later when UI mounts
       this.pendingAutoConnectDevice = deviceInfo;
     }
@@ -3749,7 +5281,6 @@ class BLEService {
     // Also trigger after BLE integration attempts complete
     setTimeout(() => {
       if (this.onDeviceListUpdated) {
-        console.log('🔄 Triggering device list update for UI refresh (delayed)');
         this.onDeviceListUpdated();
       }
     }, 3000);
@@ -3758,7 +5289,6 @@ class BLEService {
     if (this.onDeviceDataUpdated && this.appState === 'active') {
       this.onDeviceDataUpdated(deviceInfo.deviceId, device);
     } else if (this.onDeviceDataUpdated && this.appState !== 'active') {
-      console.log('📱 [BLEService] Skipping UI callback - app is in background');
     }
 
     // Emit connection event for UI updates (platform-agnostic)
@@ -3772,7 +5302,6 @@ class BLEService {
 
   // Handle device disconnected via auto-connect
   handleAutoDisconnectedDevice = (deviceInfo) => {
-    console.log('💔 Physical disconnect detected:', deviceInfo);
 
     const device = this.scannedDevices.get(deviceInfo.deviceId);
     if (device) {
@@ -3795,19 +5324,7 @@ class BLEService {
         this.stopConnectionHealthCheck();
       }
 
-      console.log('✅ Physical disconnect handled for device:', deviceInfo.deviceName);
-      console.log('📊 Physical disconnect device state:', {
-        id: deviceInfo.deviceId,
-        name: device.name,
-        connectionState: device.connectionState,
-        lastSeen: device.lastSeen,
-        rssi: device.rssi, // Log RSSI to confirm it's preserved
-        disconnectReason: device.disconnectReason,
-        isSmartTag: device.isSmartTag || false
-      });
-      console.log('📱 scannedDevices now contains:', Array.from(this.scannedDevices.keys()).length, 'devices');
     } else {
-      console.warn('⚠️ Physical disconnect for device not in scannedDevices:', deviceInfo.deviceName);
       // Create entry for device that wasn't in scannedDevices
       const newDevice = {
         id: deviceInfo.deviceId,
@@ -3820,11 +5337,9 @@ class BLEService {
         deviceData: {}
       };
       this.scannedDevices.set(deviceInfo.deviceId, newDevice);
-      console.log('📝 Created new device entry for physical disconnect:', deviceInfo.deviceName);
     }
 
     // Force UI refresh immediately
-    console.log('🔄 Forcing immediate UI refresh for physical disconnect');
     this.scheduleListUpdate();
 
     // Kick auto-connect machinery from JS side as well (best-effort)
@@ -3832,14 +5347,12 @@ class BLEService {
       try {
         const status = await this.getAutoConnectStatus();
         if (status.success && status.status.enabled) {
-          console.log('🔁 JS-side reconnect attempt: known peripherals + force scan');
           try { await this.connectToKnownPeripherals(); } catch { }
           try { await this.forceScanForBondedDevices(); } catch { }
         }
       } catch { }
     }, 1000);
 
-    console.log(`💔 Physical disconnect for ${deviceInfo.deviceName} processed`);
   }
 
   // Start periodic connection health check
@@ -3848,19 +5361,16 @@ class BLEService {
 
     const currentProfile = this.getCurrentProfileName();
     const interval = this.profile.healthCheckMs || 10000;
-    console.log(`💓 Starting connection health check - Profile: ${currentProfile}, Interval: ${interval}ms`);
     
     this.connectionHealthTimer = setInterval(async () => {
       try {
         await this.checkConnectionHealth();
       } catch (error) {
-        console.warn('Connection health check error:', error.message);
       }
     }, interval); // Use profile-based timing
     
     // Start RSSI cycle when health checks start
     const rssiInterval = this.profile.rssiCycleIntervalMs || 30000;
-    console.log(`💓 Starting RSSI cycle from health check start - Profile: ${currentProfile}, RSSI Interval: ${rssiInterval}ms`);
     this.startRssiCycle();
   }
 
@@ -3872,12 +5382,10 @@ class BLEService {
       clearInterval(this.connectionHealthTimer);
       this.connectionHealthTimer = null;
       const currentProfile = this.getCurrentProfileName();
-      console.log(`💓 Stopped connection health check - Profile: ${currentProfile}`);
     }
     
     // Stop RSSI cycle when health checks stop
     const currentProfile = this.getCurrentProfileName();
-    console.log(`💓 Stopping RSSI cycle from health check stop - Profile: ${currentProfile}`);
     this.stopRssiCycle();
   }
 
@@ -3886,7 +5394,6 @@ class BLEService {
     const connectedDeviceIds = Array.from(this.connectedDevices.keys());
     if (connectedDeviceIds.length === 0) return;
 
-    console.log(`💓 Checking health of ${connectedDeviceIds.length} connected devices`);
 
     for (const deviceId of connectedDeviceIds) {
       try {
@@ -3900,9 +5407,7 @@ class BLEService {
           try {
             const result = await SampleBridgeAndroid.readDeviceRSSI(deviceId);
             rssi = result;
-            console.log(`💓 Device ${deviceId} is healthy (Android), RSSI: ${rssi}dBm`);
           } catch (error) {
-            console.log(`💔 Android RSSI health check failed for ${deviceId}:`, error.message);
             throw error; // Re-throw to trigger disconnect handling
           }
         } else {
@@ -3910,9 +5415,7 @@ class BLEService {
           try {
             const result = await BridgingCodeModule.readRSSI(deviceId);
             rssi = result;
-            console.log(`💓 Device ${deviceId} is healthy (iOS), RSSI: ${rssi}dBm`);
           } catch (error) {
-            console.log(`💔 iOS RSSI health check failed for ${deviceId}:`, error.message);
             throw error; // Re-throw to trigger disconnect handling
           }
         }
@@ -3922,7 +5425,6 @@ class BLEService {
           this.checkRssiConnectionQuality(deviceId, rssi);
         }
       } catch (error) {
-        console.log(`💔 Device ${deviceId} appears disconnected during health check:`, error.message);
 
         // Simulate auto-disconnect callback for stale connections
         const deviceInfo = this.scannedDevices.get(deviceId);
@@ -3940,18 +5442,14 @@ class BLEService {
   // Start auto-connect functionality
   async startAutoConnect() {
     try {
-      console.log('🚀 Starting auto-connect functionality...');
       const result = await AutoConnectService.startAutoConnect();
 
       if (result.success) {
-        console.log('✅ Auto-connect started successfully');
         return { success: true, message: 'Auto-connect started' };
       } else {
-        console.error('❌ Failed to start auto-connect:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Auto-connect start error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -3959,18 +5457,14 @@ class BLEService {
   // Stop auto-connect functionality
   async stopAutoConnect() {
     try {
-      console.log('🛑 Stopping auto-connect functionality...');
       const result = await AutoConnectService.stopAutoConnect();
 
       if (result.success) {
-        console.log('✅ Auto-connect stopped successfully');
         return { success: true, message: 'Auto-connect stopped' };
       } else {
-        console.error('❌ Failed to stop auto-connect:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Auto-connect stop error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -3978,18 +5472,14 @@ class BLEService {
   // Add device to bonded list (call after successful manual connection)
   async addDeviceToBondedList(deviceId) {
     try {
-      console.log(`✅ Adding device ${deviceId} to bonded list...`);
       const result = await AutoConnectService.addBondedDevice(deviceId);
 
       if (result.success) {
-        console.log(`✅ Device ${deviceId} added to bonded list`);
         return { success: true, message: 'Device bonded for auto-connect' };
       } else {
-        console.error('❌ Failed to bond device:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Bond device error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -3997,18 +5487,14 @@ class BLEService {
   // Remove device from bonded list
   async removeDeviceFromBondedList(deviceId) {
     try {
-      console.log(`❌ Removing device ${deviceId} from bonded list...`);
       const result = await AutoConnectService.removeBondedDevice(deviceId);
 
       if (result.success) {
-        console.log(`✅ Device ${deviceId} removed from bonded list`);
         return { success: true, message: 'Device unbonded from auto-connect' };
       } else {
-        console.error('❌ Failed to unbond device:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Unbond device error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -4019,14 +5505,11 @@ class BLEService {
       const result = await AutoConnectService.getBondedDevices();
 
       if (result.success) {
-        console.log('📱 Bonded devices:', result.devices);
         return { success: true, devices: result.devices };
       } else {
-        console.error('❌ Failed to get bonded devices:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Get bonded devices error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -4037,14 +5520,11 @@ class BLEService {
       const result = await AutoConnectService.getAutoConnectStatus();
 
       if (result.success) {
-        console.log('📊 Auto-connect status:', result.status);
         return { success: true, status: result.status };
       } else {
-        console.error('❌ Failed to get auto-connect status:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Get auto-connect status error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -4062,18 +5542,14 @@ class BLEService {
   // Force scan for debugging auto-connect issues
   async forceScanForBondedDevices() {
     try {
-      console.log('🔍 Force scanning for bonded devices...');
       const result = await AutoConnectService.forceScanForBondedDevices();
 
       if (result.success) {
-        console.log('✅ Force scan started successfully');
         return { success: true, message: 'Force scan started - check logs for 10 seconds' };
       } else {
-        console.error('❌ Failed to start force scan:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Force scan error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -4081,7 +5557,6 @@ class BLEService {
   // Force refresh of all devices by starting a new scan
   async forceRefreshDeviceList() {
     try {
-      console.log('🔄 Force refreshing device list...');
 
       // Start a fresh scan to rediscover all devices
       await this.startScanning();
@@ -4090,13 +5565,11 @@ class BLEService {
       setTimeout(() => {
         if (this.scanState === SCAN_STATES.SCANNING) {
           this.stopScanning();
-          console.log('✅ Force refresh scan completed');
         }
       }, 10000);
 
       return { success: true, message: 'Device list refresh initiated' };
     } catch (error) {
-      console.error('❌ Force refresh device list error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -4119,22 +5592,18 @@ class BLEService {
     const jitter = Math.random() * 1000; // Add randomness to prevent thundering herd
 
     if (attempt >= maxAttempts) {
-      console.log(`🚫 Max reconnection attempts (${maxAttempts}) reached for device: ${deviceId}`);
       return;
     }
 
     const delay = Math.min(baseDelay * Math.pow(2, attempt) + jitter, maxDelay);
-    console.log(`🔄 Scheduling reconnection attempt ${attempt + 1}/${maxAttempts} for device ${deviceId} in ${Math.round(delay / 1000)}s`);
 
     const timer = setTimeout(async () => {
       try {
         if (this.manualDisconnectCooldown.has(deviceId)) {
-          console.log(`🔄 Attempting reconnection ${attempt + 1}/${maxAttempts} for device: ${deviceId}`);
 
           // Try direct connection first
           const connectResult = await this.connectToKnownPeripherals();
           if (connectResult.attempted > 0) {
-            console.log(`✅ Reconnection attempt ${attempt + 1} started for device: ${deviceId}`);
             this.reconnectionAttempts.delete(deviceId);
             return { success: false, error: 'SMART_TAG service not available' };
           }
@@ -4146,11 +5615,9 @@ class BLEService {
           this.reconnectionAttempts.set(deviceId, attempt + 1);
           this.startExponentialBackoffReconnection(deviceId);
         } else {
-          console.log(`🚫 Manual disconnect cooldown cleared - stopping reconnection for device: ${deviceId}`);
           this.reconnectionAttempts.delete(deviceId);
         }
       } catch (error) {
-        console.warn(`⚠️ Reconnection attempt ${attempt + 1} failed for device ${deviceId}:`, error.message);
         // Schedule next attempt
         this.reconnectionAttempts.set(deviceId, attempt + 1);
         this.startExponentialBackoffReconnection(deviceId);
@@ -4200,7 +5667,6 @@ class BLEService {
       if (pool.queue.length > 0) {
         const nextRequest = pool.queue.shift();
         pool.currentConnections++;
-        console.log(`🔄 Processing queued connection request for device: ${deviceId}`);
       }
 
       this.connectionPool.set(deviceId, pool);
@@ -4227,7 +5693,6 @@ class BLEService {
     const proximity = this.getProximityLevel(device.rssi);
     const config = this.adaptiveScanConfig[proximity];
 
-    console.log(`📡 Starting adaptive scan for device ${deviceId} (${proximity} proximity, RSSI: ${device.rssi})`);
 
     // Adjust scan parameters based on proximity
     this.startScanning(
@@ -4277,15 +5742,12 @@ class BLEService {
 
         // Reset missed heartbeat counter
         this.heartbeatCounters.set(deviceId, 0);
-        console.log(`💓 Heartbeat successful for device: ${deviceId}`);
       } catch (error) {
         const missedCount = (this.heartbeatCounters.get(deviceId) || 0) + 1;
         this.heartbeatCounters.set(deviceId, missedCount);
 
-        console.warn(`💔 Heartbeat failed for device ${deviceId} (missed: ${missedCount}/${maxMissedHeartbeats})`);
 
         if (missedCount >= maxMissedHeartbeats) {
-          console.error(`💀 Device ${deviceId} failed heartbeat threshold - marking as disconnected`);
           this.handleAutoDisconnectedDevice({
             deviceId,
             deviceName: 'Unknown Device',
@@ -4296,7 +5758,6 @@ class BLEService {
     }, heartbeatInterval);
 
     this.heartbeatTimers.set(deviceId, timer);
-    console.log(`💓 Started heartbeat monitoring for device: ${deviceId}`);
   }
 
   stopHeartbeatMonitoring(deviceId) {
@@ -4307,7 +5768,6 @@ class BLEService {
       clearInterval(timer);
       this.heartbeatTimers.delete(deviceId);
       this.heartbeatCounters.delete(deviceId);
-      console.log(`💓 Stopped heartbeat monitoring for device: ${deviceId}`);
     }
   }
 
@@ -4318,17 +5778,14 @@ class BLEService {
       if (!device) return false;
 
       const currentMTU = await device.mtu();
-      console.log(`📏 Current MTU for device ${deviceId}: ${currentMTU}`);
 
       if (currentMTU < preferredMTU) {
         const newMTU = await device.requestMTU(preferredMTU);
-        console.log(`📏 MTU negotiated for device ${deviceId}: ${currentMTU} → ${newMTU}`);
         return newMTU >= preferredMTU;
       }
 
       return true;
     } catch (error) {
-      console.warn(`⚠️ MTU negotiation failed for device ${deviceId}:`, error.message);
       return false;
     }
   }
@@ -4373,7 +5830,6 @@ class BLEService {
 
     // Log quality changes
     if (metrics.connectionStability < 50) {
-      console.warn(`⚠️ Poor connection quality for device ${deviceId}: Stability ${metrics.connectionStability}%, Avg RSSI ${avgRssi.toFixed(1)}, Packet Loss ${(avgPacketLoss * 100).toFixed(1)}%`);
     }
   }
 
@@ -4388,29 +5844,23 @@ class BLEService {
 
   async debugConnectionStatus() {
     try {
-      console.log('🐛 Getting debug connection status...');
       const result = await AutoConnectService.debugConnectionStatus();
 
       if (result.success) {
-        console.log('✅ Debug status retrieved successfully');
         return { success: true, data: result.result };
       } else {
-        console.error('❌ Failed to get debug status:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Debug status error:', error);
       return { success: false, error: error.message };
     }
   }
 
   async connectToKnownPeripherals() {
     try {
-      console.log('🔗 Connecting to known bonded peripherals...');
       const result = await AutoConnectService.connectToKnownPeripherals();
 
       if (result.success) {
-        console.log('✅ Connection attempts started:', result.result);
         return {
           success: true,
           message: `Started ${result.result.attempted} connection attempts to known peripherals`,
@@ -4418,11 +5868,9 @@ class BLEService {
           knownPeripherals: result.result.knownPeripherals
         };
       } else {
-        console.error('❌ Failed to connect to known peripherals:', result.error);
         return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ Connect to known peripherals error:', error);
       return { success: false, error: error.message };
     }
   }
@@ -4436,42 +5884,34 @@ class BLEService {
     try {
       // Wait a bit for initialization to complete
       setTimeout(async () => {
-        console.log('🔍 Checking if auto-scan should start on app startup...');
 
         // Check if auto-connect is enabled (with retry logic)
         let autoConnectStatus = await this.getAutoConnectStatus();
 
         // If auto-connect shows as disabled, it might be a timing issue - retry after starting it
         if (!autoConnectStatus.enabled) {
-          console.log('⚠️ Auto-connect appears disabled - attempting to start it first...');
           await this.startAutoConnect();
 
           // Check again after starting
           autoConnectStatus = await this.getAutoConnectStatus();
           if (!autoConnectStatus.enabled) {
-            console.log('⚠️ Auto-connect still disabled after startup attempt - skipping startup scan');
             return { success: false, error: 'SMART_TAG service not available' };
           } else {
-            console.log('✅ Auto-connect enabled after startup');
           }
         }
 
         // Check if there are any bonded devices
         const bondedDevices = await this.getBondedDevices();
         if (bondedDevices.length === 0) {
-          console.log('⚠️ No bonded devices - skipping startup scan');
           return { success: false, error: 'SMART_TAG service not available' };
         }
 
         // Check if we already have connected devices
         const connectedCount = this.connectedDevices.size;
         if (connectedCount > 0) {
-          console.log(`ℹ️ Already have ${connectedCount} connected devices - skipping startup scan`);
           return { success: false, error: 'SMART_TAG service not available' };
         }
 
-        console.log('🚀 Starting auto-scan for bonded devices on app startup...');
-        console.log(`📋 Will scan for ${bondedDevices.length} bonded devices: ${bondedDevices}`);
 
         // Start auto-connect
         await this.startAutoConnect();
@@ -4480,19 +5920,15 @@ class BLEService {
         setTimeout(async () => {
           try {
             const connectResult = await this.connectToKnownPeripherals();
-            console.log('🔗 Startup direct connection result:', connectResult);
           } catch (error) {
-            console.log('⚠️ Startup direct connection failed:', error.message);
           }
         }, 2000);
 
-        console.log('✅ Startup auto-scan initiated');
 
         // Also start periodic scanning for bonded devices
         this.startPeriodicAutoScan();
       }, 3000); // Wait 3 seconds for app to fully initialize
     } catch (error) {
-      console.error('❌ Startup auto-scan failed:', error);
     }
   }
 
@@ -4502,7 +5938,6 @@ class BLEService {
       return;
     }
 
-    console.log('⏰ Starting periodic auto-scan for bonded devices...');
 
     // Check every 30 seconds for disconnected bonded devices
     this.periodicScanInterval = setInterval(async () => {
@@ -4516,11 +5951,9 @@ class BLEService {
         const connectedCount = this.connectedDevices.size;
 
         if (bondedDevices.length > 0 && connectedCount === 0) {
-          console.log('🔄 Periodic check: No connected devices, scanning for bonded devices...');
           await this.forceScanForBondedDevices();
         }
       } catch (error) {
-        console.log('⚠️ Periodic scan check failed:', error.message);
       }
     }, 30000); // Every 30 seconds
   }
@@ -4529,7 +5962,6 @@ class BLEService {
     if (this.periodicScanInterval) {
       clearInterval(this.periodicScanInterval);
       this.periodicScanInterval = null;
-      console.log('🛑 Stopped periodic auto-scan');
     }
   }
 
@@ -4564,7 +5996,6 @@ class BLEService {
 
   // Force cleanup and restart of all adaptive API timers (for debugging/fixing stuck timers)
   forceRestartAllAdaptiveApi = () => {
-    console.log('🔧 Force restarting all adaptive API timers...');
     this.stopAllAdaptiveApi();
     
     // Wait a bit then restart for all connected devices
@@ -4579,19 +6010,10 @@ class BLEService {
 
   // Debug method to show current adaptive API calling state
   debugAdaptiveApiState = () => {
-    console.log('🔍 Debug: Current Adaptive API State');
-    console.log(`App State: ${this.appState}`);
-    console.log(`Screen States:`, Object.fromEntries(this.screenActiveStates));
-    console.log(`Active Timers:`, Array.from(this.adaptiveApiTimers.entries()).map(([deviceId, timerInfo]) => ({
-      deviceId,
-      interval: timerInfo.interval,
-      hasTimer: !!timerInfo.timer
-    })));
   }
 
   // Method to set all connected devices to active (useful for testing or manual control)
   setAllDevicesActive = () => {
-    console.log('📱 Setting all connected devices to ACTIVE state');
     for (const [deviceId, device] of this.scannedDevices.entries()) {
       if (device && device.connectionState === CONNECTION_STATES.CONNECTED) {
         this.setScreenActiveState(deviceId, true);
@@ -4601,7 +6023,6 @@ class BLEService {
 
   // Method to set all connected devices to inactive (useful for testing or manual control)
   setAllDevicesInactive = () => {
-    console.log('📱 Setting all connected devices to INACTIVE state');
     for (const [deviceId, device] of this.scannedDevices.entries()) {
       if (device && device.connectionState === CONNECTION_STATES.CONNECTED) {
         this.setScreenActiveState(deviceId, false);
@@ -4634,16 +6055,12 @@ class BLEService {
   async triggerNativeHealthDataApiCall(deviceId) {
     try {
       if (Platform.OS === 'android' && SampleBridgeAndroid) {
-        console.log(`📤 Triggering native health data API call for device: ${deviceId}`);
         const result = await SampleBridgeAndroid.triggerHealthDataApiCall(deviceId);
-        console.log(`✅ Native health data API call triggered successfully:`, result);
         return result;
       } else {
-        console.log(`⚠️ Native health data API trigger not available on this platform`);
         return false;
       }
     } catch (error) {
-      console.error(`❌ Failed to trigger native health data API call:`, error);
       return false;
     }
   }
@@ -4653,9 +6070,6 @@ class BLEService {
     try {
       const { deviceId, deviceData, timestamp } = eventData;
       
-      console.log(`📤 Native health data API request received for device: ${deviceId}`);
-      console.log(`📤 Device data from native:`, deviceData);
-      console.log(`📤 Timestamp: ${timestamp}`);
       
       // Update the device data in our local cache first
       if (deviceData) {
@@ -4685,15 +6099,315 @@ class BLEService {
             device.deviceData.lastUpdate = new Date(deviceData.lastUpdate);
           }
           
-          console.log(`📤 Updated device data from native side for: ${deviceId}`);
         }
       }
       
-      // Call the health data API
-      await this.sendPetHealthDataToServer(deviceId);
+      // ❌ DISABLED: Old immediate API call (replaced by industry-standard buffering system)
+      // await this.sendPetHealthDataToServer(deviceId);
+      // The buffering system now handles all API calls efficiently:
+      // - Historical sync: ALL records sent after sync complete
+      // - Live updates: Batched every 5 minutes (10 records)
+      // - Alerts: Immediate for critical thresholds
+      console.log(`ℹ️ [NATIVE API] Data updated, handled by buffering system`);
       
     } catch (error) {
-      console.error(`❌ Failed to handle native health data API request:`, error);
+    }
+  }
+
+  handleNativeSystemCommandResponse(eventData) {
+    const { type, deviceId, commandId, rawData, dataLength, responseStatus, status, commandName } = eventData;
+    
+    // ✅ PLATFORM-INDEPENDENT: Handle both Android and iOS formats
+    // Android: { type: 'system_command_response', ... }
+    // iOS: { deviceId, commandId, commandName, status, ... }
+    const isAndroidFormat = type === 'system_command_response';
+    const isiOSFormat = status !== undefined && commandName !== undefined;
+    
+    if ((isAndroidFormat && rawData) || isiOSFormat) {
+      
+      // Parse the response data
+      try {
+        const responseBuffer = Buffer.from(rawData, 'hex');
+        
+        // Handle specific command responses
+        switch (commandId) {
+          case SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION:
+            const firmwareVersion = responseBuffer.toString('utf8');
+            break;
+            
+          case SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION:
+            const hardwareVersion = responseBuffer.toString('utf8');
+            break;
+            
+          case SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS:
+            break;
+            
+          case SYSTEM_COMMAND_CONSTANTS.CMD.SET_SYSTEM_TIME:
+            if (responseBuffer.length >= 4) {
+              const timestamp = responseBuffer.readUInt32LE(0);
+              const timestampDate = new Date(timestamp * 1000);
+            }
+            break;
+            
+          default:
+            break;
+        }
+        
+      } catch (error) {
+      }
+    } else {
+    }
+  }
+
+  async handleNativeDataTransferEvent(eventData) {
+    const { type, deviceId, totalRecords, success, recordsTransmitted, records, recordCount, errorCode, companyId, rawData } = eventData;
+    
+    switch (type) {
+      case 'manufacturer_data':
+        // ✅ Store battery level from manufacturer data
+        const device = this.scannedDevices.get(deviceId);
+        if (device) {
+          device.deviceData = device.deviceData || {};
+          
+          // Store manufacturer data info
+          device.deviceData.manufacturerRecordCount = recordCount || 0;
+          device.deviceData.manufacturerCompanyId = companyId;
+          device.deviceData.manufacturerRawData = rawData;
+          device.deviceData.lastManufacturerUpdate = Date.now();
+          
+          // ✅ CRITICAL: Store battery level from advertising packet
+          if (eventData.batteryLevel !== undefined && eventData.batteryLevel !== null) {
+            device.deviceData.batteryLevel = eventData.batteryLevel;
+            device.deviceData.batteryMillivolts = eventData.batteryMillivolts || null;
+          }
+          
+          // Emit device data update
+          this.emit('deviceDataUpdated', {
+            deviceId,
+            deviceData: device.deviceData
+          });
+        }
+        break;
+        
+      case 'sync_start':
+        
+        // Emit event for UI to show sync progress
+        this.emit('dataTransfer', {
+          deviceId,
+          type: 'sync_start',
+          totalRecords,
+          payloadLength: eventData.payloadLength,
+          rawPayload: eventData.rawPayload,
+          success: true
+        });
+        break;
+        
+      case 'sync_complete':
+        // ✅ NATIVE DATA TRANSFER: Sync complete from native side
+        console.log(`📊 [SYNC COMPLETE] Received for ${deviceId}: ${recordsTransmitted} records`);
+        
+        // Update UI with latest synced data
+        if (success) {
+          const updated = this.updateDeviceDataFromSyncedRecords(deviceId);
+          
+          if (updated) {
+            const latestRecord = this.getLatestSyncedRecord(deviceId);
+            
+            // Emit comprehensive sync completion event
+            this.emit('syncDataUpdated', {
+              deviceId,
+              latestRecord,
+              totalRecords: recordsTransmitted,
+              success: true
+            });
+          }
+          
+          // ✅ INDUSTRY STANDARD: Send ALL historical records + aggregates
+          const allRecords = this.getSyncRecords(deviceId);
+          if (allRecords && allRecords.length > 0) {
+            console.log(`📤 [HISTORICAL SYNC] Preparing to send ${allRecords.length} historical records`);
+            await this.sendHistoricalRecords(deviceId, allRecords);
+          } else {
+            console.log(`⚠️ [HISTORICAL SYNC] No records available to send`);
+          }
+        }
+        
+        // Emit standard data transfer event
+        this.emit('dataTransfer', {
+          deviceId,
+          type: 'sync_complete',
+          success,
+          recordsTransmitted
+        });
+        
+        // Clean up sync state
+        if (this.dataSyncStates) {
+          this.dataSyncStates.delete(deviceId);
+        }
+        break;
+        
+      case 'record':
+        // ✅ NATIVE DATA TRANSFER: Store records from native side
+        console.log(`📋 [RECORD] Received ${records?.length || 0} records for ${deviceId}`);
+        
+        if (records && Array.isArray(records)) {
+          const device = this.scannedDevices.get(deviceId);
+          if (device) {
+            if (!device.syncRecords) {
+              device.syncRecords = [];
+            }
+            
+            // Add new records from native side
+            let validRecordsCount = 0;
+            let invalidRecordsCount = 0;
+            
+            records.forEach((record) => {
+              // ✅ FIX: Filter out invalid zero/padding records
+              const isValidRecord = (
+                record.steps > 0 ||  // Has meaningful steps
+                record.temperature > 0 ||  // Has meaningful temperature
+                (record.timestamp && record.timestamp > 1577836800)  // Has valid timestamp (after 2020)
+              );
+              
+              if (!isValidRecord) {
+                console.log(`🚫 [RECORD] Skipping invalid/padding record: Steps=${record.steps}, Temp=${record.temperature}°C, Time=${record.timestamp || 0}`);
+                invalidRecordsCount++;
+                return;  // Skip this record
+              }
+              
+              validRecordsCount++;
+              console.log(`📋 [RECORD] Storing: Steps=${record.steps}, Temp=${record.temperature}°C, Time=${record.timestampDate || new Date(record.timestamp * 1000).toISOString()}`);
+              
+              device.syncRecords.push({
+                ...record,
+                timestamp: record.timestamp,
+                timestampDate: record.timestampDate,
+                temperature: record.temperature,
+                steps: record.steps,
+                receivedAt: new Date(),
+                deviceId,
+                source: 'native'
+              });
+            });
+            
+            console.log(`📊 [RECORD] Filtered: ${validRecordsCount} valid, ${invalidRecordsCount} invalid records`);
+            
+            console.log(`📊 [RECORD] Total records stored for ${deviceId}: ${device.syncRecords.length}`);
+            
+            this.scannedDevices.set(deviceId, device);
+          } else {
+            console.log(`⚠️ [RECORD] Device not found: ${deviceId}`);
+          }
+        } else {
+          console.log(`⚠️ [RECORD] Invalid records array`);
+        }
+        
+        // Emit event for UI to show record data
+        this.emit('dataTransfer', {
+          deviceId,
+          type: 'record',
+          records,
+          recordCount
+        });
+        break;
+        
+      case 'read_error':
+        // Emit event for UI to show error
+        this.emit('dataTransfer', {
+          deviceId,
+          type: 'read_error',
+          errorCode
+        });
+        break;
+        
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Collect all device data after system commands to see what values we're getting
+   * @param {string} deviceId - Device ID
+   */
+  async collectAllDeviceDataAfterCommands(deviceId) {
+    try {
+      
+      const device = this.scannedDevices.get(deviceId);
+      if (!device) {
+        return;
+      }
+
+
+      // 1. Read all characteristics we can access
+      
+      // Battery Level
+      try {
+        const batteryData = await this.readCharacteristic(deviceId, BLE_SERVICES.BATTERY, BLE_CHARACTERISTICS.BATTERY_LEVEL);
+        if (batteryData) {
+          const batteryBuffer = Buffer.from(batteryData, 'base64');
+          const batteryLevel = batteryBuffer.readUInt8(0);
+        }
+      } catch (error) {
+      }
+
+      // Device Status
+      try {
+        const deviceStatusData = await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DEVICE_STATUS);
+        if (deviceStatusData) {
+          const parsedStatus = BLEDataParser.parseDeviceStatus(deviceStatusData);
+        }
+      } catch (error) {
+      }
+
+      // System Command Characteristic (to check for responses)
+      try {
+        const systemCommandData = await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.SYSTEM_COMMAND);
+        if (systemCommandData) {
+          const systemBuffer = Buffer.from(systemCommandData, 'base64');
+        }
+      } catch (error) {
+      }
+
+      // Data Transfer Characteristic
+      try {
+        const dataTransferData = await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DATA_TRANSFER);
+        if (dataTransferData) {
+          const transferBuffer = Buffer.from(dataTransferData, 'base64');
+        }
+      } catch (error) {
+      }
+
+      // Manufacturer Info
+      try {
+        const manufacturerData = await this.readCharacteristic(deviceId, BLE_SERVICES.DEVICE_INFO, BLE_CHARACTERISTICS.MANUFACTURER);
+        if (manufacturerData) {
+          const manufacturerBuffer = Buffer.from(manufacturerData, 'base64');
+          const manufacturer = manufacturerBuffer.toString('utf8');
+        }
+      } catch (error) {
+      }
+
+      // Model Number
+      try {
+        const modelData = await this.readCharacteristic(deviceId, BLE_SERVICES.DEVICE_INFO, BLE_CHARACTERISTICS.MODEL_NUMBER);
+        if (modelData) {
+          const modelBuffer = Buffer.from(modelData, 'base64');
+          const model = modelBuffer.toString('utf8');
+        }
+      } catch (error) {
+      }
+
+      // 2. Check current device data state
+
+      // 3. Check monitoring subscriptions
+
+      // 4. Check data sync states
+      if (this.dataSyncStates && this.dataSyncStates.has(deviceId)) {
+        const syncState = this.dataSyncStates.get(deviceId);
+      }
+
+
+    } catch (error) {
     }
   }
 
@@ -4702,7 +6416,6 @@ class BLEService {
     try {
       const device = this.scannedDevices.get(deviceId);
       if (!device || !device.deviceData) {
-        console.log('⚠️ No device data available to send to server for:', deviceId);
         return;
       }
 
@@ -4711,26 +6424,14 @@ class BLEService {
 
       // Only send if we have meaningful data
       if (batteryLevel === null && temperature === null && steps === null) {
-        console.log('⚠️ No meaningful device data to send to server for:', deviceId);
         return;
       }
 
-      // Log discovered services for debugging
-      if (device.services && device.services.length > 0) {
-        const connectionType = device.connectionType || 'manual';
-        console.log(`🔍 Device ${device.name} (${connectionType} connection) has ${device.services.length} discovered services:`);
-        device.services.forEach((service, index) => {
-          console.log(`  ${index + 1}. Service UUID: ${service.uuid}`);
-          if (service.characteristics && service.characteristics.length > 0) {
-            console.log(`     Characteristics: ${service.characteristics.length}`);
-            service.characteristics.forEach((char, charIndex) => {
-              console.log(`       ${charIndex + 1}. ${char.uuid} (Readable: ${char.isReadable}, Notifiable: ${char.isNotifiable})`);
-            });
-          }
-        });
-      } else {
-        const connectionType = device.connectionType || 'manual';
-        console.log(`⚠️ No services discovered for device ${device.name} (${connectionType} connection) yet`);
+      // ✅ Convert timestamp to ISO string
+      // lastUpdate is ALWAYS a Date object (guaranteed by updateDeviceDataFromSyncedRecords and handleDeviceStatusData)
+      let timestampISO = null;
+      if (lastUpdate && lastUpdate instanceof Date && !isNaN(lastUpdate.getTime())) {
+        timestampISO = lastUpdate.toISOString();
       }
 
       // Prepare the payload according to the API specification
@@ -4739,7 +6440,7 @@ class BLEService {
         Steps: steps || null,
         Temperature: temperature ? temperature.toString() : null,
         BatteryLevel: batteryLevel ? batteryLevel.toString() : null,
-        TimeStamp: lastUpdate ? lastUpdate.toISOString() : null,
+        TimeStamp: timestampISO,
         Status: device.connectionState === CONNECTION_STATES.CONNECTED ? 'Connected' : 'Disconnected',
         Characteristic: device.services ? device.services.map(service => ({
           Characteristic: service.uuid,
@@ -4755,19 +6456,15 @@ class BLEService {
       };
 
       const connectionType = device.connectionType || 'manual';
-      console.log(`📤 Preparing to send pet health data to server for ${connectionType} connection:`, petHealthData);
 
       // Send data to server
       const result = await postPetHealthBLEData(petHealthData);
 
       if (result.success !== false) {
-        console.log('✅ Pet health data sent successfully to server for device:', deviceId);
       } else {
-        console.warn('⚠️ Failed to send pet health data to server:', result.error);
       }
 
     } catch (error) {
-      console.error('❌ Error sending pet health data to server:', error);
     }
   }
 
@@ -4775,23 +6472,18 @@ class BLEService {
   async sendPetHealthDataToServerWithRetry(deviceId, context = 'unknown', maxRetries = 3, retryDelay = 2000) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        console.log(`📤 [${context}] Attempt ${attempt}/${maxRetries} to send pet health data for device: ${deviceId}`);
         
         const device = this.scannedDevices.get(deviceId);
         if (!device) {
-          console.log(`⚠️ [${context}] Device ${deviceId} not found in scannedDevices`);
           return { success: false, error: 'SMART_TAG service not available' };
         }
 
         // Check if device data is available and has meaningful data
         if (!device.deviceData) {
-          console.log(`⚠️ [${context}] No device data available for device: ${deviceId} (attempt ${attempt})`);
           if (attempt < maxRetries) {
-            console.log(`⏳ [${context}] Retrying in ${retryDelay}ms...`);
             await new Promise(resolve => setTimeout(resolve, retryDelay));
             continue;
           } else {
-            console.log(`❌ [${context}] Max retries reached, no device data available for: ${deviceId}`);
             return { success: false, error: 'SMART_TAG service not available' };
           }
         }
@@ -4800,32 +6492,24 @@ class BLEService {
         
         // Check if we have meaningful data
         if (batteryLevel === null && temperature === null && steps === null) {
-          console.log(`⚠️ [${context}] No meaningful device data available for device: ${deviceId} (attempt ${attempt})`);
           if (attempt < maxRetries) {
-            console.log(`⏳ [${context}] Retrying in ${retryDelay}ms...`);
             await new Promise(resolve => setTimeout(resolve, retryDelay));
             continue;
           } else {
-            console.log(`❌ [${context}] Max retries reached, no meaningful data for: ${deviceId}`);
             return { success: false, error: 'SMART_TAG service not available' };
           }
         }
 
         // If we reach here, we have data - proceed with sending
-        console.log(`📤 [${context}] Device data available for ${deviceId}: Battery=${batteryLevel}%, Temp=${temperature}°C, Steps=${steps}`);
         
         // Use the existing method to send data
         await this.sendPetHealthDataToServer(deviceId);
-        console.log(`✅ [${context}] Successfully sent pet health data for device: ${deviceId}`);
         return; // Success, exit retry loop
         
       } catch (error) {
-        console.error(`❌ [${context}] Error in attempt ${attempt} for device ${deviceId}:`, error);
         if (attempt < maxRetries) {
-          console.log(`⏳ [${context}] Retrying in ${retryDelay}ms...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
         } else {
-          console.error(`❌ [${context}] Max retries reached for device ${deviceId}`);
         }
       }
     }
@@ -4835,14 +6519,12 @@ class BLEService {
 
   // Set screen active state for a device (called from UI when screen becomes active)
   setScreenActiveState(deviceId, isActive) {
-    console.log(`📱 [SCREEN] Setting screen state for device ${deviceId}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
     
     const currentState = this.screenActiveStates.get(deviceId);
     
     // Only update if the state actually changed
     if (currentState !== isActive) {
       this.screenActiveStates.set(deviceId, isActive);
-      console.log(`📱 [SCREEN] State changed: ${currentState || 'UNKNOWN'} → ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
       
       // Restart adaptive API calling with new interval
       this.restartAdaptiveApiCalling(deviceId);
@@ -4850,20 +6532,15 @@ class BLEService {
       // Handle GET API calling based on screen state
       if (isActive) {
         // Start GET API calling when screen becomes active
-        console.log(`📱 [SCREEN] Starting GET API for device ${deviceId} (screen became active)`);
         const success = this.startGetApiCalling(deviceId);
         if (success) {
-          console.log(`✅ [SCREEN] GET API started successfully for device ${deviceId}`);
         } else {
-          console.log(`❌ [SCREEN] Failed to start GET API for device ${deviceId}`);
         }
       } else {
         // Stop GET API calling when screen becomes inactive
-        console.log(`📱 [SCREEN] Stopping GET API for device ${deviceId} (screen became inactive)`);
         this.stopGetApiCalling(deviceId);
       }
     } else {
-      console.log(`📱 [SCREEN] State unchanged for device ${deviceId}: ${isActive ? 'ACTIVE' : 'INACTIVE'}`);
     }
   }
 
@@ -4888,55 +6565,59 @@ class BLEService {
 
   // Start adaptive API calling for a device
   startAdaptiveApiCalling(deviceId) {
+    // ❌ DISABLED: Replaced by industry-standard buffering system
+    // This method is kept for compatibility but does nothing
+    // All API calls now handled by:
+    // - Historical sync: sendHistoricalRecords() after sync complete
+    // - Live updates: uploadLiveBatch() every 5 minutes
+    // - Alerts: sendImmediateAlert() when threshold crossed
+    console.log(`ℹ️ [ADAPTIVE API] Disabled - using buffering system instead for ${deviceId}`);
+    return;
+    
+    // Old code below (disabled):
+    /*
     // Clear existing timer if any
     this.stopAdaptiveApiCalling(deviceId);
     
     const interval = this.getCurrentApiInterval(deviceId);
     const appState = this.appState;
     const screenActive = this.screenActiveStates.get(deviceId) || false;
-    console.log(`🔄 Starting adaptive API calling for device ${deviceId} with ${interval/1000}s interval (App: ${appState}, Screen: ${screenActive ? 'ACTIVE' : 'INACTIVE'})`);
-    console.log(`🔍 Debug: Platform.OS=${Platform.OS}, SampleBridgeAndroid=${!!SampleBridgeAndroid}`);
     
     // Use native monitoring when app is in background (like RSSI does)
     if (this.appState === 'background' && Platform.OS === 'android' && SampleBridgeAndroid) {
-      console.log(`📤 App in background - using native health data API monitoring for device ${deviceId}`);
-      console.log(`🔍 Calling SampleBridgeAndroid.startHealthDataApiMonitoring(${deviceId}, ${interval})`);
       SampleBridgeAndroid.startHealthDataApiMonitoring(deviceId, interval)
         .then(() => {
-          console.log(`✅ Native health data API monitoring started for device ${deviceId}`);
           // Store native monitoring info instead of timer
           this.adaptiveApiTimers.set(deviceId, { isNative: true, interval });
-          console.log(`✅ Native monitoring stored for device ${deviceId}, total timers: ${this.adaptiveApiTimers.size}`);
         })
         .catch((error) => {
-          console.error(`❌ Failed to start native health data API monitoring:`, error);
           // Fallback to JS timer
           this.startJSTimer(deviceId, interval);
         });
     } else {
       // Use regular JS timer when app is active
-      console.log(`📤 App is active - using JS timer for device ${deviceId}`);
       this.startJSTimer(deviceId, interval);
     }
+    */
   }
   
-  // Start JavaScript timer for API calling
+  // Start JavaScript timer for API calling (DISABLED - see startAdaptiveApiCalling)
   startJSTimer(deviceId, interval) {
+    return;  // Disabled
+    /*
     const timer = setInterval(async () => {
       try {
         const device = this.scannedDevices.get(deviceId);
         if (device && device.connectionState === CONNECTION_STATES.CONNECTED) {
-          console.log(`📤 JS Timer: Sending pet health data to server for device ${deviceId}`);
           await this.sendPetHealthDataToServer(deviceId);
         }
       } catch (error) {
-        console.error(`❌ JS Timer API calling error for device ${deviceId}:`, error);
       }
     }, interval);
     
     // Store timer with interval information
     this.adaptiveApiTimers.set(deviceId, { timer, interval });
-    console.log(`✅ JS Timer stored for device ${deviceId}, total timers: ${this.adaptiveApiTimers.size}`);
+    */
   }
 
   // Stop adaptive API calling for a device
@@ -4945,18 +6626,14 @@ class BLEService {
     if (timerInfo) {
       if (timerInfo.isNative && Platform.OS === 'android' && SampleBridgeAndroid) {
         // Stop native monitoring
-        console.log(`🛑 Stopping native health data API monitoring for device ${deviceId}`);
         SampleBridgeAndroid.stopHealthDataApiMonitoring(deviceId)
           .then(() => {
-            console.log(`✅ Native health data API monitoring stopped for device ${deviceId}`);
           })
           .catch((error) => {
-            console.error(`❌ Failed to stop native health data API monitoring:`, error);
           });
       } else if (timerInfo.timer) {
         // Stop JS timer
         clearInterval(timerInfo.timer);
-        console.log(`🛑 Stopped JS timer for device ${deviceId}`);
       }
       this.adaptiveApiTimers.delete(deviceId);
     }
@@ -4966,7 +6643,6 @@ class BLEService {
   restartAdaptiveApiCalling(deviceId) {
     // Check if device is in cooldown
     if (this.adaptiveApiCooldowns.has(deviceId)) {
-      console.log(`⏸️ Skipping restart for device ${deviceId} - still in cooldown`);
       return;
     }
 
@@ -4983,7 +6659,6 @@ class BLEService {
         
         // Restart if interval changed OR if we need to switch between native/JS timers
         if (existingTimer && (existingTimer.interval !== currentInterval || currentlyNative !== shouldUseNative)) {
-          console.log(`🔄 Restarting adaptive API calling for device ${deviceId} - interval: ${currentInterval/1000}s, switching to ${shouldUseNative ? 'native' : 'JS'} timer`);
           
           // Set cooldown to prevent rapid restarts
           this.adaptiveApiCooldowns.set(deviceId, true);
@@ -4992,10 +6667,8 @@ class BLEService {
           }, 2000); // 2 second cooldown
           
           // Call startAdaptiveApiCalling immediately instead of using setTimeout
-          console.log(`🔄 About to call startAdaptiveApiCalling for device ${deviceId}`);
           this.startAdaptiveApiCalling(deviceId);
         } else {
-          console.log(`⏸️ Skipping restart for device ${deviceId} - interval unchanged (${currentInterval/1000}s) and timer type unchanged`);
         }
       }
     }
@@ -5009,22 +6682,19 @@ class BLEService {
       }
     }
     this.adaptiveApiTimers.clear();
-    console.log('🛑 Stopped all adaptive API timers');
   }
 
   // Update app state and adjust API intervals
-  updateAppState(newState) {
+  async updateAppState(newState) {
     const oldState = this.appState;
     
     // Prevent infinite loop - only update if state actually changed
     if (oldState === newState) {
-      console.log(`📱 App state unchanged: ${newState}, skipping update`);
       return;
     }
     
     // Prevent recursive calls during state update
     if (this.isUpdatingAppState) {
-      console.log(`⚠️ App state update already in progress, skipping: ${newState}`);
       return;
     }
     
@@ -5032,31 +6702,34 @@ class BLEService {
     
     try {
       this.appState = newState;
-      console.log(`📱 App state changed: ${oldState} → ${newState}`);
-      console.log(`🔍 Debug: Current adaptive API timers count: ${this.adaptiveApiTimers.size}`);
       
       // Adjust API intervals for all connected devices
       if (newState === 'background') {
+        // ✅ INDUSTRY STANDARD: Upload all pending buffers before backgrounding
+        console.log(`📤 [APP BACKGROUND] Uploading all pending live data buffers...`);
+        for (const [deviceId, buffer] of this.liveDataBuffers.entries()) {
+          if (buffer.length > 0) {
+            console.log(`📤 [APP BACKGROUND] Uploading ${buffer.length} pending records for ${deviceId}`);
+            await this.uploadLiveBatch(deviceId);
+          }
+        }
+        
         // Switch to native monitoring when app goes to background
-        console.log('📱 App going to background - switching to native health data API monitoring');
         for (const [deviceId, timerInfo] of this.adaptiveApiTimers.entries()) {
           this.restartAdaptiveApiCalling(deviceId);
         }
         
         // Slow down RSSI cycle in background for power saving
         if (this.rssiCycleActive) {
-          console.log('📱 App going to background - slowing down RSSI cycle');
           this.restartRssiCycle(); // Will use profile-based timing
         }
       } else if (newState === 'active') {
         // Switch back to JS timers when app becomes active
-        console.log('📱 App becoming active - switching back to JS timers');
         // Also set devices to active if they haven't been explicitly set to inactive
         for (const [deviceId, timerInfo] of this.adaptiveApiTimers.entries()) {
           const currentScreenState = this.screenActiveStates.get(deviceId);
           if (currentScreenState === undefined) {
             // No screen state set yet - default to active for better UX
-            console.log(`📱 Auto-setting device ${deviceId} to ACTIVE (app became active)`);
             this.screenActiveStates.set(deviceId, true);
           }
           this.restartAdaptiveApiCalling(deviceId);
@@ -5070,7 +6743,6 @@ class BLEService {
         
         // Restore normal RSSI cycle when app becomes active
         if (this.connectedDevices.size > 0) {
-          console.log('📱 App becoming active - restoring normal RSSI cycle');
           this.restartRssiCycle();
         }
       }
@@ -5086,11 +6758,9 @@ class BLEService {
       return;
     }
     
-    console.log(`🔄 Triggering ${this.pendingUIUpdates.size} pending UI updates`);
     
     for (const [deviceId, deviceData] of this.pendingUIUpdates) {
       if (this.onDeviceDataUpdated) {
-        console.log(`📊 Triggering pending UI update for device: ${deviceId}`);
         this.onDeviceDataUpdated(deviceId, deviceData);
       }
     }
@@ -5105,7 +6775,6 @@ class BLEService {
 
   // Start GET API calling for active screen (every 15 seconds)
   startGetApiCalling(deviceId) {
-    console.log(`🚀 [GET API] Starting for device: ${deviceId}`);
     
     // Stop any existing timer first
     this.stopGetApiCalling(deviceId);
@@ -5113,12 +6782,10 @@ class BLEService {
     // Validate device
     const device = this.scannedDevices.get(deviceId);
     if (!device) {
-      console.log(`❌ [GET API] Device ${deviceId} not found in scannedDevices`);
       return false;
     }
     
     if (device.connectionState !== CONNECTION_STATES.CONNECTED) {
-      console.log(`❌ [GET API] Device ${deviceId} not connected (state: ${device.connectionState})`);
       return false;
     }
     
@@ -5126,41 +6793,33 @@ class BLEService {
     const interval = this.getApiConfig.ACTIVE_SCREEN_INTERVAL;
     const powerProfileName = this.profile === POWER_PROFILE.lowPower ? 'lowPower' : 
                            this.profile === POWER_PROFILE.ultraLowPower ? 'ultraLowPower' : 'default';
-    console.log(`⏰ [GET API] Setting timer for device ${deviceId} with ${interval/1000}s interval (power profile: ${powerProfileName})`);
     
     // Create the timer
     const timer = setInterval(async () => {
-      console.log(`⏰ [GET API] Timer triggered for device ${deviceId} at ${new Date().toLocaleTimeString()}`);
       
       try {
         // Check if app is in background - don't make API calls in background
         if (this.appState !== 'active') {
-          console.log(`📱 [GET API] Skipping API call - app is in background (state: ${this.appState})`);
           return { success: false, error: 'SMART_TAG service not available' };
         }
         
         // Check if device is still connected
         const currentDevice = this.scannedDevices.get(deviceId);
         if (!currentDevice || currentDevice.connectionState !== CONNECTION_STATES.CONNECTED) {
-          console.log(`⚠️ [GET API] Device ${deviceId} no longer connected, stopping timer`);
           this.stopGetApiCalling(deviceId);
           return { success: false, error: 'SMART_TAG service not available' };
         }
         
         // Make the API call
-        console.log(`📥 [GET API] Making API call for device ${deviceId}`);
         await this.fetchPetHealthDetails(deviceId);
         
       } catch (error) {
-        console.error(`❌ [GET API] Error in timer for device ${deviceId}:`, error);
       }
     }, interval);
     
     // Store the timer
     this.getApiTimers.set(deviceId, { timer, interval });
     
-    console.log(`✅ [GET API] Successfully started for device ${deviceId}`);
-    console.log(`📊 [GET API] Current timers: ${this.getApiTimers.size}`);
     
     return true;
   }
@@ -5171,13 +6830,11 @@ class BLEService {
     if (timerInfo && timerInfo.timer) {
       clearInterval(timerInfo.timer);
       this.getApiTimers.delete(deviceId);
-      console.log(`🛑 [GET API] Stopped for device ${deviceId}`);
     }
   }
 
   // Stop all GET API timers
   stopAllGetApi() {
-    console.log(`🛑 [GET API] Stopping all timers (${this.getApiTimers.size} active)`);
     for (const [deviceId, timerInfo] of this.getApiTimers.entries()) {
       this.stopGetApiCalling(deviceId);
     }
@@ -5187,23 +6844,19 @@ class BLEService {
   // Fetch pet health details from server
   async fetchPetHealthDetails(deviceId) {
     try {
-      console.log(`📥 [GET API] Fetching data for device ${deviceId}`);
       
       const device = this.scannedDevices.get(deviceId);
       if (!device) {
-        console.log(`❌ [GET API] Device ${deviceId} not found`);
         return;
       }
 
       // Use device's pet ID if available, otherwise use default
       const petId = device.petId || 1059773;
-      console.log(`📥 [GET API] Using Pet ID: ${petId} for device ${deviceId}`);
       
       // Make the API call
       const result = await getPetHealthBLEDetails(petId);
       
       if (result.success !== false) {
-        console.log(`✅ [GET API] Successfully fetched data for device ${deviceId}`);
         
         // Store the fetched data
         if (device.deviceData) {
@@ -5215,38 +6868,31 @@ class BLEService {
         this.emit('petHealthDataUpdated', { deviceId, data: result });
         
       } else {
-        console.warn(`⚠️ [GET API] Failed to fetch data for device ${deviceId}:`, result.error);
       }
       
     } catch (error) {
-      console.error(`❌ [GET API] Error fetching data for device ${deviceId}:`, error);
     }
   }
 
   // Fetch latest data when app reopens (called once)
   async fetchLatestDataOnAppReopen() {
     try {
-      console.log('📥 [GET API] App reopened - fetching latest data for all connected devices');
       
       const connectedDevices = Array.from(this.scannedDevices.entries())
         .filter(([deviceId, device]) => device.connectionState === CONNECTION_STATES.CONNECTED);
       
       if (connectedDevices.length === 0) {
-        console.log('📥 [GET API] No connected devices to fetch data for');
         return;
       }
       
-      console.log(`📥 [GET API] Fetching data for ${connectedDevices.length} connected devices`);
       
       for (const [deviceId, device] of connectedDevices) {
         await this.fetchPetHealthDetails(deviceId);
         await new Promise(resolve => setTimeout(resolve, 500)); // Small delay between calls
       }
       
-      console.log('✅ [GET API] Latest data fetch completed for all devices');
       
     } catch (error) {
-      console.error('❌ [GET API] Error fetching latest data on app reopen:', error);
     }
   }
 
@@ -5254,7 +6900,6 @@ class BLEService {
 
   // Method to manually trigger GET API call for testing
   manualGetApiCall = async (deviceId) => {
-    console.log(`🧪 [GET API] Manual call triggered for device: ${deviceId}`);
     await this.fetchPetHealthDetails(deviceId);
   }
 
@@ -5273,52 +6918,31 @@ class BLEService {
 
   // Method to manually start GET API calling for testing
   startGetApiCallingManual = (deviceId) => {
-    console.log(`🧪 [GET API] Manually starting for device: ${deviceId}`);
     this.setScreenActiveState(deviceId, true);
   }
 
   // Method to manually stop GET API calling for testing
   stopGetApiCallingManual = (deviceId) => {
-    console.log(`🧪 [GET API] Manually stopping for device: ${deviceId}`);
     this.setScreenActiveState(deviceId, false);
   }
 
   // Debug method to check GET API status for all devices
   debugGetApiStatus = () => {
-    console.log('🔍 [GET API] Debug Status for All Devices');
-    console.log(`App State: ${this.appState}`);
-    console.log(`Total GET API Timers: ${this.getApiTimers.size}`);
     
     for (const [deviceId, device] of this.scannedDevices.entries()) {
       const getApiTimer = this.getApiTimers.get(deviceId);
       const screenActive = this.screenActiveStates.get(deviceId);
       const isConnected = device && device.connectionState === CONNECTION_STATES.CONNECTED;
       
-      console.log(`Device ${deviceId}:`, {
-        name: device?.name || 'Unknown',
-        connected: isConnected,
-        connectionState: device?.connectionState || 'Unknown',
-        screenActive: screenActive,
-        hasGetTimer: !!getApiTimer,
-        getTimerInterval: getApiTimer ? getApiTimer.interval / 1000 : 'N/A',
-        getTimerActive: !!getApiTimer?.timer
-      });
     }
     
     if (this.getApiTimers.size > 0) {
-      console.log('Active GET API Timers:', Array.from(this.getApiTimers.entries()).map(([deviceId, timerInfo]) => ({
-        deviceId,
-        hasTimer: !!timerInfo.timer,
-        interval: timerInfo.interval / 1000
-      })));
     } else {
-      console.log('No active GET API timers');
     }
   }
 
   // Force start GET API for all connected devices (for testing)
   forceStartGetApiForAllDevices = () => {
-    console.log('🧪 [GET API] Force starting for all connected devices');
     let startedCount = 0;
     
     for (const [deviceId, device] of this.scannedDevices.entries()) {
@@ -5330,12 +6954,10 @@ class BLEService {
       }
     }
     
-    console.log(`🧪 [GET API] Started ${startedCount} GET API timers`);
   }
 
   // Force stop GET API for all devices (for testing)
   forceStopGetApiForAllDevices = () => {
-    console.log('🧪 [GET API] Force stopping all GET API timers');
     this.stopAllGetApi();
   }
 
@@ -5372,7 +6994,6 @@ class BLEService {
       try {
         callback(data);
       } catch (error) {
-        console.error(`❌ Error in event listener for ${eventName}:`, error);
       }
     });
   }
@@ -5392,14 +7013,11 @@ class BLEService {
    * Manually trigger battery profile adjustment (for testing)
    */
   async triggerBatteryProfileAdjustment() {
-    console.log('📱 Manual battery profile adjustment triggered');
     if (this.phoneBatteryLevel === null) {
       return { success: false, message: 'Phone battery level not available' };
     }
 
     try {
-      console.log(`📱 Current phone battery: ${this.phoneBatteryLevel}%`);
-      console.log(`📱 Current power profile: ${this.getCurrentProfileName()}`);
       
       this.adjustPhonePowerProfileForBattery(this.phoneBatteryLevel);
       
@@ -5411,7 +7029,6 @@ class BLEService {
         currentProfile: newProfile
       };
     } catch (error) {
-      console.error('📱 Manual battery profile adjustment failed:', error);
       return { success: false, error: error.message };
     }
   }
@@ -5432,7 +7049,6 @@ class BLEService {
    */
   async forgetDevice(deviceId) {
     try {
-      console.log(`🗑️ Starting forget process for device: ${deviceId}`);
       
       // 1. Get device info before removal
       const device = this.scannedDevices.get(deviceId);
@@ -5440,52 +7056,41 @@ class BLEService {
       
       // 2. Disconnect the device first (if connected)
       if (this.connectedDevices.has(deviceId)) {
-        console.log(`🔌 Disconnecting device ${deviceId} before forgetting`);
         await this.disconnectFromDevice(deviceId);
       }
       
       // 3. Remove from connected devices map
       this.connectedDevices.delete(deviceId);
-      console.log(`✅ Removed from connectedDevices: ${deviceId}`);
       
       // 4. Remove from scanned devices map
       this.scannedDevices.delete(deviceId);
-      console.log(`✅ Removed from scannedDevices: ${deviceId}`);
       
       // 5. Remove from native side (platform specific)
       if (Platform.OS === 'ios') {
         // iOS: Remove from app's bonded list (OS unpairing must be done manually in Settings)
         try {
           await this.removeDeviceFromBondedList(deviceId);
-          console.log(`✅ Removed from iOS bonded list: ${deviceId}`);
-          console.log(`ℹ️ Note: For complete unpairing, user must manually remove device from iOS Settings > Bluetooth`);
         } catch (error) {
-          console.warn(`⚠️ Could not remove from iOS bonded list: ${error.message}`);
         }
       } else {
         // Android: Remove from bonded list (native implementation handles unpairing)
         try {
           await AutoConnectService.removeBondedDevice(deviceId);
-          console.log(`✅ Removed from Android bonded list: ${deviceId}`);
         } catch (error) {
-          console.warn(`⚠️ Could not remove from Android bonded list: ${error.message}`);
         }
       }
       
       // 6. Clear all device-related data
       this.clearDeviceData(deviceId);
-      console.log(`✅ Cleared device data: ${deviceId}`);
       
       // 7. Stop any ongoing operations for this device
       this.stopDeviceOperations(deviceId);
-      console.log(`✅ Stopped device operations: ${deviceId}`);
       
       // 8. Trigger UI update
       if (this.onDeviceListUpdated) {
         this.onDeviceListUpdated();
       }
       
-      console.log(`✅ Device ${deviceId} (${deviceName}) forgotten successfully`);
       return { 
         success: true, 
         message: `Device "${deviceName}" forgotten successfully`,
@@ -5494,7 +7099,6 @@ class BLEService {
       };
       
     } catch (error) {
-      console.error(`❌ Error forgetting device ${deviceId}:`, error);
       return { 
         success: false, 
         error: error.message,
@@ -5548,7 +7152,6 @@ class BLEService {
       this.disconnectSubscriptions.delete(deviceId);
     }
     
-    console.log(`🧹 Cleared all data for device: ${deviceId}`);
   }
 
   /**
@@ -5578,50 +7181,427 @@ class BLEService {
       this.reconnectionAttempts.delete(deviceId);
     }
     
-    console.log(`⏹️ Stopped all operations for device: ${deviceId}`);
   }
 
   // Cleanup
   destroy() {
-    this.stopScanning();
-    this.disconnectAllDevices();
-    this.stopPeriodicAutoScan();
-    this.stopAllAdaptiveApi();
-    
-    // Stop all GET API timers
-    this.stopAllGetApi();
-    
-    // Stop RSSI cycle
-    this.stopRssiCycle();
-    
-    // Clear cooldowns
-    this.adaptiveApiCooldowns.clear();
-    
-    // Clear all event listeners
-    this.removeAllListeners();
-
-    // Stop all timers
-    if (this.reconnectionTimers) {
-      for (const timer of this.reconnectionTimers.values()) {
-        clearTimeout(timer);
+    try {
+      this.stopScanning();
+      this.disconnectAllDevices();
+      this.stopPeriodicAutoScan();
+      this.stopAllAdaptiveApi();
+      
+      // Stop all GET API timers
+      this.stopAllGetApi();
+      
+      // Stop RSSI cycle
+      this.stopRssiCycle();
+      
+      // ✅ INDUSTRY STANDARD: Upload all pending buffers before shutdown
+      console.log(`🧹 [CLEANUP] Uploading all pending live data buffers before destroy...`);
+      for (const [deviceId, buffer] of this.liveDataBuffers.entries()) {
+        if (buffer.length > 0) {
+          console.log(`📤 [CLEANUP] Uploading ${buffer.length} pending records for ${deviceId}`);
+          this.uploadLiveBatch(deviceId).catch(err => {
+            console.error(`❌ [CLEANUP] Failed to upload buffer for ${deviceId}:`, err);
+          });
+        }
       }
-      this.reconnectionTimers.clear();
-    }
-
-    if (this.heartbeatTimers) {
-      for (const timer of this.heartbeatTimers.values()) {
+      
+      // Stop all batch upload timers
+      for (const timer of this.batchUploadTimers.values()) {
         clearInterval(timer);
       }
-      this.heartbeatTimers.clear();
-    }
+      this.batchUploadTimers.clear();
+      
+      // Clear buffer data
+      this.liveDataBuffers.clear();
+      this.lastBatchUpload.clear();
+      this.historicalSyncComplete.clear();
+      
+      // Clear cooldowns
+      this.adaptiveApiCooldowns.clear();
+      
+      // Clear all event listeners
+      this.removeAllListeners();
 
-    // Remove all monitoring subscriptions
-    for (const subscription of this.monitoringSubscriptions.values()) {
-      subscription.remove();
-    }
-    this.monitoringSubscriptions.clear();
+      // Stop all timers
+      if (this.reconnectionTimers) {
+        for (const timer of this.reconnectionTimers.values()) {
+          clearTimeout(timer);
+        }
+        this.reconnectionTimers.clear();
+      }
 
-    console.log('BLE Service destroyed');
+      if (this.heartbeatTimers) {
+        for (const timer of this.heartbeatTimers.values()) {
+          clearInterval(timer);
+        }
+        this.heartbeatTimers.clear();
+      }
+
+      // Remove all monitoring subscriptions
+      for (const subscription of this.monitoringSubscriptions.values()) {
+        subscription.remove();
+      }
+      this.monitoringSubscriptions.clear();
+      
+      // Clear all maps
+      this.connectedDevices.clear();
+      this.scannedDevices.clear();
+      this.manualDisconnectCooldown.clear();
+      this.rssiValues.clear();
+      this.rssiHistory.clear();
+      this.lastRssiUpdate.clear();
+      this.screenActiveStates.clear();
+      this.knownDeviceIds.clear();
+      
+      // Remove native event listeners (iOS)
+      if (Platform.OS === 'ios' && this.iosEventEmitter) {
+        this.iosEventEmitter.removeAllListeners('DeviceFound');
+        this.iosEventEmitter.removeAllListeners('DeviceConnected');
+        this.iosEventEmitter.removeAllListeners('DeviceDisconnected');
+        this.iosEventEmitter.removeAllListeners('ServicesDiscovered');
+        this.iosEventEmitter.removeAllListeners('CharacteristicsDiscovered');
+        this.iosEventEmitter.removeAllListeners('CharacteristicData');
+        this.iosEventEmitter.removeAllListeners('DataTransfer');
+        this.iosEventEmitter.removeAllListeners('SystemCommandResponse');
+        this.iosEventEmitter.removeAllListeners('RSSIUpdate');
+        this.iosEventEmitter.removeAllListeners('ServiceDiscoveryComplete');
+      }
+      
+      // Remove native event listeners (Android)
+      if (Platform.OS === 'android') {
+        DeviceEventEmitter.removeAllListeners('DeviceFound');
+        DeviceEventEmitter.removeAllListeners('ConnectionStateChanged');
+        DeviceEventEmitter.removeAllListeners('CharacteristicDataReceived');
+        DeviceEventEmitter.removeAllListeners('CharacteristicChanged');
+        DeviceEventEmitter.removeAllListeners('DeviceDataUpdated');
+        DeviceEventEmitter.removeAllListeners('HealthDataApiRequest');
+        DeviceEventEmitter.removeAllListeners('SystemCommandEvent');
+        DeviceEventEmitter.removeAllListeners('DataTransferEvent');
+        DeviceEventEmitter.removeAllListeners('ServiceDiscoveryComplete');
+        DeviceEventEmitter.removeAllListeners('ServicesDiscovered');
+        DeviceEventEmitter.removeAllListeners('RSSIUpdated');
+        DeviceEventEmitter.removeAllListeners('ScanStateChanged');
+        DeviceEventEmitter.removeAllListeners('DeviceDisconnected');
+        DeviceEventEmitter.removeAllListeners('DeviceReconnected');
+        DeviceEventEmitter.removeAllListeners('DeviceConnected');
+      }
+      
+      console.log('✅ [BLE SERVICE] Cleanup complete');
+      
+    } catch (error) {
+      console.error('❌ [BLE SERVICE] Error during cleanup:', error);
+    }
+  }
+  
+  // MARK: - DFU (Device Firmware Update) / OTA Methods
+  
+  /**
+   * Enter DFU Mode - sends 0x0A command to device
+   * Device will reboot into DFU bootloader
+   */
+  async enterDFUMode(deviceId) {
+    try {
+      console.log('🔧 [DFU] Entering DFU mode for device:', deviceId);
+      
+      let result;
+      if (Platform.OS === 'android') {
+        result = await SampleBridgeAndroid.enterDFUMode(deviceId);
+      } else {
+        result = await BridgingCodeModule.enterDFUMode(deviceId);
+      }
+      
+      console.log('✅ [DFU] Enter DFU mode result:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('❌ [DFU] Error entering DFU mode:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Start DFU process
+   * @param {string} deviceId - Device ID (UUID for iOS, MAC for Android)
+   * @param {string} firmwarePath - Path to .zip firmware file
+   * @param {object} callbacks - { onProgress, onStateChange, onError, onComplete, onAborted }
+   */
+  async startDFU(deviceId, firmwarePath, callbacks = {}) {
+    try {
+      console.log('🚀 [DFU] Starting DFU process');
+      console.log('   Device:', deviceId);
+      console.log('   Firmware:', firmwarePath);
+      
+      // Setup event listeners for callbacks
+      if (callbacks.onProgress) {
+        this.on('DFUProgress', callbacks.onProgress);
+      }
+      
+      if (callbacks.onStateChange) {
+        this.on('DFUStateChanged', callbacks.onStateChange);
+      }
+      
+      if (callbacks.onError) {
+        this.on('DFUError', callbacks.onError);
+      }
+      
+      if (callbacks.onComplete) {
+        this.on('DFUCompleted', callbacks.onComplete);
+      }
+      
+      if (callbacks.onAborted) {
+        this.on('DFUAborted', callbacks.onAborted);
+      }
+      
+      // Start DFU
+      let result;
+      if (Platform.OS === 'android') {
+        result = await SampleBridgeAndroid.startDFU(deviceId, firmwarePath);
+      } else {
+        result = await BridgingCodeModule.startDFU(deviceId, firmwarePath);
+      }
+      
+      console.log('✅ [DFU] DFU process started:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('❌ [DFU] Error starting DFU:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Cancel ongoing DFU process
+   */
+  async cancelDFU() {
+    try {
+      console.log('🛑 [DFU] Cancelling DFU');
+      
+      let result;
+      if (Platform.OS === 'android') {
+        result = await SampleBridgeAndroid.cancelDFU();
+      } else {
+        result = await BridgingCodeModule.cancelDFU();
+      }
+      
+      // Remove all DFU event listeners
+      this.removeAllListeners('DFUProgress');
+      this.removeAllListeners('DFUStateChanged');
+      this.removeAllListeners('DFUError');
+      this.removeAllListeners('DFUCompleted');
+      this.removeAllListeners('DFUAborted');
+      
+      console.log('✅ [DFU] DFU cancelled:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('❌ [DFU] Error cancelling DFU:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Check if device is in DFU mode
+   * @param {string} deviceId 
+   */
+  async isDeviceInDFUMode(deviceId) {
+    try {
+      let isInDFU;
+      if (Platform.OS === 'android') {
+        isInDFU = await SampleBridgeAndroid.isDeviceInDFUMode(deviceId);
+      } else {
+        isInDFU = await BridgingCodeModule.isDeviceInDFUMode(deviceId);
+      }
+      
+      console.log(`ℹ️ [DFU] Device ${deviceId} in DFU mode:`, isInDFU);
+      return isInDFU;
+    } catch (error) {
+      console.error('❌ [DFU] Error checking DFU mode:', error);
+      return false;
+    }
+  }
+  
+  /**
+   * Get DFU service UUID
+   */
+  async getDFUServiceUUID() {
+    try {
+      let result;
+      if (Platform.OS === 'android') {
+        result = await SampleBridgeAndroid.getDFUServiceUUID();
+      } else {
+        result = await BridgingCodeModule.getDFUServiceUUID();
+      }
+      
+      return result.uuid;
+    } catch (error) {
+      console.error('❌ [DFU] Error getting DFU UUID:', error);
+      // Return default Nordic DFU UUID
+      return '00001530-1212-efde-1523-785feabcd123';
+    }
+  }
+  
+  /**
+   * Download firmware from server
+   * @param {string} firmwareVersion - Version to download
+   * @param {string} serverUrl - Base URL of firmware server
+   * @returns {string} Local file path
+   */
+  async downloadFirmware(firmwareVersion, serverUrl = 'https://your-server.com/firmware') {
+    try {
+      const RNFS = require('react-native-fs');
+      
+      const firmwareUrl = `${serverUrl}/${firmwareVersion}/firmware.zip`;
+      const localPath = `${RNFS.DocumentDirectoryPath}/firmware_${firmwareVersion}.zip`;
+      
+      console.log('📥 [DFU] Downloading firmware from:', firmwareUrl);
+      
+      // Check if firmware already exists
+      const exists = await RNFS.exists(localPath);
+      if (exists) {
+        console.log('ℹ️ [DFU] Firmware already downloaded:', localPath);
+        return localPath;
+      }
+      
+      // Download firmware
+      const downloadResult = await RNFS.downloadFile({
+        fromUrl: firmwareUrl,
+        toFile: localPath,
+        background: true,
+        progressDivider: 10,
+        begin: (res) => {
+          console.log('📥 [DFU] Download started, size:', res.contentLength);
+        },
+        progress: (res) => {
+          const progress = (res.bytesWritten / res.contentLength) * 100;
+          console.log(`📥 [DFU] Download progress: ${progress.toFixed(2)}%`);
+        }
+      }).promise;
+      
+      if (downloadResult.statusCode === 200) {
+        console.log('✅ [DFU] Firmware downloaded to:', localPath);
+        return Platform.OS === 'ios' ? `file://${localPath}` : `file://${localPath}`;
+      } else {
+        throw new Error(`Download failed with status: ${downloadResult.statusCode}`);
+      }
+      
+    } catch (error) {
+      console.error('❌ [DFU] Error downloading firmware:', error);
+      throw error;
+    }
+  }
+  
+  /**
+   * Check for firmware updates
+   * @param {string} deviceId 
+   * @param {string} currentVersion 
+   * @returns {object} { updateAvailable: boolean, latestVersion: string, ...}
+   */
+  async checkForFirmwareUpdate(deviceId, currentVersion) {
+    try {
+      console.log('🔍 [DFU] Checking for updates...');
+      console.log('   Device:', deviceId);
+      console.log('   Current version:', currentVersion);
+      
+      // 🧪 MOCK RESPONSE FOR TESTING (Remove when backend is ready)
+      const MOCK_MODE = true; // Set to false when real backend is available
+      
+      if (MOCK_MODE) {
+        console.log('🧪 [DFU] Using MOCK response (no backend yet)');
+        
+        // Simulate network delay
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Mock response - shows update available
+        return {
+          updateAvailable: true,
+          latestVersion: '2.0.0',
+          releaseNotes: '• Fixed battery drain issue\n• Improved step counting accuracy\n• Enhanced BLE stability',
+          critical: false,
+          downloadUrl: 'https://your-server.com/firmware/2.0.0/firmware.zip'
+        };
+      }
+      
+      // Call your backend API (when ready)
+      const response = await fetch('https://your-api.com/firmware/check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          deviceId,
+          currentVersion,
+          deviceType: 'smart_health_tag',
+          platform: Platform.OS
+        })
+      });
+      
+      const data = await response.json();
+      
+      console.log('✅ [DFU] Update check result:', data);
+      
+      return {
+        updateAvailable: data.updateAvailable || false,
+        latestVersion: data.latestVersion || currentVersion,
+        releaseNotes: data.releaseNotes || '',
+        critical: data.critical || false,
+        downloadUrl: data.downloadUrl || null
+      };
+      
+    } catch (error) {
+      console.error('❌ [DFU] Error checking for updates:', error);
+      return {
+        updateAvailable: false,
+        latestVersion: currentVersion,
+        releaseNotes: '',
+        critical: false,
+        downloadUrl: null
+      };
+    }
+  }
+  
+  /**
+   * Perform complete DFU update flow
+   * @param {string} deviceId 
+   * @param {string} firmwareVersion 
+   * @param {object} callbacks 
+   */
+  async performFirmwareUpdate(deviceId, firmwareVersion, callbacks = {}) {
+    try {
+      console.log('🚀 [DFU] Starting complete firmware update flow');
+      
+      // Step 1: Download firmware
+      if (callbacks.onDownloadStart) {
+        callbacks.onDownloadStart();
+      }
+      
+      const firmwarePath = await this.downloadFirmware(firmwareVersion);
+      
+      if (callbacks.onDownloadComplete) {
+        callbacks.onDownloadComplete(firmwarePath);
+      }
+      
+      // Step 2: Enter DFU mode
+      if (callbacks.onEnteringDFU) {
+        callbacks.onEnteringDFU();
+      }
+      
+      await this.enterDFUMode(deviceId);
+      
+      // Step 3: Wait for device to reboot into DFU mode
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Step 4: Start DFU transfer
+      const result = await this.startDFU(deviceId, firmwarePath, callbacks);
+      
+      return result;
+      
+    } catch (error) {
+      console.error('❌ [DFU] Complete update flow error:', error);
+      throw error;
+    }
   }
 }
 

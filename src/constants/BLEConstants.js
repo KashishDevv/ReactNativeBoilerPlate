@@ -3,10 +3,15 @@ export const BLE_SERVICES = {
   GENERIC_ACCESS: '00001800-0000-1000-8000-00805f9b34fb',
   BATTERY: '0000180f-0000-1000-8000-00805f9b34fb',
   DEVICE_INFO: '0000180a-0000-1000-8000-00805f9b34fb',
-  // Nordic Buttonless Secure DFU Service
-  DFU: '0000fe59-0000-1000-8000-00805f9b34fb',
-  // Smart Health Tag Data Service (from SDD - corrected format)
-  SMART_TAG: '0f0e0d0c-0b0a-0908-0706-050403020100',
+  // Nordic DFU Service (Bootloader mode) - from SDD Section 7
+  DFU: '00001530-1212-efde-1523-785feabcd123',
+  // Buttonless DFU Service (Application mode)
+  DFU_BUTTONLESS: '8ec90003-f315-4f60-9fb8-838830daea50',
+  // Smart Health Tag Data Service (from SDD - corrected UUID format)
+  SMART_TAG: '0F0E0D0C-0B0A-0908-0706-050403020100',
+  // Alternative service UUIDs that might be used by the device
+  SMART_TAG_ALT: '0f0e0d0c-0b0a-0908-0706-050403020100',
+  CUSTOM_SERVICE: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
 };
 
 export const BLE_CHARACTERISTICS = {
@@ -14,7 +19,7 @@ export const BLE_CHARACTERISTICS = {
   SYSTEM_COMMAND: '4f4e4d4c-4b4a-4948-4746-454443424140',
   DEVICE_STATUS: '5f5e5d5c-5b5a-5958-5756-555453525150',
   DATA_TRANSFER: '6f6e6d6c-6b6a-6968-6766-656463626160',
-  LOCATION_DATA: '7f7e7d7c-7b7a-7978-7776-757473727170', // Location data characteristic
+  // LOCATION_DATA: '7f7e7d7c-7b7a-7978-7776-757473727170', // REMOVED: Not defined in SDD Table 8
 
   // Standard Battery Service characteristic
   BATTERY_LEVEL: '00002a19-0000-1000-8000-00805f9b34fb',
@@ -28,12 +33,12 @@ export const BLE_CHARACTERISTICS = {
   SOFTWARE_REVISION: '00002a28-0000-1000-8000-00805f9b34fb',
   SYSTEM_ID: '00002a23-0000-1000-8000-00805f9b34fb',
 
-  // Nordic DFU characteristic (Buttonless DFU without bonds)
+  // Nordic DFU characteristic (Buttonless DFU without bonds) - Same as DFU service UUID
   DFU_CONTROL_POINT: '8ec90003-f315-4f60-9fb8-838830daea50',
 };
 
 // Advertisement parsing
-export const MANUFACTURER_COMPANY_ID = 0x1234; // Example from spec; confirm actual assigned ID
+export const MANUFACTURER_COMPANY_ID = 0x1234; // TODO: Replace with actual Bluetooth SIG assigned Company ID before release
 
 // AES-128 key/iv placeholders for decrypting manufacturer data payloads.
 // Replace with values provided by firmware/security team.
@@ -44,13 +49,13 @@ export const ADV_AES_CONFIG = {
   padding: 'PKCS7',
 };
 
-// Device Status Characteristic Layout (from SDD - 20 bytes total)
+// Device Status Characteristic Layout (from SDD Table 12 - 20 bytes total)
 export const DEVICE_STATUS_LAYOUT = {
   TIMESTAMP_OFFSET: 0,      // Bytes 0-3: Unix Timestamp (Little Endian)
-  STEPS_OFFSET: 4,          // Bytes 4-7: Steps counter data (Little Endian)
-  TEMP_OFFSET: 8,           // Bytes 8-11: Temperature (Little Endian)
-  FLAGS_OFFSET: 12,         // Bytes 12-15: Device status flag (Little Endian)
-  RESERVED_OFFSET: 16,      // Bytes 16-19: Reserved (0x00)
+  STEPS_OFFSET: 4,          // Bytes 4-5: Steps counter data (Little Endian) - CORRECTED
+  TEMP_OFFSET: 6,           // Bytes 6: Temperature (1 byte) - CORRECTED
+  FLAGS_OFFSET: 7,          // Bytes 7: Device status flag (1 byte) - CORRECTED
+  RESERVED_OFFSET: 8,       // Bytes 8-19: Reserved (0x00) - CORRECTED
   TOTAL_SIZE: 20,           // Total size is 20 bytes
 };
 
@@ -96,7 +101,9 @@ export const SYSTEM_COMMAND_CONSTANTS = {
     GET_DIAGNOSTICS: 0x07,      // Length: 1, Data: No Data (0x00)
     DATA_SYNC_START: 0x08,      // Length: 1, Data: No Data (0x00)
     DATA_SYNC_STOP: 0x09,       // Length: 1, Data: 0x01=Clear Flash, 0x00=Failed
+    ENTER_DFU_MODE: 0x0A,       // Length: 0, Data: No Data (enters DFU bootloader)
     SYSTEM_RESTART: 0x10,       // Length: 1, Data: No Data (0x00)
+    TOGGLE_BUZZER: 0x11,        // Length: 1, Data: 0x00=Activate, 0x01=Deactivate - ADDED
   },
 
   // Response Status Codes
@@ -108,7 +115,7 @@ export const SYSTEM_COMMAND_CONSTANTS = {
 
 export const DATA_TRANSFER_TYPES = {
   SYNC_START: 0x01, // length 4: total records info
-  SYNC_COMPLETE: 0x02, // length 1: 0x00
+  SYNC_COMPLETE: 0x02, // length 2: 0xFFFF=Force termination, 0x0001-0x01F4=Number of records - CORRECTED
   RECORD: 0x03, // length 6-18: record payload (timestamp/temp/steps compressed)
   READ_ERROR: 0x04, // length 1: 0x00
 };

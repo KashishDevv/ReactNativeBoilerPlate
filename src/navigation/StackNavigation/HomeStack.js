@@ -4,6 +4,7 @@ import Counter from '../../screens/Counter/Counter';
 import Welcome from '../../screens/Welcome/Welcome';
 import BLEManager from '../../screens/BLEManager/ModernBLEManager';
 import DeviceDetails from '../../screens/DeviceDetails/DeviceDetails';
+import DFUScreen from '../../screens/DFU/DFUScreen';
 
 
 const Stack = createNativeStackNavigator();
@@ -36,6 +37,14 @@ function HomeStack() {
                 }}
                 name="DeviceDetails"
                 component={DeviceDetails}
+            />
+            <Stack.Screen
+                options={{ 
+                    headerShown: true,
+                    title: 'Firmware Update'
+                }}
+                name="DFU"
+                component={DFUScreen}
             />
         </Stack.Navigator>
     );

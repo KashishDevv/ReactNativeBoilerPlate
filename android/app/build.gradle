@@ -124,6 +124,9 @@ dependencies {
     // Additional AndroidX dependencies
     implementation "androidx.core:core:1.12.0"
     implementation "androidx.appcompat:appcompat:1.6.1"
+    
+    // Nordic DFU Library for OTA firmware updates
+    implementation 'no.nordicsemi.android:dfu:2.3.0'
 }
 
 apply from: file("../../node_modules/react-native-vector-icons/fonts.gradle")

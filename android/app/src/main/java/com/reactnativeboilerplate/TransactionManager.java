@@ -290,6 +290,15 @@ public class TransactionManager {
      * @return Unique transaction ID
      */
     public static String generateTransactionId(String operationType, String deviceId) {
+        // Add null checks to prevent NullPointerException
+        if (operationType == null) {
+            Log.w(TAG, "generateTransactionId: operationType is null, using 'unknown'");
+            operationType = "unknown";
+        }
+        if (deviceId == null) {
+            Log.w(TAG, "generateTransactionId: deviceId is null, using 'unknown'");
+            deviceId = "unknown";
+        }
         return operationType + "_" + deviceId + "_" + System.currentTimeMillis() + "_" + Thread.currentThread().getId();
     }
     
@@ -297,6 +306,15 @@ public class TransactionManager {
      * Generate transaction ID for read operations
      */
     public static String generateReadTransactionId(String deviceId, String characteristicUuid) {
+        // Add null checks to prevent NullPointerException
+        if (deviceId == null) {
+            Log.w(TAG, "generateReadTransactionId: deviceId is null, using 'unknown'");
+            deviceId = "unknown";
+        }
+        if (characteristicUuid == null) {
+            Log.w(TAG, "generateReadTransactionId: characteristicUuid is null, using 'unknown'");
+            characteristicUuid = "unknown";
+        }
         return "READ_" + deviceId + "_" + characteristicUuid + "_" + System.currentTimeMillis();
     }
     
@@ -304,6 +322,15 @@ public class TransactionManager {
      * Generate transaction ID for write operations
      */
     public static String generateWriteTransactionId(String deviceId, String characteristicUuid) {
+        // Add null checks to prevent NullPointerException
+        if (deviceId == null) {
+            Log.w(TAG, "generateWriteTransactionId: deviceId is null, using 'unknown'");
+            deviceId = "unknown";
+        }
+        if (characteristicUuid == null) {
+            Log.w(TAG, "generateWriteTransactionId: characteristicUuid is null, using 'unknown'");
+            characteristicUuid = "unknown";
+        }
         return "WRITE_" + deviceId + "_" + characteristicUuid + "_" + System.currentTimeMillis();
     }
     
@@ -311,6 +338,11 @@ public class TransactionManager {
      * Generate transaction ID for service discovery
      */
     public static String generateServiceDiscoveryTransactionId(String deviceId) {
+        // Add null checks to prevent NullPointerException
+        if (deviceId == null) {
+            Log.w(TAG, "generateServiceDiscoveryTransactionId: deviceId is null, using 'unknown'");
+            deviceId = "unknown";
+        }
         return "SERVICE_DISCOVERY_" + deviceId + "_" + System.currentTimeMillis();
     }
     
@@ -318,6 +350,11 @@ public class TransactionManager {
      * Generate transaction ID for connection operations
      */
     public static String generateConnectionTransactionId(String deviceId) {
+        // Add null checks to prevent NullPointerException
+        if (deviceId == null) {
+            Log.w(TAG, "generateConnectionTransactionId: deviceId is null, using 'unknown'");
+            deviceId = "unknown";
+        }
         return "CONNECTION_" + deviceId + "_" + System.currentTimeMillis();
     }
 }

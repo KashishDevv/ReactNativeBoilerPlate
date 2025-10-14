@@ -18,158 +18,173 @@ class BLEDataParser {
    */
   parseDeviceStatus(base64Data) {
     try {
-      console.log(`🔍 [BLEDataParser] Starting parseDeviceStatus with:`, {
-        dataType: typeof base64Data,
-        dataLength: base64Data?.length,
-        dataPreview: base64Data?.substring(0, 50),
-        isBase64: /^[A-Za-z0-9+/]*={0,2}$/.test(base64Data)
-      });
-      
       if (!base64Data) {
-        console.log('❌ [BLEDataParser] No data provided');
         return null;
       }
 
       const buffer = Buffer.from(base64Data, 'base64');
-      console.log(`🔍 [BLEDataParser] Buffer created:`, {
-        bufferLength: buffer.length,
-        expectedLength: DEVICE_STATUS_LAYOUT.TOTAL_SIZE,
-        bufferHex: buffer.toString('hex')
-      });
       
+      // Handle different data formats - device may send 8 bytes instead of 20
       if (buffer.length < DEVICE_STATUS_LAYOUT.TOTAL_SIZE) {
-        console.warn(`Device status data size mismatch. Expected ${DEVICE_STATUS_LAYOUT.TOTAL_SIZE}, got ${buffer.length}`);
+        // If we have 8 bytes, try to parse as compact format
+        if (buffer.length === 8) {
+          return this.parseCompactDeviceStatus(buffer);
+        }
+        
         // Try to parse anyway if we have at least the minimum required bytes
-        if (buffer.length < 16) {
+        if (buffer.length < 4) {
           return null;
         }
       }
 
       // Parse according to SDD DEVICE_STATUS_LAYOUT (Little Endian format)
-      const timestamp = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.TIMESTAMP_OFFSET);
-      const steps = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.STEPS_OFFSET);
+      let timestamp = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.TIMESTAMP_OFFSET);
+      let steps = buffer.readUInt16LE(DEVICE_STATUS_LAYOUT.STEPS_OFFSET);
       
-      // Temperature parsing according to SDD - 4 bytes at offset 8-11 (Little Endian)
-      // The SDD shows Temperature in bytes 8-11, likely as IEEE 754 float or custom format
+      // Sanity check: Steps should be reasonable (0 to few thousands per day)
+      if (steps === 65535) {
+        // Try big endian
+        steps = buffer.readUInt16BE(DEVICE_STATUS_LAYOUT.STEPS_OFFSET);
+      }
+      
+      // Validate timestamp - if it's clearly invalid (before 2020), use current time
+      const currentTime = Math.floor(Date.now() / 1000);
+      const timestampDate = new Date(timestamp * 1000);
+      const isValidTimestamp = timestamp > 1577836800; // After 2020-01-01
+      
+      if (!isValidTimestamp) {
+        timestamp = currentTime;
+      }
+      
+      // Temperature parsing according to SDD Table 12 - 1 byte at offset 6
       let temperatureRaw;
       let temperature;
       
       try {
-        // Based on SDD analysis and manual testing, temperature is stored as IEEE 754 32-bit float
-        // This correctly gives us ~36.9°C for buffer "9a991342"
-        temperature = buffer.readFloatLE(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
-        temperatureRaw = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
-        
-        // Validate temperature is reasonable for a biological sensor
-        if (isNaN(temperature) || temperature < -50 || temperature > 80) {
-          console.warn(`Temperature ${temperature}°C seems out of range for biological sensor, trying alternative parsing`);
-          
-          // Fallback: try as fixed-point integer
-          const temp16 = buffer.readUInt16LE(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
-          if (temp16 > 0 && temp16 < 10000) {
-            temperature = temp16 / 100.0; // 0.01°C resolution
-            console.log(`Using 16-bit fixed-point parsing: ${temperature}°C`);
-          } else {
-            temperature = null; // Invalid temperature
-            console.warn('Could not parse temperature data');
-          }
-        }
-        
-        // Specific analysis for your buffer format
-        const tempBytes = buffer.slice(DEVICE_STATUS_LAYOUT.TEMP_OFFSET, DEVICE_STATUS_LAYOUT.TEMP_OFFSET + 4);
-        console.log(`Temperature bytes analysis:`);
-        console.log(`  Hex: ${tempBytes.toString('hex')}`);
-        console.log(`  As UInt32LE: ${temperatureRaw}`);
-        console.log(`  As Int32LE: ${buffer.readInt32LE(DEVICE_STATUS_LAYOUT.TEMP_OFFSET)}`);
-        console.log(`  As FloatLE: ${buffer.readFloatLE(DEVICE_STATUS_LAYOUT.TEMP_OFFSET)}`);
-        console.log(`  As UInt16LE: ${tempBytes.readUInt16LE(0)}`);
-        console.log(`  As Int16LE: ${tempBytes.readInt16LE(0)}`);
-        console.log(`  Final temperature: ${temperature}°C`);
-        
+        temperatureRaw = buffer.readUInt8(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
+        temperature = temperatureRaw;
       } catch (error) {
-        console.warn('Temperature parsing error:', error);
-        temperatureRaw = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
+        temperatureRaw = buffer.readUInt8(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
         temperature = null;
       }
       
-      const flags = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.FLAGS_OFFSET);
+      const flags = buffer.readUInt8(DEVICE_STATUS_LAYOUT.FLAGS_OFFSET);
       
-      // Read reserved bytes if available
+      // Read reserved bytes if available (bytes 8-19, should be 0x00)
       let reserved = null;
       if (buffer.length >= DEVICE_STATUS_LAYOUT.TOTAL_SIZE) {
-        reserved = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.RESERVED_OFFSET);
+        const reservedBytes = buffer.slice(DEVICE_STATUS_LAYOUT.RESERVED_OFFSET, DEVICE_STATUS_LAYOUT.TOTAL_SIZE);
+        reserved = reservedBytes.toString('hex');
       }
 
-      // Parse device status flags (customize based on actual flag definitions)
+      // Parse device status flags according to SDD Table 12
       const parsedFlags = {
         isActive: (flags & 0x01) !== 0,
         isCharging: (flags & 0x02) !== 0,
         lowBattery: (flags & 0x04) !== 0,
         tempAlert: (flags & 0x08) !== 0,
         motionDetected: (flags & 0x10) !== 0,
-        // Add more flags as per device specification
+        reserved: (flags & 0xE0) !== 0,
       };
-
-      // Enable detailed analysis for debugging (set to false to reduce logs)
-      const enableDetailedLogging = false;
-      
-      if (enableDetailedLogging) {
-        console.log(`=== Raw Buffer Analysis ===`);
-        console.log(`Hex: ${buffer.toString('hex')}`);
-        console.log(`Length: ${buffer.length} bytes`);
-        
-        // Break down the hex into 4-byte chunks (Little Endian)
-        for (let i = 0; i < Math.min(buffer.length, 20); i += 4) {
-          const chunk = buffer.slice(i, i + 4);
-          const hexChunk = chunk.toString('hex');
-          const uint32LE = chunk.length >= 4 ? chunk.readUInt32LE(0) : 0;
-          const int32LE = chunk.length >= 4 ? chunk.readInt32LE(0) : 0;
-          const uint16LE = chunk.length >= 2 ? chunk.readUInt16LE(0) : 0;
-          const int16LE = chunk.length >= 2 ? chunk.readInt16LE(0) : 0;
-          
-          console.log(`Bytes ${i}-${i+3}: ${hexChunk} | UInt32: ${uint32LE} | Int32: ${int32LE} | UInt16: ${uint16LE} | Int16: ${int16LE}`);
-        }
-        
-        console.log(`=== Current Parsing ===`);
-        console.log(`Timestamp: ${timestamp} (${new Date(timestamp * 1000).toISOString()}) | Hex: 0x${timestamp.toString(16)}`);
-        console.log(`Steps: ${steps}`);
-        console.log(`Temperature Raw: 0x${temperatureRaw.toString(16)} (${temperatureRaw}), Parsed: ${temperature}°C`);
-        console.log(`Flags: 0x${flags.toString(16)} (${flags})`);
-        console.log(`Reserved: ${reserved}`);
-        
-        // Validate timestamp is reasonable (not way in future or past)
-        const currentTime = Math.floor(Date.now() / 1000);
-        const timeDiff = Math.abs(timestamp - currentTime);
-        const isReasonableTime = timeDiff < (365 * 24 * 3600); // Within 1 year
-        console.log(`Timestamp validation: current=${currentTime}, device=${timestamp}, diff=${timeDiff}s, reasonable=${isReasonableTime}`);
-        console.log(`========================`);
-      }
 
       const result = {
         type: 'device_status',
-        timestamp: new Date(timestamp * 1000), // Convert Unix timestamp to Date
+        timestamp: new Date(timestamp * 1000),
         steps,
         temperature,
-        temperatureRaw, // Include raw value for debugging
+        temperatureRaw,
         flags: parsedFlags,
         rawFlags: flags,
         reserved,
         lastUpdate: new Date(),
-        rawBuffer: buffer.toString('hex'), // For debugging
-        sddCompliant: true
+        rawBuffer: buffer.toString('hex'),
+        sddCompliant: buffer.length === DEVICE_STATUS_LAYOUT.TOTAL_SIZE
       };
-      
-      console.log(`✅ [BLEDataParser] Successfully parsed device status:`, {
-        steps: result.steps,
-        temperature: result.temperature,
-        timestamp: result.timestamp,
-        type: result.type
-      });
       
       return result;
 
     } catch (error) {
       console.error('❌ [BLEDataParser] Error parsing device status:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Parse compact 8-byte device status format
+   * @param {Buffer} buffer - 8-byte buffer
+   * @returns {Object} Parsed device status data
+   */
+  parseCompactDeviceStatus(buffer) {
+    try {
+      // Analyze the 8-byte format: [timestamp(4)] [steps(2)] [temperature(1)] [flags(1)]
+      const rawTimestamp = buffer.readUInt32LE(0);
+      const rawSteps = buffer.readUInt16LE(4);
+      const rawTemperature = buffer.readUInt8(6);
+      const rawFlags = buffer.readUInt8(7);
+      
+      // Use device RTC timestamp directly
+      const timestamp = rawTimestamp;
+      const steps = rawSteps;
+      const timestampDate = new Date(timestamp * 1000);
+      
+      // Log if timestamp seems invalid but still use it
+      if (timestamp < 1577836800) { // Before 2020-01-01
+        console.warn(`⚠️ Device RTC appears unset: ${timestampDate.toISOString()}`);
+      }
+      
+      const temperatureRaw = rawTemperature;
+      const flags = rawFlags;
+      
+      // Parse device status flags
+      const flagAnalysis = {
+        isActive: (flags & 0x01) !== 0,
+        isCharging: (flags & 0x02) !== 0,
+        lowBattery: (flags & 0x04) !== 0,
+        tempAlert: (flags & 0x08) !== 0,
+        motionDetected: (flags & 0x10) !== 0,
+        reserved: (flags & 0xE0) !== 0,
+      };
+      
+      // Temperature parsing - 1 byte raw value
+      const temperature = temperatureRaw;
+      
+      // Parse device status flags
+      const parsedFlags = {
+        isActive: flagAnalysis.isActive,
+        isCharging: flagAnalysis.isCharging,
+        lowBattery: flagAnalysis.lowBattery,
+        tempAlert: flagAnalysis.tempAlert,
+        motionDetected: flagAnalysis.motionDetected,
+        reserved: flagAnalysis.reserved,
+      };
+      
+      const result = {
+        type: 'device_status',
+        timestamp: new Date(timestamp * 1000),
+        deviceRTC: timestamp,
+        steps,
+        temperature,
+        temperatureRaw,
+        temperatureFormat: 'raw-1byte',
+        flags: parsedFlags,
+        rawFlags: flags,
+        lastUpdate: new Date(timestamp * 1000),
+        rawBuffer: buffer.toString('hex'),
+        rawData: {
+          timestamp: rawTimestamp,
+          steps: rawSteps,
+          temperature: rawTemperature,
+          flags: rawFlags,
+          buffer: buffer.toString('hex')
+        },
+        sddCompliant: false,
+        format: 'compact_8byte'
+      };
+      
+      return result;
+      
+    } catch (error) {
+      console.error('❌ [BLEDataParser] Error parsing compact device status:', error);
       return null;
     }
   }
@@ -215,12 +230,17 @@ class BLEDataParser {
 
       const buffer = Buffer.from(base64Data, 'base64');
       
-      if (buffer.length < 1) {
+      if (buffer.length < 2) {
         return null;
       }
 
       const transferType = buffer.readUInt8(0);
-      const payload = buffer.slice(1);
+      const dataLength = buffer.readUInt8(1);
+      
+      // Extract the actual data payload (skip type and length bytes)
+      const payload = buffer.slice(2, 2 + dataLength);
+      
+      console.log(`📡 Data transfer - Type: ${transferType}, Length: ${dataLength}, Data: ${payload.toString('hex')}`);
 
       switch (transferType) {
         case DATA_TRANSFER_TYPES.SYNC_START:
@@ -239,6 +259,7 @@ class BLEDataParser {
           return {
             type: 'unknown',
             transferType,
+            dataLength,
             data: payload,
           };
       }
@@ -268,16 +289,57 @@ class BLEDataParser {
   }
 
   /**
-   * Parse sync complete payload according to SDD
+   * Parse sync complete payload according to SDD (2 bytes)
    * @param {Buffer} payload - Payload buffer
    * @returns {Object} Sync complete information
    */
   parseSyncComplete(payload) {
+    if (payload.length >= 2) {
+      const value = payload.readUInt16LE(0);
+      
+      console.log(`📡 Sync Complete - Raw value: 0x${value.toString(16)} (${value})`);
+      
+      if (value === 0xFFFF) {
+        // SDD: 0xFFFF = Force termination (sync failed)
+        console.log(`📡 Sync Complete - Force termination (sync failed)`);
+        return {
+          type: 'sync_complete',
+          success: false,
+          reason: 'force_termination',
+          terminated: true,
+          timestamp: new Date(),
+          sddCompliant: true
+        };
+      } else if (value >= 0x0001 && value <= 0x01F4) {
+        // SDD: 0x0001 to 0x01F4 = Number of records transmitted (sync successful)
+        console.log(`📡 Sync Complete - Success: ${value} records transmitted`);
+        return {
+          type: 'sync_complete',
+          success: true,
+          recordsTransmitted: value,
+          timestamp: new Date(),
+          sddCompliant: true
+        };
+      } else {
+        // Invalid count value
+        console.log(`📡 Sync Complete - Invalid record count: ${value}`);
+        return {
+          type: 'sync_complete',
+          success: false,
+          reason: `Invalid record count: ${value}`,
+          timestamp: new Date(),
+          sddCompliant: false
+        };
+      }
+    }
+    
+    console.log(`📡 Sync Complete - Invalid payload length: ${payload.length} (expected >= 2)`);
     return {
       type: 'sync_complete',
-      success: payload.length === 1 && payload.readUInt8(0) === 0x00,
+      success: false,
+      reason: 'invalid_payload',
       timestamp: new Date(),
-      sddCompliant: true
+      sddCompliant: false
     };
   }
 
@@ -289,38 +351,52 @@ class BLEDataParser {
   parseDataRecord(payload) {
     try {
       if (payload.length < 6) {
-        return { type: 'record', error: 'Insufficient data' };
+        return { type: 'record', error: 'Insufficient data - SDD requires minimum 6 bytes per record' };
       }
 
-      // SDD format: 1 set of records contains 6 bytes including Timestamp, Temperature and Step data
-      const timestamp = payload.readUInt32LE(0);
-      const temperatureRaw = payload.readInt16LE(4);
+      // SDD Specification: Record data is 6-18 bytes containing multiple records
+      // Each record is 8 bytes: Timestamp(4) + Temperature(1) + Steps(2) + Reserved(1)
+      // Maximum 3 records per 20-byte packet (2 bytes header + 18 bytes data)
+      const recordLength = payload.length;
+      const records = [];
+      let recordCount = 0;
       
-      let steps = null;
-      let location = null;
-
-      if (payload.length >= 10) {
-        steps = payload.readUInt32LE(6);
+      // Parse multiple records from the data payload
+      let offset = 0;
+      while (offset + 8 <= recordLength) {
+        try {
+          const timestamp = payload.readUInt32LE(offset);      // 4 bytes: Unix timestamp
+          const temperature = payload.readUInt8(offset + 4);   // 1 byte: Temperature (raw)
+          const steps = payload.readUInt16LE(offset + 5);      // 2 bytes: Steps counter
+          const reserved = payload.readUInt8(offset + 7);      // 1 byte: Reserved
+          
+          const record = {
+            timestamp: new Date(timestamp * 1000),
+            temperature, // Raw temperature value (1 byte, no scaling)
+            steps,
+            reserved,
+            rawData: payload.slice(offset, offset + 8).toString('hex')
+          };
+          
+          records.push(record);
+          recordCount++;
+          
+          console.log(`📡 Record ${recordCount}: Timestamp: ${record.timestamp.toISOString()}, Steps: ${steps}, Temperature: ${temperature}°C`);
+          
+          offset += 8; // Move to next record
+        } catch (error) {
+          console.error(`❌ Error parsing record at offset ${offset}:`, error);
+          break;
+        }
       }
-
-      if (payload.length >= 18) {
-        // Parse location data (example: latitude/longitude as int32)
-        const latRaw = payload.readInt32LE(10);
-        const lonRaw = payload.readInt32LE(14);
-        
-        location = {
-          latitude: latRaw / 1000000.0, // Assuming 6 decimal places
-          longitude: lonRaw / 1000000.0,
-          accuracy: payload.length >= 20 ? payload.readUInt16LE(18) : null,
-        };
-      }
+      
+      console.log(`📡 Parsed ${recordCount} records from ${recordLength} bytes of data`);
 
       return {
         type: 'record',
-        timestamp: new Date(timestamp * 1000),
-        temperature: temperatureRaw / 100.0,
-        steps,
-        location,
+        records,
+        recordCount: records.length,
+        totalLength: recordLength,
         rawData: payload,
         sddCompliant: true
       };
@@ -367,11 +443,14 @@ class BLEDataParser {
       }
 
       // Parse according to SDD Table 13 structure
-      const totalLength = buffer.readUInt8(0);     // First byte is length (0x0C = 12 bytes)
+      const totalLength = buffer.readUInt8(0);     // First byte is length (0x0C = 10 bytes data + 2 bytes header)
       const dataType = buffer.readUInt8(1);        // Should be 0xFF (Manufacturer Specific Data)
-      const companyId = buffer.readUInt16LE(2);    // Company ID (0x1234 per SDD)
+      const companyId = buffer.readUInt16BE(2);    // Company ID (0x1234 per SDD - Big Endian: 0x34 0x12)
       const indication = buffer.readUInt8(4);      // Indication to connect
-      const optionalData = buffer.slice(5);        // Device ID, battery info, etc.
+      const deviceStatus = buffer.readUInt8(5);    // Device functional status (0=Good, 1=Problem)
+      const recordCount = buffer.readUInt16LE(6);  // Number of records available
+      const batteryVoltage = buffer.readUInt16LE(8); // Battery value in millivolts
+      const optionalData = buffer.slice(10);       // Additional data if any
 
       // Validate against SDD requirements
       if (dataType !== 0xFF) {
@@ -384,24 +463,27 @@ class BLEDataParser {
         return null; // Not our manufacturer
       }
 
-      // Parse optional data if available (battery info, device ID, etc.)
-      let batteryInfo = null;
-      let deviceId = null;
-      
-      if (optionalData.length >= 1) {
-        batteryInfo = optionalData.readUInt8(0);
-      }
-      
-      if (optionalData.length >= 5) {
-        deviceId = optionalData.slice(1, 5).toString('hex');
+      // Convert battery voltage to percentage based on SDD specification
+      // Example: 0CFA (hex) = 3322 (decimal) = 3322mV
+      // Full battery = 4000mV, Empty battery = 3000mV (typical range)
+      let batteryPercentage = 0;
+      if (batteryVoltage >= 3000 && batteryVoltage <= 4000) {
+        // Linear conversion: 3000mV = 0%, 4000mV = 100%
+        batteryPercentage = Math.round(((batteryVoltage - 3000) / 1000) * 100);
+      } else if (batteryVoltage > 4000) {
+        batteryPercentage = 100;
+      } else if (batteryVoltage < 3000) {
+        batteryPercentage = 0;
       }
 
-      return {
+      const result = {
         type: 'advertisement',
         companyId,
         indication,
-        batteryInfo,
-        deviceId,
+        deviceStatus: deviceStatus === 0 ? 'Good' : 'Problem',
+        recordCount,
+        batteryVoltage,
+        batteryPercentage: Math.min(Math.max(batteryPercentage, 0), 100),
         optionalData: optionalData.toString('hex'),
         rssi: device.rssi,
         timestamp: new Date(),
@@ -410,6 +492,25 @@ class BLEDataParser {
         dataType: dataType,
         totalLength: totalLength
       };
+
+      console.log(`📊 Advertisement data parsed:`, {
+        companyId: `0x${companyId.toString(16)}`,
+        indication: indication === 1 ? 'Ready to connect' : 'Not ready',
+        deviceStatus: deviceStatus === 0 ? 'Good' : 'Problem',
+        recordCount,
+        batteryVoltage: `${batteryVoltage}mV`,
+        batteryPercentage: `${batteryPercentage}%`,
+        optionalData: optionalData.toString('hex'),
+        sddCompliant: true
+      });
+      
+      // Example calculation for 0CFA (hex) = 3322mV
+      if (batteryVoltage === 3322) {
+        console.log(`🔋 Battery calculation example: 0CFA (hex) = ${batteryVoltage}mV = ${batteryPercentage}%`);
+        console.log(`   Formula: (${batteryVoltage} - 3000) / 1000 * 100 = ${batteryPercentage}%`);
+      }
+
+      return result;
 
     } catch (error) {
       console.error('Error parsing advertisement data:', error);
@@ -536,6 +637,17 @@ class BLEDataParser {
           };
           break;
           
+        case SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER:
+          if (data.length >= 1) {
+            const buzzerState = data.readUInt8(0);
+            parsedData = {
+              commandName: 'Toggle Buzzer',
+              activated: buzzerState === 0x00,
+              deactivated: buzzerState === 0x01
+            };
+          }
+          break;
+          
         default:
           parsedData = {
             commandName: `Unknown Command (0x${command.toString(16)})`,
@@ -647,6 +759,17 @@ class BLEDataParser {
           };
           break;
           
+        case SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER:
+          if (data.length >= 1) {
+            const buzzerState = data.readUInt8(0);
+            parsedData = {
+              commandName: 'Toggle Buzzer',
+              activated: buzzerState === 0x00,
+              deactivated: buzzerState === 0x01
+            };
+          }
+          break;
+          
         default:
           parsedData = {
             commandName: `Unknown Command (0x${command.toString(16)})`,
@@ -688,36 +811,166 @@ class BLEDataParser {
       [SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS]: 'Get Diagnostics Info',
       [SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START]: 'Data Sync Start Request',
       [SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_STOP]: 'Data Sync Stop Request',
-      [SYSTEM_COMMAND_CONSTANTS.CMD.SYSTEM_RESTART]: 'System Restart'
+      [SYSTEM_COMMAND_CONSTANTS.CMD.SYSTEM_RESTART]: 'System Restart',
+      [SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER]: 'Toggle Buzzer'
     };
     return commandNames[commandId] || `Unknown Command (0x${commandId.toString(16)})`;
   }
 
   /**
-   * Decrypt advertisement payload (placeholder implementation)
+   * Decrypt advertisement payload using AES-128 as per SDD specification
    * @param {Buffer} encryptedData - Encrypted payload
    * @returns {Object|null} Decrypted payload data
    */
   decryptAdvertisementPayload(encryptedData) {
     try {
-      // This is a placeholder implementation
-      // In a real implementation, you would use the crypto library
-      // to decrypt the data using AES with the provided key/IV
+      console.log('Decrypting advertisement payload:', {
+        length: encryptedData.length,
+        hex: encryptedData.toString('hex'),
+        aesConfig: ADV_AES_CONFIG
+      });
       
-      console.log('Encrypted payload length:', encryptedData.length);
-      console.log('AES config:', ADV_AES_CONFIG);
+      // Check if AES keys are properly configured
+      if (ADV_AES_CONFIG.keyHex === '00000000000000000000000000000000') {
+        console.warn('⚠️ AES key not configured - using placeholder key');
+        return {
+          encrypted: true,
+          rawData: encryptedData.toString('hex'),
+          note: 'AES decryption skipped - placeholder key detected. Update ADV_AES_CONFIG with real keys.'
+        };
+      }
       
-      // For now, return raw data
-      // TODO: Implement actual AES decryption when keys are available
+      // Import crypto module for AES decryption
+      const crypto = require('crypto');
+      
+      // Convert hex key to buffer
+      const key = Buffer.from(ADV_AES_CONFIG.keyHex, 'hex');
+      
+      if (key.length !== 16) {
+        throw new Error(`Invalid AES key length: ${key.length} bytes, expected 16 bytes`);
+      }
+      
+      let decryptedData;
+      
+      if (ADV_AES_CONFIG.mode === 'ECB') {
+        // AES-128-ECB mode (as specified in SDD)
+        const decipher = crypto.createDecipher('aes-128-ecb', key);
+        decipher.setAutoPadding(true);
+        
+        decryptedData = Buffer.concat([
+          decipher.update(encryptedData),
+          decipher.final()
+        ]);
+        
+      } else if (ADV_AES_CONFIG.mode === 'CBC') {
+        // AES-128-CBC mode
+        const iv = Buffer.from(ADV_AES_CONFIG.ivHex, 'hex');
+        
+        if (iv.length !== 16) {
+          throw new Error(`Invalid IV length: ${iv.length} bytes, expected 16 bytes`);
+        }
+        
+        const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
+        decipher.setAutoPadding(true);
+        
+        decryptedData = Buffer.concat([
+          decipher.update(encryptedData),
+          decipher.final()
+        ]);
+        
+      } else {
+        throw new Error(`Unsupported AES mode: ${ADV_AES_CONFIG.mode}`);
+      }
+      
+      console.log('✅ AES decryption successful:', {
+        originalLength: encryptedData.length,
+        decryptedLength: decryptedData.length,
+        decryptedHex: decryptedData.toString('hex')
+      });
+      
       return {
-        encrypted: true,
-        rawData: encryptedData.toString('hex'),
-        note: 'Decryption not implemented - update keys in ADV_AES_CONFIG'
+        encrypted: false,
+        decryptedData: decryptedData,
+        hex: decryptedData.toString('hex'),
+        mode: ADV_AES_CONFIG.mode,
+        sddCompliant: true
       };
 
     } catch (error) {
-      console.error('Error decrypting advertisement payload:', error);
-      return null;
+      console.error('❌ Error decrypting advertisement payload:', error);
+      return {
+        encrypted: true,
+        error: error.message,
+        rawData: encryptedData.toString('hex'),
+        note: 'AES decryption failed - check key configuration'
+      };
+    }
+  }
+
+  /**
+   * Decrypt NFC data using AES-128 as per SDD specification
+   * @param {Buffer} encryptedData - Encrypted NFC data
+   * @returns {Object|null} Decrypted NFC data
+   */
+  decryptNFCData(encryptedData) {
+    try {
+      console.log('Decrypting NFC data:', {
+        length: encryptedData.length,
+        hex: encryptedData.toString('hex')
+      });
+      
+      // Check if AES keys are properly configured
+      if (ADV_AES_CONFIG.keyHex === '00000000000000000000000000000000') {
+        console.warn('⚠️ AES key not configured for NFC decryption');
+        return {
+          encrypted: true,
+          rawData: encryptedData.toString('hex'),
+          note: 'NFC decryption skipped - placeholder key detected. Update ADV_AES_CONFIG with real keys.'
+        };
+      }
+      
+      // Use the same AES decryption method as advertisement
+      const decryptionResult = this.decryptAdvertisementPayload(encryptedData);
+      
+      if (decryptionResult.encrypted) {
+        return decryptionResult;
+      }
+      
+      // Parse decrypted NFC data (assuming it contains device info, URL, etc.)
+      const decryptedData = decryptionResult.decryptedData;
+      
+      // Try to parse as UTF-8 string (for URLs, device names, etc.)
+      let nfcContent = null;
+      try {
+        nfcContent = decryptedData.toString('utf8').replace(/\0/g, '');
+      } catch (error) {
+        console.warn('Could not parse NFC data as UTF-8, returning as hex');
+        nfcContent = decryptedData.toString('hex');
+      }
+      
+      console.log('✅ NFC decryption successful:', {
+        originalLength: encryptedData.length,
+        decryptedLength: decryptedData.length,
+        content: nfcContent
+      });
+      
+      return {
+        encrypted: false,
+        decryptedData: decryptedData,
+        content: nfcContent,
+        hex: decryptedData.toString('hex'),
+        mode: ADV_AES_CONFIG.mode,
+        sddCompliant: true
+      };
+
+    } catch (error) {
+      console.error('❌ Error decrypting NFC data:', error);
+      return {
+        encrypted: true,
+        error: error.message,
+        rawData: encryptedData.toString('hex'),
+        note: 'NFC decryption failed - check key configuration'
+      };
     }
   }
 
@@ -880,6 +1133,150 @@ class BLEDataParser {
 
     return report;
   }
+
+  /**
+   * Parse data transfer characteristic data
+   * @param {string} base64Data - Base64 encoded data transfer data
+   * @returns {object|null} Parsed data transfer information
+   */
+  parseDataTransfer(base64Data) {
+    try {
+      if (!base64Data) {
+        return null;
+      }
+
+      const buffer = Buffer.from(base64Data, 'base64');
+      
+      if (buffer.length < 2) {
+        return null;
+      }
+
+      const dataType = buffer.readUInt8(0);
+      const length = buffer.readUInt8(1);
+      const data = buffer.slice(2, 2 + length);
+
+      let parsedData = {
+        type: dataType,
+        length,
+        rawData: data.toString('hex')
+      };
+      
+      // Convert numeric type to string type for easier handling
+      let typeString = 'unknown';
+      switch (dataType) {
+        case DATA_TRANSFER_TYPES.SYNC_START:
+          typeString = 'sync_start';
+          break;
+        case DATA_TRANSFER_TYPES.SYNC_COMPLETE:
+          typeString = 'sync_complete';
+          break;
+        case DATA_TRANSFER_TYPES.RECORD:
+          typeString = 'record';
+          break;
+        case DATA_TRANSFER_TYPES.READ_ERROR:
+          typeString = 'read_error';
+          break;
+      }
+      parsedData.typeString = typeString;
+
+      console.log(`📡 [DATA TRANSFER] Type: ${dataType}, Length: ${length}, Data: ${data.toString('hex')}`);
+
+      switch (dataType) {
+        case DATA_TRANSFER_TYPES.SYNC_START:
+          if (length >= 4) {
+            const rawTotalRecords = data.readUInt32LE(0);
+            
+            // Check if the data looks corrupted
+            if (rawTotalRecords > 1000000) {
+              console.log(`⚠️ [SYNC START] Corrupted data: ${rawTotalRecords}`);
+              parsedData.totalRecords = 0;
+              parsedData.corrupted = true;
+              parsedData.rawValue = rawTotalRecords;
+            } else {
+              parsedData.totalRecords = rawTotalRecords;
+              console.log(`📡 [SYNC START] Total records: ${parsedData.totalRecords}`);
+            }
+          }
+          break;
+          
+        case DATA_TRANSFER_TYPES.SYNC_COMPLETE:
+          if (length === 2) {
+            const count = data.readUInt16LE(0);
+            if (count === 0xFFFF) {
+              parsedData.success = false;
+              parsedData.terminated = true;
+              parsedData.reason = 'Force termination';
+              console.log(`📡 [SYNC COMPLETE] Force termination`);
+            } else if (count >= 0x0001 && count <= 0x01F4) {
+              parsedData.success = true;
+              parsedData.recordsTransmitted = count;
+              console.log(`📡 [SYNC COMPLETE] Success: ${count} records`);
+            } else {
+              parsedData.success = false;
+              parsedData.reason = `Invalid count: ${count}`;
+              console.log(`📡 [SYNC COMPLETE] Invalid count: ${count}`);
+            }
+          }
+          break;
+          
+        case DATA_TRANSFER_TYPES.RECORD:
+          if (length >= 6) {
+            parsedData.records = [];
+            parsedData.recordCount = 0;
+            
+            // Parse multiple records from the data payload
+            // ✅ FIXED: Correct byte order per SDD Table 12
+            // Bytes 0-3: Timestamp (LE)
+            // Bytes 4-5: Steps (LE)
+            // Byte 6: Temperature (raw Celsius)
+            // Byte 7: Flags
+            let offset = 0;
+            while (offset + 8 <= length) {
+              try {
+                const timestamp = data.readUInt32LE(offset);
+                const steps = data.readUInt16LE(offset + 4);  // ✅ CORRECT POSITION
+                const temperature = data.readUInt8(offset + 6);  // ✅ CORRECT POSITION
+                const flags = data.readUInt8(offset + 7);
+                
+                const record = {
+                  timestamp: new Date(timestamp * 1000),
+                  temperature,
+                  steps,
+                  flags,
+                  rawData: data.slice(offset, offset + 8).toString('hex')
+                };
+                
+                parsedData.records.push(record);
+                parsedData.recordCount++;
+                
+                console.log(`📡 [RECORD] ${parsedData.recordCount}: ${record.timestamp.toISOString()}, Steps: ${steps}, Temp: ${temperature}°C`);
+                
+                offset += 8;
+              } catch (error) {
+                console.error(`❌ Error parsing record at offset ${offset}:`, error);
+                break;
+              }
+            }
+          }
+          break;
+          
+        case DATA_TRANSFER_TYPES.READ_ERROR:
+          parsedData.error = true;
+          console.log(`📡 [READ ERROR]`);
+          break;
+          
+        default:
+          console.log(`📡 [UNKNOWN] Type: ${dataType}`);
+          return null;
+      }
+
+      return parsedData;
+    } catch (error) {
+      console.error('❌ Error parsing data transfer:', error);
+      return null;
+    }
+  }
+
 }
 
 // Export singleton instance
