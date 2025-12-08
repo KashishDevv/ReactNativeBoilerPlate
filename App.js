@@ -43,7 +43,7 @@ function App() {
     <>
       <Provider store={store}>
         <PersistGate loading={null} persistor={persistor}>
-          <ConnectionInfo />
+          {/* <ConnectionInfo /> */}
           <MainNavigation />
         </PersistGate>
       </Provider >

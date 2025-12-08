@@ -10,7 +10,9 @@ import {
   SYSTEM_COMMAND_CONSTANTS,
   DATA_TRANSFER_TYPES,
   DEVICE_STATUS_LAYOUT,
-  POWER_PROFILE
+  POWER_PROFILE,
+  RECONNECTION_CONSTANTS,
+  ERROR_TYPES
 } from '../../constants/BLEConstants';
 import BLEDataParser from '../../utils/BLEDataParser';
 import BLEPermissions from '../../utils/BLEPermissions';
@@ -72,6 +74,10 @@ class BLEService {
     // Request device data mutex and debouncing
     this.requestDataMutex = new Map(); // Prevent concurrent requestDeviceData calls per device
     this.requestDataTimers = new Map(); // Debounce timers for requestDeviceData
+    this.systemCommandResponses = new Map(); // Store system command responses for async access
+    this.lastTimeSyncAttempt = new Map(); // Track last time sync attempts to prevent spam
+    this.deviceRestartTimes = new Map(); // Track when devices were restarted (deviceId -> timestamp)
+    this.autoSyncTimers = new Map(); // Debounce timers for auto-sync triggers (deviceId -> timer)
 
     // ✅ INDUSTRY STANDARD: Live Data Buffering System (5-minute batching)
     this.liveDataBuffers = new Map();  // deviceId -> array of live records (max 10)
@@ -232,11 +238,15 @@ class BLEService {
 
     // ✅ Listen for characteristic data updates (handles both event names)
     // CharacteristicDataReceived: Legacy event name
-    // CharacteristicChanged: Current event name (both route to same handler)
+    // CharacteristicChanged: Legacy event name
+    // CharacteristicData: Current event name (matching iOS)
     DeviceEventEmitter.addListener('CharacteristicDataReceived', (event) => {
       this.handleAndroidCharacteristicData(event);
     });
     DeviceEventEmitter.addListener('CharacteristicChanged', (event) => {
+      this.handleAndroidCharacteristicData(event);
+    });
+    DeviceEventEmitter.addListener('CharacteristicData', (event) => {
       this.handleAndroidCharacteristicData(event);
     });
 
@@ -245,18 +255,30 @@ class BLEService {
       this.handleAndroidDeviceDataUpdated(event);
     });
 
+    // ✅ CRITICAL FIX: Listen for deviceDataUpdate events from Android (matching iOS format)
+    // Android sends both DeviceDataUpdated (legacy) and deviceDataUpdate (new format)
+    DeviceEventEmitter.addListener('deviceDataUpdate', (event) => {
+      this.handleAndroidDeviceDataUpdateEvent(event);
+    });
+
     // Listen for health data API requests from native side
     DeviceEventEmitter.addListener('HealthDataApiRequest', (eventData) => {
       this.handleNativeHealthDataApiRequest(eventData);
     });
 
-    // Listen for system command responses from native side
+    // Listen for system command responses from native side (matching iOS event name)
     DeviceEventEmitter.addListener('SystemCommandEvent', (eventData) => {
       this.handleNativeSystemCommandResponse(eventData);
     });
+    DeviceEventEmitter.addListener('SystemCommandResponse', (eventData) => {
+      this.handleNativeSystemCommandResponse(eventData);
+    });
 
-    // Listen for data transfer events from native side
+    // Listen for data transfer events from native side (matching iOS event name)
     DeviceEventEmitter.addListener('DataTransferEvent', (eventData) => {
+      this.handleNativeDataTransferEvent(eventData);
+    });
+    DeviceEventEmitter.addListener('DataTransfer', (eventData) => {
       this.handleNativeDataTransferEvent(eventData);
     });
 
@@ -270,8 +292,11 @@ class BLEService {
       this.handleAndroidServicesDiscovered(event);
     });
 
-    // Listen for RSSI updates
+    // Listen for RSSI updates (matching iOS event name)
     DeviceEventEmitter.addListener('RSSIUpdated', (event) => {
+      this.handleAndroidRSSIUpdate(event);
+    });
+    DeviceEventEmitter.addListener('RSSIUpdate', (event) => {
       this.handleAndroidRSSIUpdate(event);
     });
 
@@ -644,6 +669,16 @@ class BLEService {
       
       const result = await postPetHealthBLEData(payload);
       
+      // ✅ FIX: Check result for success/failure
+      if (result && result.success === false) {
+        console.error(`❌ [HISTORICAL SYNC] Upload failed:`, result.error);
+        if (result.isNetworkError) {
+          console.error(`   Network error - will retry on next sync`);
+        }
+        // Don't mark as complete if upload failed
+        return;
+      }
+      
       console.log(`✅ [HISTORICAL SYNC] Sent ${records.length} records successfully`);
       console.log(`   Total Steps: ${totalSteps}, Temp: ${latestTemperature}°C (avg: ${Math.round(averageTemperature * 10) / 10}°C)`);
       
@@ -654,7 +689,17 @@ class BLEService {
       this.startBatchUploadTimer(deviceId);
       
     } catch (error) {
+      // ✅ FIX: Better error handling with context
       console.error(`❌ [HISTORICAL SYNC] Upload failed:`, error);
+      console.error(`   Device: ${deviceId}`);
+      console.error(`   Records attempted: ${records.length}`);
+      console.error(`   Error type: ${error.name || 'Unknown'}`);
+      console.error(`   Error message: ${error.message || 'No message'}`);
+      
+      // Check if it's a network error
+      if (error.message && error.message.includes('Network Error')) {
+        console.error(`   ⚠️ Network error - data will be retried on next sync`);
+      }
     }
   }
 
@@ -742,6 +787,11 @@ class BLEService {
       companyId: manufacturerInfo.companyId || null,
       deviceStatus: manufacturerInfo.deviceStatus || 0,
       indication: manufacturerInfo.indication || 0,
+      macId: manufacturerInfo.macId || null,  // ✅ MAC Address
+      version: manufacturerInfo.version || null,  // ✅ Firmware version from adv data
+      connectIndication: manufacturerInfo.connectIndication,
+      timeSet: manufacturerInfo.timeSet,
+      factoryDefaults: manufacturerInfo.factoryDefaults,
       // User-friendly status
       statusText: manufacturerInfo.deviceStatus === 0 ? 'Good' : 'Problem',
       hasRecords: (manufacturerInfo.recordCount || 0) > 0,
@@ -785,15 +835,59 @@ class BLEService {
   handleIOSDeviceConnected(deviceInfo) {
     
     const deviceId = deviceInfo.deviceId;
-    const device = this.scannedDevices.get(deviceId) || {
-      id: deviceId,
-      name: deviceInfo.deviceName || 'Unknown',
-      connectionState: CONNECTION_STATES.CONNECTED
-    };
     
+    // ✅ IMPROVED: Preserve manufacturer data (including MAC address) from previous scans
+    let device = this.scannedDevices.get(deviceId);
+    
+    if (!device) {
+      // Device not in scanned devices - create new object
+      // This can happen when auto-connect connects to a known device without scanning first
+      device = {
+        id: deviceId,
+        name: deviceInfo.deviceName || 'Unknown',
+        connectionState: CONNECTION_STATES.CONNECTED,
+        // ✅ Initialize empty manufacturer data structure so UI doesn't break
+        manufacturerData: {
+          macId: null,
+          batteryLevel: null,
+          recordCount: 0,
+          statusText: 'Unknown'
+        },
+        // ✅ Initialize deviceData - battery level will come from 2A19 characteristic
+        deviceData: {
+          batteryLevel: null, // Will be populated from 2A19 characteristic
+          temperature: null,
+          steps: null,
+          lastUpdate: new Date()
+        }
+      };
+    }
+    
+    // Update connection state while preserving manufacturer data
     device.connectionState = CONNECTION_STATES.CONNECTED;
     device.connectedAt = new Date();
     device.lastSeen = Date.now();
+    // ✅ Preserve manufacturer data (including macId) from previous scan if it exists
+    // Don't overwrite it with empty data
+    
+    // ✅ SDD v1.4 ENFORCEMENT: Only one device can be connected concurrently
+    // Disconnect all other devices before adding this one
+    const currentlyConnectedDevices = Array.from(this.connectedDevices.keys()).filter(
+      connectedId => connectedId !== deviceId && this.isDeviceConnected(connectedId)
+    );
+    
+    if (currentlyConnectedDevices.length > 0) {
+      console.log(`🔌 [iOS CONNECTED] Enforcing single-connection limit: Disconnecting ${currentlyConnectedDevices.length} other device(s) before connecting ${deviceId}`);
+      // Disconnect other devices asynchronously (don't block the event handler)
+      currentlyConnectedDevices.forEach(async (otherDeviceId) => {
+        try {
+          await this.disconnectFromDevice(otherDeviceId);
+          console.log(`   ✅ Disconnected other device: ${otherDeviceId}`);
+        } catch (error) {
+          console.warn(`   ⚠️ Failed to disconnect ${otherDeviceId}:`, error.message);
+        }
+      });
+    }
     
     this.scannedDevices.set(deviceId, device);
     this.connectedDevices.set(deviceId, device);
@@ -824,6 +918,28 @@ class BLEService {
       device.disconnectedAt = new Date();
       device.lastSeen = Date.now();
       
+      // ✅ Handle passkey change - device needs re-pairing
+      if (deviceInfo.reason === 'passkey_changed' || deviceInfo.passkeyChanged) {
+        console.log('🔓 [PASSKEY CHANGED] Device passkey was updated - bonding cleared');
+        console.log('   💡 User must manually reconnect and enter NEW passkey');
+        console.log('');
+        console.log('⚠️ IMPORTANT: If reconnection fails, you must FORGET device from iOS Settings:');
+        console.log('   1. Open iOS Settings → Bluetooth');
+        console.log('   2. Find device: ' + deviceInfo.deviceName);
+        console.log('   3. Tap (i) icon → Forget This Device');
+        console.log('   4. Then reconnect from app with NEW passkey');
+        console.log('');
+        device.requiresRepairing = true;
+        device.passkeyChanged = true;
+        device.needsSystemForget = true; // Flag to show iOS Settings instruction
+      }
+      
+      // ✅ Handle unpair - device was manually unpaired
+      if (deviceInfo.reason === 'unpaired' || deviceInfo.unpaired) {
+        console.log('🔓 [UNPAIRED] Device was unpaired by user');
+        device.unpaired = true;
+      }
+      
       this.scannedDevices.set(deviceId, device);
       this.connectedDevices.delete(deviceId);
       
@@ -832,8 +948,15 @@ class BLEService {
         this.onDeviceListUpdated();
       }
       
-      // Emit disconnection event
-      this.emit('deviceDisconnected', device);
+      // Emit disconnection event with additional info
+      this.emit('deviceDisconnected', {
+        ...device,
+        reason: deviceInfo.reason,
+        passkeyChanged: deviceInfo.passkeyChanged,
+        requiresRepairing: deviceInfo.requiresRepairing,
+        needsSystemForget: device.needsSystemForget,
+        unpaired: deviceInfo.unpaired
+      });
     }
   }
 
@@ -899,6 +1022,15 @@ class BLEService {
       }
       
       this.scannedDevices.set(deviceId, device);
+      
+      // ✅ FIX: Start monitoring when service discovery is complete (same as Android)
+      // This ensures notifications are enabled after auto-connect
+      if (eventData.complete) {
+        // Start monitoring with a small delay to ensure services are fully registered
+        setTimeout(() => {
+          this.startMonitoring(deviceId);
+        }, 500);
+      }
       
       // Emit services discovered event
       this.emit('servicesDiscovered', { deviceId, services: eventData.services, complete: eventData.complete });
@@ -1071,6 +1203,35 @@ class BLEService {
       } else {
       }
       
+      // ✅ FIX: Start monitoring to enable notifications (critical for auto-connect)
+      // This ensures live notifications work after device reconnects
+      setTimeout(() => {
+        this.startMonitoring(deviceId);
+      }, 500);
+      
+      // ✅ FIX: Track time sync sent time for RTC validation
+      // This helps verify RTC is updated after time sync in auto-connect flow
+      if (!this.timeSyncSentTimes) {
+        this.timeSyncSentTimes = new Map();
+      }
+      this.timeSyncSentTimes.set(deviceId, Date.now());
+      console.log(`⏰ [TIME SYNC] Tracked time sync sent for ${deviceId}, will verify RTC validity`);
+      
+      // ✅ FIX: Don't check RTC immediately - wait for next device status notification
+      // The device needs to send a NEW device status notification with updated RTC
+      // The current device.deviceData.lastUpdate is from BEFORE time sync
+      // RTC validation will happen in handleDeviceStatusUpdate when next notification arrives
+      console.log(`⏰ [AUTO TIME SYNC] Time sync sent - will verify RTC when next device status notification arrives`);
+      
+      // ✅ FIX: Start fallback polling to ensure live notifications work
+      // Native polling should start when SET_DATA_ACQUISITION_INTERVAL response is received,
+      // but we start fallback polling as a safety measure
+      setTimeout(() => {
+        if (this.isDeviceConnected(deviceId)) {
+          this.startDeviceStatusPollingFallback(deviceId, 30);
+        }
+      }, 5000); // Start after 5 seconds to allow native polling to start first
+      
       // Read initial characteristics via JS (battery, device status, etc.)
       setTimeout(() => {
         this.readAllCharacteristics(deviceId);
@@ -1095,12 +1256,17 @@ class BLEService {
     const formattedManufacturerData = {
       raw: manufacturerInfo,
       // Parsed values for UI display
-      batteryLevel: manufacturerInfo.batteryLevel || null,
-      batteryMillivolts: manufacturerInfo.batteryMillivolts || null,
-      recordCount: manufacturerInfo.recordCount || 0,
-      companyId: manufacturerInfo.companyId || null,
-      deviceStatus: manufacturerInfo.deviceStatus || 0,
-      indication: manufacturerInfo.indication || 0,
+      batteryLevel: manufacturerInfo.batteryLevel !== undefined ? manufacturerInfo.batteryLevel : null,
+      batteryMillivolts: manufacturerInfo.batteryMillivolts !== undefined ? manufacturerInfo.batteryMillivolts : null,
+      recordCount: manufacturerInfo.recordCount !== undefined ? manufacturerInfo.recordCount : 0,
+      companyId: manufacturerInfo.companyId !== undefined ? manufacturerInfo.companyId : null,
+      deviceStatus: manufacturerInfo.deviceStatus !== undefined ? manufacturerInfo.deviceStatus : 0,
+      indication: manufacturerInfo.indication !== undefined ? manufacturerInfo.indication : 0,
+      macId: manufacturerInfo.macId || null,  // ✅ MAC Address
+      version: manufacturerInfo.version !== undefined ? manufacturerInfo.version : null,  // ✅ Firmware version from adv data (allow 0)
+      connectIndication: manufacturerInfo.connectIndication,
+      timeSet: manufacturerInfo.timeSet,
+      factoryDefaults: manufacturerInfo.factoryDefaults,
       // User-friendly status
       statusText: manufacturerInfo.deviceStatus === 0 ? 'Good' : 'Problem',
       hasRecords: (manufacturerInfo.recordCount || 0) > 0,
@@ -1114,7 +1280,7 @@ class BLEService {
       isConnectable: deviceInfo.isConnectable !== false,
       manufacturerData: formattedManufacturerData,  // ✅ Enhanced manufacturer data
       deviceData: {
-        batteryLevel: manufacturerInfo.batteryLevel || null,  // ✅ Pre-populate from manufacturer data
+        batteryLevel: null,  // ✅ Will be populated from 2A19 characteristic when connected (more accurate than manufacturer data)
         temperature: null,
         steps: null,
         lastUpdate: new Date()
@@ -1124,6 +1290,10 @@ class BLEService {
     };
 
     this.scannedDevices.set(device.id, device);
+    
+    // ✅ CRITICAL FIX: Emit deviceFound event (matching iOS behavior)
+    // This allows UI components to listen for device discoveries
+    this.emit('deviceFound', device);
     
     // Trigger device list update callback
     if (this.onDeviceListUpdated) {
@@ -1140,6 +1310,25 @@ class BLEService {
       device.connectionState = connectionState;
       
       if (connectionState === CONNECTION_STATES.CONNECTED) {
+        // ✅ SDD v1.4 ENFORCEMENT: Only one device can be connected concurrently
+        // Disconnect all other devices before adding this one
+        const currentlyConnectedDevices = Array.from(this.connectedDevices.keys()).filter(
+          connectedId => connectedId !== deviceId && this.isDeviceConnected(connectedId)
+        );
+        
+        if (currentlyConnectedDevices.length > 0) {
+          console.log(`🔌 [ANDROID CONNECTION STATE] Enforcing single-connection limit: Disconnecting ${currentlyConnectedDevices.length} other device(s) before connecting ${deviceId}`);
+          // Disconnect other devices asynchronously (don't block the event handler)
+          currentlyConnectedDevices.forEach(async (otherDeviceId) => {
+            try {
+              await this.disconnectFromDevice(otherDeviceId);
+              console.log(`   ✅ Disconnected other device: ${otherDeviceId}`);
+            } catch (error) {
+              console.warn(`   ⚠️ Failed to disconnect ${otherDeviceId}:`, error.message);
+            }
+          });
+        }
+        
         this.connectedDevices.set(deviceId, device);
       } else {
         this.connectedDevices.delete(deviceId);
@@ -1221,6 +1410,25 @@ class BLEService {
       device.lastSeen = Date.now();
       this.scannedDevices.set(deviceId, device);
       
+      // ✅ SDD v1.4 ENFORCEMENT: Only one device can be connected concurrently
+      // Disconnect all other devices before adding this one
+      const currentlyConnectedDevices = Array.from(this.connectedDevices.keys()).filter(
+        connectedId => connectedId !== deviceId && this.isDeviceConnected(connectedId)
+      );
+      
+      if (currentlyConnectedDevices.length > 0) {
+        console.log(`🔌 [ANDROID RECONNECT] Enforcing single-connection limit: Disconnecting ${currentlyConnectedDevices.length} other device(s) before reconnecting ${deviceId}`);
+        // Disconnect other devices asynchronously (don't block the event handler)
+        currentlyConnectedDevices.forEach(async (otherDeviceId) => {
+          try {
+            await this.disconnectFromDevice(otherDeviceId);
+            console.log(`   ✅ Disconnected other device: ${otherDeviceId}`);
+          } catch (error) {
+            console.warn(`   ⚠️ Failed to disconnect ${otherDeviceId}:`, error.message);
+          }
+        });
+      }
+      
       // Add to connected devices
       this.connectedDevices.set(deviceId, device);
       
@@ -1245,6 +1453,25 @@ class BLEService {
       device.connectionType = 'manual';
       this.scannedDevices.set(deviceId, device);
       
+      // ✅ SDD v1.4 ENFORCEMENT: Only one device can be connected concurrently
+      // Disconnect all other devices before adding this one
+      const currentlyConnectedDevices = Array.from(this.connectedDevices.keys()).filter(
+        connectedId => connectedId !== deviceId && this.isDeviceConnected(connectedId)
+      );
+      
+      if (currentlyConnectedDevices.length > 0) {
+        console.log(`🔌 [ANDROID CONNECTED] Enforcing single-connection limit: Disconnecting ${currentlyConnectedDevices.length} other device(s) before connecting ${deviceId}`);
+        // Disconnect other devices asynchronously (don't block the event handler)
+        currentlyConnectedDevices.forEach(async (otherDeviceId) => {
+          try {
+            await this.disconnectFromDevice(otherDeviceId);
+            console.log(`   ✅ Disconnected other device: ${otherDeviceId}`);
+          } catch (error) {
+            console.warn(`   ⚠️ Failed to disconnect ${otherDeviceId}:`, error.message);
+          }
+        });
+      }
+      
       // Add to connected devices
       this.connectedDevices.set(deviceId, device);
       
@@ -1263,6 +1490,10 @@ class BLEService {
         } catch (error) {
         }
       }, 500);
+      
+      // ✅ CRITICAL FIX: Emit deviceConnected event (matching iOS behavior)
+      // This allows UI components to listen for connection events
+      this.emit('deviceConnected', device);
       
       // Trigger device list update callback
       if (this.onDeviceListUpdated) {
@@ -1315,12 +1546,24 @@ class BLEService {
       };
     }
     
+    // ✅ CRITICAL FIX: Determine dataSource based on timestamp validity
+    const timestampMs = timestamp ? (typeof timestamp === 'number' ? timestamp : timestamp * 1000) : null;
+    const isLiveDataForDataSource = timestampMs && new Date(timestampMs).getTime() > 1577836800000; // After 2020-01-01
+    
+    // ✅ PRIORITY: Battery level from 2A19 characteristic always takes priority over manufacturer data
+    // Only use manufacturer data battery level if we don't have a value from the characteristic
+    const batteryLevelToUse = batteryLevel !== undefined 
+      ? batteryLevel  // Use battery level from 2A19 characteristic (most accurate)
+      : (device.deviceData?.batteryLevel || null); // Fallback to existing value, don't overwrite with manufacturer data
+    
     device.deviceData = {
       ...device.deviceData,
-      batteryLevel: batteryLevel !== undefined ? batteryLevel : device.deviceData.batteryLevel,
+      batteryLevel: batteryLevelToUse,
       steps: steps !== undefined ? steps : device.deviceData.steps,
       temperature: temperature !== undefined ? temperature : device.deviceData.temperature,
       timestamp: timestamp ? new Date(timestamp * 1000) : device.deviceData.timestamp,
+      // Mark as live data if timestamp is valid, otherwise preserve existing dataSource
+      dataSource: isLiveDataForDataSource ? 'live' : (device.deviceData?.dataSource || 'cached'),
       // Preserve existing lastUpdate (device RTC) if available, otherwise use current time
       lastUpdate: device.deviceData.lastUpdate || new Date()
     };
@@ -1357,9 +1600,9 @@ class BLEService {
     // Only buffer if historical sync is complete and timestamp is valid
     const isHistoricalSyncComplete = this.historicalSyncComplete.get(deviceId);
     const timestampValue = timestamp ? new Date(timestamp).getTime() / 1000 : 0;
-    const isLiveData = timestampValue > 1577836800; // After 2020-01-01
+    const isLiveDataForBuffer = timestampValue > 1577836800; // After 2020-01-01
     
-    if (dataChanged && isHistoricalSyncComplete && isLiveData) {
+    if (dataChanged && isHistoricalSyncComplete && isLiveDataForBuffer) {
       console.log(`📊 [LIVE DATA] Buffering Device Status update for ${deviceId}`);
       
       // Add to live buffer
@@ -1386,6 +1629,212 @@ class BLEService {
       }
     } else if (!isLiveData) {
       console.log(`📦 [CACHED DATA] Skipping buffer - timestamp: ${timestampValue}`);
+    }
+  }
+
+  // ✅ CRITICAL FIX: Handle deviceDataUpdate events from Android (matching iOS format)
+  // This handles the new event format that includes type, deviceData, etc.
+  async handleAndroidDeviceDataUpdateEvent(event) {
+    const { deviceId, type, deviceData: eventDeviceData, batteryLevel, batteryVoltage, recordCount, timestamp, rtcValid } = event;
+    
+    const device = this.scannedDevices.get(deviceId);
+    if (!device) {
+      console.log(`⚠️ [ANDROID] Device not found for deviceDataUpdate event: ${deviceId}`);
+      return;
+    }
+
+    // Initialize deviceData if needed
+    if (!device.deviceData) {
+      device.deviceData = {
+        batteryLevel: null,
+        temperature: null,
+        steps: null,
+        recordCount: null,
+        lastUpdate: new Date()
+      };
+    }
+
+    const previousData = { ...device.deviceData };
+
+    // Update device data from event
+    if (type === 'device_status') {
+      // Device Status update (SDD v1.4 format)
+      const timestampMs = timestamp || (eventDeviceData?.lastUpdate);
+      const isLiveData = rtcValid && timestampMs && new Date(timestampMs).getTime() > 1577836800000; // After 2020-01-01
+      
+      // ✅ PRIORITY: Don't overwrite battery level from 2A19 with Device Status battery level
+      // Battery Service (2A19) is the standard and more accurate source for battery percentage
+      // Device Status battery voltage can be kept for reference, but percentage comes from 2A19
+      // ✅ FALLBACK: If 2A19 is not available, calculate from voltage (2000mV = 0%, 3000mV = 100%)
+      let batteryLevelToUse = device.deviceData?.batteryLevel !== null && device.deviceData?.batteryLevel !== undefined
+        ? device.deviceData.batteryLevel  // Keep existing battery level from 2A19 (if available)
+        : null;
+      
+      // If no 2A19 value, calculate from voltage if available
+      // Linear scale: 0mV = 0%, 3000mV = 100%
+      if (batteryLevelToUse === null && batteryVoltage !== undefined && batteryVoltage !== null) {
+        const BATTERY_MIN_MV = 0;    // 0% battery
+        const BATTERY_MAX_MV = 3000; // 100% battery
+        if (batteryVoltage >= BATTERY_MIN_MV && batteryVoltage <= BATTERY_MAX_MV) {
+          batteryLevelToUse = Math.round((batteryVoltage / BATTERY_MAX_MV) * 100);
+        } else if (batteryVoltage > BATTERY_MAX_MV) {
+          batteryLevelToUse = 100;
+        } else if (batteryVoltage < BATTERY_MIN_MV) {
+          batteryLevelToUse = 0;
+        }
+      }
+      
+      device.deviceData = {
+        ...device.deviceData,
+        batteryLevel: batteryLevelToUse, // Use 2A19 battery level (priority) or Device Status as fallback
+        batteryVoltage: batteryVoltage !== undefined ? batteryVoltage : (eventDeviceData?.batteryVoltage ?? device.deviceData.batteryVoltage),
+        recordCount: recordCount !== undefined ? recordCount : (eventDeviceData?.recordCount ?? device.deviceData.recordCount),
+        // Mark as live data if RTC is valid and timestamp is recent
+        dataSource: isLiveData ? 'live' : (device.deviceData?.dataSource || 'cached'),
+        lastUpdate: timestampMs ? new Date(timestampMs) : (eventDeviceData?.lastUpdate ? new Date(eventDeviceData.lastUpdate) : device.deviceData.lastUpdate || new Date()),
+        rtcValid: rtcValid !== undefined ? rtcValid : (eventDeviceData?.rtcValid ?? device.deviceData.rtcValid)
+      };
+
+      // Update manufacturerData.recordCount for UI consistency
+      if (device.deviceData.recordCount !== undefined && device.manufacturerData) {
+        device.manufacturerData.recordCount = device.deviceData.recordCount;
+        device.manufacturerData.hasRecords = device.deviceData.recordCount > 0;
+      }
+    } else if (type === 'live_data') {
+      // ✅ LIVE DATA: Live steps/temperature update (compact device data format)
+      const timestampMs = timestamp || (eventDeviceData?.lastUpdate);
+      const isLiveData = rtcValid && timestampMs && new Date(timestampMs).getTime() > 1577836800000;
+      
+      device.deviceData = {
+        ...device.deviceData,
+        batteryLevel: batteryLevel !== undefined ? batteryLevel : (eventDeviceData?.batteryLevel ?? device.deviceData.batteryLevel),
+        steps: event.steps !== undefined ? event.steps : (eventDeviceData?.steps ?? device.deviceData.steps),
+        temperature: event.temperature !== undefined ? event.temperature : (eventDeviceData?.temperature ?? device.deviceData.temperature),
+        dataSource: isLiveData ? 'live' : (device.deviceData?.dataSource || 'cached'),
+        lastUpdate: timestampMs ? new Date(timestampMs) : (eventDeviceData?.lastUpdate ? new Date(eventDeviceData.lastUpdate) : device.deviceData.lastUpdate || new Date()),
+        rtcValid: rtcValid !== undefined ? rtcValid : (eventDeviceData?.rtcValid ?? device.deviceData.rtcValid)
+      };
+      
+      console.log(`📊 [ANDROID] Live data updated via deviceDataUpdate - Steps: ${device.deviceData.steps}, Temp: ${device.deviceData.temperature}°C, Battery: ${device.deviceData.batteryLevel}%`);
+    } else if (type === 'sync_records') {
+      // ✅ SYNC RECORDS: Live sync progress update (matching iOS behavior)
+      // Note: event parameter contains the sync_records data from Android
+      const recordsReceived = event.recordsReceived || 0;
+      const totalReceived = event.totalReceived || 0;
+      const totalExpected = event.totalExpected || 0;
+      
+      console.log(`📊 [ANDROID] Sync progress via deviceDataUpdate - ${totalReceived}/${totalExpected} records received`);
+      
+      // Calculate remaining records
+      const remainingRecords = Math.max(0, totalExpected - totalReceived);
+      
+      // Update device data with sync progress and remaining record count
+      device.deviceData = {
+        ...device.deviceData,
+        recordCount: remainingRecords, // Update with remaining records
+        syncProgress: {
+          totalReceived,
+          totalExpected,
+          recordsReceived
+        }
+      };
+      
+      // Update manufacturerData.recordCount if available
+      if (device.manufacturerData) {
+        device.manufacturerData.recordCount = remainingRecords;
+        device.manufacturerData.hasRecords = remainingRecords > 0;
+      }
+    } else if (type === 'sync_complete') {
+      // ✅ SYNC COMPLETE: Sync finished, update record count (matching iOS behavior)
+      // Note: event parameter contains the sync_complete data from Android
+      const finalRecordCount = event.recordCount !== undefined ? event.recordCount : (eventDeviceData?.recordCount ?? device.deviceData?.recordCount ?? 0);
+      
+      console.log(`📊 [ANDROID] Sync complete via deviceDataUpdate - Final record count: ${finalRecordCount}`);
+      
+      // Update device data with final record count
+      device.deviceData = {
+        ...device.deviceData,
+        recordCount: finalRecordCount,
+        ...(eventDeviceData && { ...eventDeviceData })
+      };
+      
+      // Update manufacturerData.recordCount for UI consistency
+      if (device.manufacturerData) {
+        device.manufacturerData.recordCount = finalRecordCount;
+        device.manufacturerData.hasRecords = finalRecordCount > 0;
+      }
+      
+      // Clear sync progress
+      if (device.deviceData.syncProgress) {
+        delete device.deviceData.syncProgress;
+      }
+    }
+
+    this.scannedDevices.set(deviceId, device);
+
+    // Log data changes (check all fields for live data updates)
+    const dataChanged = previousData.batteryLevel !== device.deviceData.batteryLevel ||
+      previousData.recordCount !== device.deviceData.recordCount ||
+      previousData.steps !== device.deviceData.steps ||
+      previousData.temperature !== device.deviceData.temperature;
+
+    if (dataChanged) {
+      console.log(`📊 [ANDROID] Device data updated via deviceDataUpdate event - Steps: ${device.deviceData.steps}, Temp: ${device.deviceData.temperature}°C, Battery: ${device.deviceData.batteryLevel}%, Records: ${device.deviceData.recordCount}, DataSource: ${device.deviceData.dataSource}`);
+    }
+
+    // ✅ CRITICAL FIX: Trigger device list update callback to refresh UI
+    if (this.onDeviceListUpdated && dataChanged) {
+      this.onDeviceListUpdated();
+    }
+
+    // ✅ CRITICAL FIX: Trigger UI update callback - for sync events always trigger, others only if data changed
+    const shouldTriggerCallback = (type === 'sync_records' || type === 'sync_complete') || dataChanged;
+    
+    if (shouldTriggerCallback) {
+      if (this.onDeviceDataUpdated && this.appState === 'active') {
+        this.onDeviceDataUpdated(deviceId, device.deviceData);
+      } else if (this.onDeviceDataUpdated && this.appState !== 'active') {
+        // Store the latest data for when app comes back to foreground
+        if (!this.pendingUIUpdates) {
+          this.pendingUIUpdates = new Map();
+        }
+        this.pendingUIUpdates.set(deviceId, device.deviceData);
+      }
+    }
+    
+    // ✅ CRITICAL: Emit deviceDataUpdate event for ModernBLEManager listeners
+    // Emit for all types (live_data, device_status, sync_records, sync_complete)
+    // Sync events always emit to show progress, others only if data changed
+    const shouldEmit = (type === 'sync_records' || type === 'sync_complete') || (dataChanged && (type === 'live_data' || type === 'device_status'));
+    
+    if (shouldEmit) {
+      const emitData = {
+        deviceId,
+        type: type, // Pass through the type
+        deviceData: device.deviceData,
+        // Include relevant fields based on type
+        ...(type === 'live_data' && {
+          steps: device.deviceData.steps,
+          temperature: device.deviceData.temperature,
+        }),
+        ...(type === 'device_status' && {
+          recordCount: device.deviceData.recordCount,
+          batteryLevel: device.deviceData.batteryLevel,
+        }),
+        ...(type === 'sync_records' && {
+          recordsReceived: event.recordsReceived || 0,
+          totalReceived: event.totalReceived || 0,
+          totalExpected: event.totalExpected || 0,
+        }),
+        ...(type === 'sync_complete' && {
+          recordCount: device.deviceData.recordCount,
+          recordsTransmitted: event.recordsTransmitted || 0,
+          totalRecords: event.totalRecords || 0,
+        })
+      };
+      
+      console.log(`📤 [BLEService] Emitting deviceDataUpdate event:`, emitData.type, `for device:`, deviceId);
+      this.emit('deviceDataUpdate', emitData);
     }
   }
 
@@ -1913,6 +2362,25 @@ class BLEService {
       // For native iOS implementation, we don't need to acquire BLE-PLX handles
       // The native iOS implementation handles state restoration automatically
       
+      // ✅ SDD v1.4 ENFORCEMENT: Only one device can be connected concurrently
+      // Disconnect all other devices before restoring this one
+      const currentlyConnectedDevices = Array.from(this.connectedDevices.keys()).filter(
+        connectedId => connectedId !== deviceId && this.isDeviceConnected(connectedId)
+      );
+      
+      if (currentlyConnectedDevices.length > 0) {
+        console.log(`🔌 [iOS STATE RESTORATION] Enforcing single-connection limit: Disconnecting ${currentlyConnectedDevices.length} other device(s) before restoring ${deviceId}`);
+        // Disconnect other devices asynchronously (don't block the restoration)
+        currentlyConnectedDevices.forEach(async (otherDeviceId) => {
+          try {
+            await this.disconnectFromDevice(otherDeviceId);
+            console.log(`   ✅ Disconnected other device: ${otherDeviceId}`);
+          } catch (error) {
+            console.warn(`   ⚠️ Failed to disconnect ${otherDeviceId}:`, error.message);
+          }
+        });
+      }
+      
       // Track in maps for downstream APIs
       this.connectedDevices.set(deviceId, { id: deviceId });
       const existing = this.scannedDevices.get(deviceId) || {
@@ -2101,49 +2569,39 @@ class BLEService {
         } catch { }
       }
 
+      // ✅ ALIGNED: Both platforms use startScanningWithOptions with native auto-stop
+      // Native layer handles auto-stop (iOS line 486-493, Android line 4302-4314)
+      // No need for JS layer timeout - removed duplicate logic
+      
+      const scanOptions = {
+        maxScanDurationMs: maxDuration || this.profile.maxScanDurationMs || 15000,
+        scanMode: this.profile.scanMode || 'LowLatency',
+        allowDuplicates: true
+      };
+      
       if (Platform.OS === 'android') {
-        // Use native Android scanning
-        const result = await SampleBridgeAndroid.startScanning();
+        // Use native Android scanning with options (matching iOS behavior)
+        if (SampleBridgeAndroid.startScanningWithOptions) {
+          await SampleBridgeAndroid.startScanningWithOptions(scanOptions);
+        } else {
+          // Fallback to regular scanning for backward compatibility
+          await SampleBridgeAndroid.startScanning();
+        }
         
         // Android scanning is handled by native events, no subscription needed
         this.scanSubscription = { remove: () => {} }; // Dummy subscription for compatibility
       } else {
-        // iOS uses native bridge scanning
-        const result = await BridgingCodeModule.startScanning();
-        
-      // iOS scanning is handled by native events, no subscription needed
-      this.scanSubscription = { remove: () => {} }; // Dummy subscription for compatibility
-      
-      // Use power profile optimized scanning for iOS
-      try {
-        const scanOptions = {
-          maxScanDurationMs: maxDuration || this.profile.maxScanDurationMs || 15000,
-          scanMode: this.profile.scanMode || 'LowLatency',
-          allowDuplicates: true
-        };
-        
-        // Check if the method exists before calling it
+        // iOS uses native bridge scanning with options
         if (BridgingCodeModule.startScanningWithOptions) {
           await BridgingCodeModule.startScanningWithOptions(scanOptions);
         } else {
+          // Fallback to regular scanning for backward compatibility
           await BridgingCodeModule.startScanning();
         }
-      } catch (error) {
-        // Fallback to regular scanning
-        await BridgingCodeModule.startScanning();
+        
+        // iOS scanning is handled by native events, no subscription needed
+        this.scanSubscription = { remove: () => {} }; // Dummy subscription for compatibility
       }
-    }
-    
-    if (Platform.OS === 'android') {
-      // Android implementation
-      // Auto-stop scan after bounded duration to reduce battery
-      const scanDuration = maxDuration || this.profile.maxScanDurationMs || 15000;
-      if (scanDuration) {
-        setTimeout(() => {
-          this.stopScanning();
-        }, scanDuration);
-      }
-    }
 
     } catch (error) {
       this.scanState = SCAN_STATES.STOPPED;
@@ -2448,13 +2906,72 @@ class BLEService {
         throw new Error('Device not found in scanned devices');
       }
 
-      // Check if device has been forgotten - allow manual connection but log it
+      // ✅ CRITICAL: Check if device is in manual disconnect cooldown (e.g., after unpair)
+      const cooldownTime = this.manualDisconnectCooldown.get(deviceId);
+      if (cooldownTime) {
+        const timeSinceCooldown = Date.now() - cooldownTime;
+        const cooldownDuration = 10000; // 10 seconds
+        
+        if (timeSinceCooldown < cooldownDuration) {
+          const remainingTime = Math.ceil((cooldownDuration - timeSinceCooldown) / 1000);
+          const errorMessage = `Device is in cooldown after unpair. Please wait ${remainingTime} seconds before reconnecting.`;
+          console.warn(`⏳ [CONNECTION] ${errorMessage}`);
+          throw new Error(errorMessage);
+        } else {
+          // Cooldown expired, clear it
+          this.manualDisconnectCooldown.delete(deviceId);
+        }
+      }
+
+      // ✅ Check if device has been forgotten (unpaired)
+      // For MANUAL connections: Allow connection and remove from forgotten list (re-pair)
+      // For AUTO connections: This is handled by native code
       try {
         const forgottenDevices = await AutoConnectService.getForgottenDevices();
         if (forgottenDevices.success && forgottenDevices.devices.includes(deviceId)) {
+          console.log(`🔓 [CONNECTION] Device was unpaired - manual connection will re-pair it`);
+          // Manual connection to forgotten device - this is like pairing again
+          // The native iOS code will automatically remove it from forgotten list
+          // No need to block the connection - allow it to proceed
         }
       } catch (error) {
-        // Continue with connection attempt if we can't check the list
+        console.warn('⚠️ [CONNECTION] Could not check forgotten devices list:', error);
+        // Continue with connection attempt anyway
+      }
+
+      // ✅ SDD v1.4 ENFORCEMENT: Only one device can be connected concurrently
+      // Disconnect all other devices before connecting this one
+      const currentlyConnectedDevices = Array.from(this.connectedDevices.keys()).filter(
+        connectedId => connectedId !== deviceId && this.isDeviceConnected(connectedId)
+      );
+      
+      if (currentlyConnectedDevices.length > 0) {
+        console.log(`🔌 [CONNECTION] Enforcing single-connection limit: Disconnecting ${currentlyConnectedDevices.length} other device(s) before connecting ${deviceId}`);
+        console.log(`   📋 Devices to disconnect: ${currentlyConnectedDevices.join(', ')}`);
+        
+        // Disconnect all other devices
+        const disconnectPromises = currentlyConnectedDevices.map(async (otherDeviceId) => {
+          try {
+            console.log(`   🔌 Disconnecting device: ${otherDeviceId}`);
+            await this.disconnectFromDevice(otherDeviceId);
+            console.log(`   ✅ Successfully disconnected: ${otherDeviceId}`);
+          } catch (error) {
+            console.warn(`   ⚠️ Failed to disconnect ${otherDeviceId}:`, error.message);
+            // Continue even if one disconnect fails
+          }
+        });
+        
+        // Wait for all disconnections to complete (with timeout)
+        try {
+          await Promise.race([
+            Promise.all(disconnectPromises),
+            new Promise((resolve) => setTimeout(resolve, 5000)) // 5 second timeout
+          ]);
+          console.log(`✅ [CONNECTION] All other devices disconnected, proceeding with connection to ${deviceId}`);
+        } catch (error) {
+          console.warn(`⚠️ [CONNECTION] Error during disconnect of other devices:`, error.message);
+          // Continue with connection anyway - don't block user
+        }
       }
 
       // TODO: TAG VERIFICATION COMMENTED OUT FOR NOW - ALLOW ALL TAGS
@@ -2569,27 +3086,39 @@ class BLEService {
 
 
       // Add device to bonded list for auto-connect (iOS only)
-      if (Platform.OS === 'ios') {
-        try {
-          await this.addDeviceToBondedList(deviceId);
-        } catch (error) {
-        }
-      }
+      // ❌ DISABLED: Native code already handles bonding during pairing verification
+      // Calling this again causes duplicate service discovery
+      // if (Platform.OS === 'ios') {
+      //   try {
+      //     await this.addDeviceToBondedList(deviceId);
+      //   } catch (error) {
+      //   }
+      // }
 
       // Load services and characteristics
-      try {
-        // Ensure device is properly added to connectedDevices before loading services
+      // ✅ iOS: Native code automatically discovers services during connection
+      // ✅ Android: Need to explicitly load services here
+      if (Platform.OS === 'android') {
+        try {
+          // Ensure device is properly added to connectedDevices before loading services
+          if (!this.connectedDevices.has(deviceId)) {
+            this.connectedDevices.set(deviceId, connectedDevice);
+          }
+          
+          // Small delay to ensure connection is fully established
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          await this.loadDeviceServices(deviceId);
+        } catch (error) {
+          // Don't fail the entire connection if services can't be loaded
+          // The device is still connected, just without service discovery
+        }
+      } else {
+        // iOS: Services are already discovered by native code
+        // Just ensure device is in connectedDevices map
         if (!this.connectedDevices.has(deviceId)) {
           this.connectedDevices.set(deviceId, connectedDevice);
         }
-        
-        // Small delay to ensure connection is fully established
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        await this.loadDeviceServices(deviceId);
-      } catch (error) {
-        // Don't fail the entire connection if services can't be loaded
-        // The device is still connected, just without service discovery
       }
 
       // Start heartbeat monitoring for connection health
@@ -2661,6 +3190,12 @@ class BLEService {
       this.liveDataBuffers.delete(deviceId);
       this.lastBatchUpload.delete(deviceId);
       this.historicalSyncComplete.delete(deviceId);
+      
+      // Clean up auto-sync timer if exists
+      if (this.autoSyncTimers?.has(deviceId)) {
+        clearTimeout(this.autoSyncTimers.get(deviceId));
+        this.autoSyncTimers.delete(deviceId);
+      }
 
       let device = this.scannedDevices.get(deviceId);
       if (!device) {
@@ -2686,10 +3221,11 @@ class BLEService {
         onConnectionStateChange(deviceId, CONNECTION_STATES.DISCONNECTING);
       }
 
-      // Stop monitoring, heartbeat, RSSI polling, and adaptive API calling
+      // Stop monitoring, heartbeat, RSSI polling, device status polling, and adaptive API calling
       this.stopMonitoring(deviceId);
       this.stopHeartbeatMonitoring(deviceId);
       this.stopRSSIPolling(deviceId);
+      this.stopDeviceStatusPollingFallback(deviceId);
       this.stopAdaptiveApiCalling(deviceId);
       
       // Clear command sent flag to allow re-sending commands on reconnect
@@ -3379,14 +3915,84 @@ class BLEService {
         if (currentStats.deviceStatus <= 2) {
         }
 
+        // ✅ AUTO TIME SYNC: Check if RTC is invalid (stale/unset) and sync automatically
+        const incomingDate = parsedData.lastUpdate;
+        const isStaleRTC = incomingDate && incomingDate < new Date('2020-01-01');
+        const rtcValid = parsedData.rtcValid;
+        
+        // ✅ FIX: Check if time sync was recently sent - if so, this notification might be from BEFORE time sync
+        // Only validate RTC using notifications that arrived AFTER time sync
+        const timeSyncSentTime = this.timeSyncSentTimes?.get(deviceId) || 0;
+        const timeSinceTimeSync = Date.now() - timeSyncSentTime;
+        const isRecentTimeSync = timeSyncSentTime > 0 && timeSinceTimeSync < 30000; // 30 seconds
+        const notificationArrivedAfterTimeSync = timeSyncSentTime === 0 || (timeSyncSentTime > 0 && Date.now() > timeSyncSentTime);
+        
+        // ✅ FIX: If time sync was sent recently, ignore device status notifications that arrived too soon after
+        // Device needs time to process time sync and send a new notification with updated RTC
+        // Wait at least 5 seconds after time sync before checking RTC validity
+        const shouldIgnoreThisNotification = isRecentTimeSync && timeSinceTimeSync < 5000;
+        
+        if (shouldIgnoreThisNotification) {
+          console.log(`⏰ [AUTO TIME SYNC] Ignoring device status notification - too soon after time sync (${Math.round(timeSinceTimeSync / 1000)}s ago, need 5s)`);
+          // Still update device data but don't trigger sync yet
+        }
+        
+        // Check if device was recently restarted (within last 60 seconds)
+        const restartTime = this.deviceRestartTimes?.get(deviceId) || 0;
+        const timeSinceRestart = Date.now() - restartTime;
+        const isRecentRestart = restartTime > 0 && timeSinceRestart < 60000; // 60 seconds
+        
+        // Auto sync time if RTC is invalid
+        // Trigger if: (first 5 notifications) OR (recent restart detected) OR (recent time sync but RTC still invalid after waiting)
+        // ✅ FIX: Only check RTC if notification arrived AFTER time sync (or no time sync was sent)
+        // ✅ FIX: Increased from 3 to 5 notifications to catch auto-connect case
+        const shouldTriggerSync = !shouldIgnoreThisNotification && (isStaleRTC || !rtcValid) && 
+          (currentStats.deviceStatus <= 5 || isRecentRestart || (isRecentTimeSync && timeSinceTimeSync > 5000 && notificationArrivedAfterTimeSync));
+        
+        if (shouldTriggerSync) {
+          const timeSyncKey = `timeSync_${deviceId}`;
+          const lastTimeSync = this.lastTimeSyncAttempt?.get(timeSyncKey) || 0;
+          const timeSinceLastSync = Date.now() - lastTimeSync;
+          
+          // ✅ FIX: If time sync was just sent, wait longer before retrying (device needs time to process)
+          const minRetryInterval = isRecentTimeSync ? 15000 : 30000; // 15s if recent sync, 30s otherwise
+          
+          // Only attempt sync if we haven't tried in the minimum interval
+          if (timeSinceLastSync > minRetryInterval) {
+            const reason = isRecentRestart ? 'after system restart' : 
+                          isRecentTimeSync ? 'RTC still invalid after time sync' : 'RTC invalid';
+            console.log(`⏰ [AUTO TIME SYNC] Device RTC invalid (${reason}), syncing time automatically...`);
+            if (!this.lastTimeSyncAttempt) {
+              this.lastTimeSyncAttempt = new Map();
+            }
+            this.lastTimeSyncAttempt.set(timeSyncKey, Date.now());
+            
+            // Delay sync slightly to ensure connection is stable
+            // Longer delay after restart or recent time sync to allow device to fully initialize
+            const delay = isRecentRestart ? 3000 : (isRecentTimeSync ? 5000 : 2000);
+            setTimeout(async () => {
+              try {
+                await this.syncDeviceTime(deviceId);
+                // Update time sync sent time after successful sync
+                if (!this.timeSyncSentTimes) {
+                  this.timeSyncSentTimes = new Map();
+                }
+                this.timeSyncSentTimes.set(deviceId, Date.now());
+              } catch (error) {
+                console.error(`❌ [AUTO TIME SYNC] Failed:`, error);
+              }
+            }, delay);
+          } else {
+            console.log(`⏰ [AUTO TIME SYNC] Skipping - last sync attempt was ${Math.round(timeSinceLastSync / 1000)}s ago (min interval: ${minRetryInterval / 1000}s)`);
+          }
+        }
+
         if (BLEDataParser.validateData(parsedData)) {
           // ✅ CRITICAL: Don't overwrite synced data with stale characteristic reads!
           // Check if incoming data is stale (before 2020) and we already have synced data
-          const incomingDate = parsedData.lastUpdate;
-          const isStaleData = incomingDate && incomingDate < new Date('2020-01-01');
           const hasSyncedData = device.deviceData?.dataSource === 'synced';
           
-          if (isStaleData && hasSyncedData) {
+          if (isStaleRTC && hasSyncedData) {
             console.log(`⏭️ [iOS] Skipping stale read (${incomingDate.toISOString()}) - already have synced data`);
             
             // Only update battery level (it doesn't come from sync)
@@ -3421,12 +4027,34 @@ class BLEService {
           } else if (newDeviceRTC) {
           }
 
+          // ✅ PRIORITY: Don't overwrite battery level from 2A19 with Device Status battery level
+          // Battery Service (2A19) is the standard and more accurate source for battery percentage
+          // Device Status battery voltage can be kept for reference, but percentage comes from 2A19
+          const batteryLevelToUse = device.deviceData?.batteryLevel !== null && device.deviceData?.batteryLevel !== undefined
+            ? device.deviceData.batteryLevel  // Keep existing battery level from 2A19 (if available)
+            : (parsedData.batteryLevel !== undefined ? parsedData.batteryLevel : null); // Only use Device Status if no 2A19 value
+          
           device.deviceData = {
             ...device.deviceData,
             ...parsedData,
+            batteryLevel: batteryLevelToUse, // Override with prioritized battery level (2A19 takes priority)
+            // Mark as live data source if it's valid live data
+            dataSource: (parsedData.timestamp && parsedData.timestamp > 1577836800) ? 'live' : (device.deviceData?.dataSource || 'cached'),
             // Use device RTC timestamp for lastUpdate if available, otherwise use current time
             lastUpdate: parsedData.lastUpdate || new Date()
           };
+          
+          // ✅ Update recordCount from device status if available
+          if (parsedData.recordCount !== undefined && parsedData.recordCount !== null) {
+            device.deviceData.recordCount = parsedData.recordCount;
+            
+            // ✅ CRITICAL FIX: Also update manufacturerData.recordCount for UI consistency
+            // The UI shows manufacturerData.recordCount in some places, so keep it in sync
+            if (device.manufacturerData) {
+              device.manufacturerData.recordCount = parsedData.recordCount;
+              device.manufacturerData.hasRecords = parsedData.recordCount > 0;
+            }
+          }
 
           this.scannedDevices.set(deviceId, device);
 
@@ -3438,6 +4066,141 @@ class BLEService {
           if (dataChanged) {
           }
 
+          // ✅ AUTO-SYNC: Trigger sync start when live notifications arrive with records available
+          // Simple logic: if records are available and sync isn't active, start sync (like on connection)
+          const syncState = this.dataSyncStates?.get(deviceId);
+          const hasRecordsAvailable = parsedData.recordCount && parsedData.recordCount > 0;
+          const isSyncActive = syncState?.isActive === true;
+          const isConnected = device.connectionState === CONNECTION_STATES.CONNECTED;
+          // ✅ FIX: Use deviceRTC (Unix timestamp in seconds) or rtcValid boolean instead of timestamp Date object
+          const isLiveData = parsedData.rtcValid || (parsedData.deviceRTC && parsedData.deviceRTC > 1577836800);
+          
+          // ✅ SIMPLIFIED: Trigger auto-sync when records are available, device is connected, and sync is not active
+          // This matches the behavior on connection - simple and straightforward
+          if (hasRecordsAvailable && !isSyncActive && isConnected && isLiveData) {
+            // Clear any existing timer for this device
+            if (this.autoSyncTimers?.has(deviceId)) {
+              clearTimeout(this.autoSyncTimers.get(deviceId));
+            }
+            
+            // Debounce: Wait 2 seconds before triggering sync (like native Android code)
+            // This prevents race conditions and multiple rapid triggers
+            const syncTimer = setTimeout(async () => {
+              // Double-check conditions haven't changed
+              const currentSyncState = this.dataSyncStates?.get(deviceId);
+              const currentDevice = this.scannedDevices.get(deviceId);
+              const stillActive = currentSyncState?.isActive === true;
+              const stillConnected = currentDevice?.connectionState === CONNECTION_STATES.CONNECTED;
+              
+              if (!stillActive && stillConnected && hasRecordsAvailable) {
+                console.log(`🔄 [AUTO SYNC] Triggering sync start from live notification - ${parsedData.recordCount} records available`);
+                try {
+                  await this.startDataSync(deviceId);
+                } catch (error) {
+                  console.error(`❌ [AUTO SYNC] Failed to start sync:`, error);
+                }
+              } else {
+                console.log(`⏭️ [AUTO SYNC] Conditions changed during delay - sync: ${stillActive}, connected: ${stillConnected}`);
+              }
+              
+              // Clean up timer
+              if (this.autoSyncTimers) {
+                this.autoSyncTimers.delete(deviceId);
+              }
+            }, 2000); // 2 second delay like native Android
+            
+            // Store timer for cleanup
+            if (!this.autoSyncTimers) {
+              this.autoSyncTimers = new Map();
+            }
+            this.autoSyncTimers.set(deviceId, syncTimer);
+            
+            console.log(`⏰ [AUTO SYNC] Scheduled sync start in 2 seconds for ${deviceId} (${parsedData.recordCount} records)`);
+          } else {
+            if (!hasRecordsAvailable) {
+              console.log(`⏭️ [AUTO SYNC] Skipping - no records available (${parsedData.recordCount || 0})`);
+            } else if (isSyncActive) {
+              console.log(`⏭️ [AUTO SYNC] Skipping - sync already in progress`);
+            } else if (!isConnected) {
+              console.log(`⏭️ [AUTO SYNC] Skipping - device not connected`);
+            } else if (!isLiveData) {
+              console.log(`⏭️ [AUTO SYNC] Skipping - invalid RTC (rtcValid: ${parsedData.rtcValid}, deviceRTC: ${parsedData.deviceRTC})`);
+            }
+          }
+          
+          // ✅ Trigger device list update when recordCount changes
+          const recordCountChanged = previousData.recordCount !== device.deviceData.recordCount;
+          if (recordCountChanged && this.onDeviceListUpdated) {
+            this.onDeviceListUpdated();
+          }
+
+          // ✅ Add live data to syncRecords if steps or temperature changed (not just battery)
+          const stepsOrTempChanged = previousData.steps !== device.deviceData.steps ||
+            previousData.temperature !== device.deviceData.temperature;
+          
+          if (stepsOrTempChanged && parsedData.timestamp && parsedData.timestamp > 1577836800) {
+            // Initialize syncRecords array if it doesn't exist
+            if (!device.syncRecords) {
+              device.syncRecords = [];
+            }
+            
+            // Check if we already have a record with this timestamp (avoid duplicates)
+            const existingRecordIndex = device.syncRecords.findIndex(r => {
+              const recordTimestamp = r.timestamp || (r.timestampDate ? Math.floor(r.timestampDate.getTime() / 1000) : null);
+              return recordTimestamp === parsedData.timestamp;
+            });
+            
+            if (existingRecordIndex >= 0) {
+              // Update existing record with latest data
+              device.syncRecords[existingRecordIndex] = {
+                ...device.syncRecords[existingRecordIndex],
+                steps: parsedData.steps || device.syncRecords[existingRecordIndex].steps,
+                temperature: parsedData.temperature !== undefined && parsedData.temperature !== null 
+                  ? parsedData.temperature 
+                  : device.syncRecords[existingRecordIndex].temperature,
+                receivedAt: new Date(),
+                deviceId,
+                source: 'live'
+              };
+            } else {
+              // Add new record from live notification
+              device.syncRecords.push({
+                timestamp: parsedData.timestamp,
+                timestampDate: parsedData.lastUpdate || new Date(parsedData.timestamp * 1000),
+                steps: parsedData.steps || 0,
+                temperature: parsedData.temperature !== undefined && parsedData.temperature !== null 
+                  ? parsedData.temperature 
+                  : 0,
+                receivedAt: new Date(),
+                deviceId,
+                source: 'live'
+              });
+            }
+            
+            // Update recordCount incrementally
+            if (!device.deviceData) {
+              device.deviceData = {};
+            }
+            device.deviceData.recordCount = device.syncRecords.length;
+            
+            // Trigger UI update for syncRecords screen
+            this.emit('deviceDataUpdate', {
+              deviceId,
+              type: 'live_record',
+              records: device.syncRecords,
+              totalRecords: device.syncRecords.length
+            });
+            
+            console.log(`📊 [LIVE RECORD] Added live record to syncRecords. Total: ${device.syncRecords.length}`);
+            
+            this.scannedDevices.set(deviceId, device);
+            
+            // Trigger device list update for UI refresh
+            if (this.onDeviceListUpdated) {
+              this.onDeviceListUpdated();
+            }
+          }
+
           // Trigger UI update callback if available and app is active
           if (this.onDeviceDataUpdated && this.appState === 'active') {
             this.onDeviceDataUpdated(deviceId, device.deviceData);
@@ -3447,13 +4210,14 @@ class BLEService {
           // ✅ INDUSTRY STANDARD: Buffer live data instead of immediate API call
           // Only buffer if historical sync is complete (avoid buffering stale 1979 data)
           const isHistoricalSyncComplete = this.historicalSyncComplete.get(deviceId);
-          const isLiveData = parsedData.timestamp > 1577836800; // After 2020-01-01 (valid RTC)
+          const isValidLiveData = parsedData.deviceRTC && parsedData.deviceRTC > 1577836800; // After 2020-01-01 (valid RTC)
           
-          if (isHistoricalSyncComplete && isLiveData) {
+          if (isHistoricalSyncComplete && isValidLiveData) {
             // Add to live buffer
+            // ✅ FIX: Use deviceRTC (Unix timestamp in seconds) instead of timestamp Date object
             this.addToLiveBuffer(deviceId, {
-              timestamp: parsedData.timestamp,
-              timestampDate: parsedData.lastUpdate,
+              timestamp: parsedData.deviceRTC || (parsedData.timestamp ? Math.floor(parsedData.timestamp.getTime() / 1000) : null),
+              timestampDate: parsedData.lastUpdate || (parsedData.timestamp || new Date()),
               steps: parsedData.steps,
               temperature: parsedData.temperature,
               batteryLevel: parsedData.batteryLevel
@@ -3527,9 +4291,11 @@ class BLEService {
           };
         }
 
+        // ✅ PRIORITY: Battery level from 2A19 characteristic always takes priority over manufacturer data
+        // This ensures we use the accurate battery percentage from the Battery Service
         device.deviceData = {
           ...device.deviceData,
-          batteryLevel,
+          batteryLevel, // Always use battery level from 2A19 characteristic (most accurate)
           // Preserve existing lastUpdate (device RTC) if available, otherwise use current time
           lastUpdate: device.deviceData.lastUpdate || new Date()
         };
@@ -3853,6 +4619,12 @@ class BLEService {
     if (this.dataSyncStates) {
       this.dataSyncStates.delete(deviceId);
     }
+    
+    // Clean up auto-sync timer if exists
+    if (this.autoSyncTimers?.has(deviceId)) {
+      clearTimeout(this.autoSyncTimers.get(deviceId));
+      this.autoSyncTimers.delete(deviceId);
+    }
   }
 
   // Handle data record (SDD: 0x03 - Record Data)
@@ -3892,6 +4664,25 @@ class BLEService {
             return;  // Skip padding records
           }
           
+          // ✅ FIX: Check for duplicate records by timestamp (and steps/temperature for robustness)
+          // This prevents the same record from being added multiple times
+          const recordTimestamp = record.timestamp || (record.timestampDate ? Math.floor(new Date(record.timestampDate).getTime() / 1000) : null);
+          if (recordTimestamp) {
+            const existingRecordIndex = device.syncRecords.findIndex(r => {
+              const existingTimestamp = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : null);
+              // Match by timestamp, and optionally by steps/temperature to catch exact duplicates
+              return existingTimestamp === recordTimestamp && 
+                     r.steps === record.steps && 
+                     r.temperature === record.temperature;
+            });
+            
+            if (existingRecordIndex >= 0) {
+              console.log(`🔄 [RECORD] Duplicate detected in handleDataRecord - skipping: Steps=${record.steps}, Temp=${record.temperature}°C, Time=${recordTimestamp}`);
+              invalidCount++;
+              return;  // Skip duplicate record
+            }
+          }
+          
           validCount++;
           // Add to device records
           device.syncRecords.push({
@@ -3903,6 +4694,24 @@ class BLEService {
         
         if (invalidCount > 0) {
           console.log(`🗑️ [FILTER] Removed ${invalidCount} padding records, kept ${validCount} valid records`);
+        }
+        
+        // ✅ Update recordCount incrementally as records are added (like steps)
+        if (validCount > 0) {
+          if (!device.deviceData) {
+            device.deviceData = {};
+          }
+          device.deviceData.recordCount = device.syncRecords.length;
+          
+          // Trigger UI update
+          if (this.onDeviceDataUpdated && this.appState === 'active') {
+            this.onDeviceDataUpdated(deviceId, device.deviceData);
+          }
+          
+          // Trigger device list update for UI refresh
+          if (this.onDeviceListUpdated) {
+            this.onDeviceListUpdated();
+          }
         }
         
         // Emit data update event for UI
@@ -3957,12 +4766,67 @@ class BLEService {
       const commandName = this.getCommandName(response?.command);
 
       if (response && response.sddCompliant) {
+        // ✅ Normalize response structure: parser returns "data" but code expects "parsedData"
+        const normalizedResponse = {
+          ...response,
+          parsedData: response.data || response.parsedData
+        };
+        
+        // Store response for commands that need to return data
+        const responseKey = `${deviceId}_${normalizedResponse.command}`;
+        if (!this.systemCommandResponses) {
+          this.systemCommandResponses = new Map();
+        }
+        
+        // ✅ Don't overwrite if response already exists (from handleNativeSystemCommandResponse)
+        // This prevents losing the correctly parsed version data
+        const existingResponse = this.systemCommandResponses.get(responseKey);
+        if (existingResponse) {
+          // Keep existing response if it has valid data (version, diagnostics, etc.)
+          const existingParsedData = existingResponse.parsedData || existingResponse.data;
+          const hasValidData = existingParsedData && (
+            (existingParsedData.version && existingParsedData.version !== 'Unknown') ||
+            existingParsedData.diagnostics ||
+            existingParsedData.timestamp ||
+            existingParsedData.intervalMs !== undefined
+          );
+          
+          if (hasValidData) {
+            console.log(`💾 [SYSTEM COMMAND RESPONSE] Keeping existing response with valid data:`, existingParsedData);
+            return; // Keep the existing response
+          }
+        }
+        
+        this.systemCommandResponses.set(responseKey, normalizedResponse);
+        
+        const version = normalizedResponse.parsedData?.version || normalizedResponse.data?.version || 'N/A';
+        console.log(`💾 [SYSTEM COMMAND RESPONSE] Stored response for key: ${responseKey}, command: ${normalizedResponse.command}, version: ${version}`);
+        console.log(`💾 [SYSTEM COMMAND RESPONSE] All stored keys:`, Array.from(this.systemCommandResponses.keys()));
+
+        // Emit event for response listeners
+        this.emit('systemCommandResponse', {
+          deviceId,
+          command: response.command,
+          response: response
+        });
 
         if (response.success) {
 
           // Handle specific command responses
           switch (response.command) {
             case SYSTEM_COMMAND_CONSTANTS.CMD.SET_SYSTEM_TIME:
+              // ✅ FIX: Track time sync response and schedule RTC validation
+              console.log(`✅ [TIME SYNC] Time sync command successful for ${deviceId}`);
+              if (!this.timeSyncSentTimes) {
+                this.timeSyncSentTimes = new Map();
+              }
+              this.timeSyncSentTimes.set(deviceId, Date.now());
+              
+              // ✅ FIX: Don't check RTC immediately - wait for next device status notification
+              // The device needs to send a NEW device status notification with updated RTC
+              // The current device.deviceData.lastUpdate is from BEFORE time sync
+              console.log(`⏰ [AUTO TIME SYNC] Time sync successful - waiting for next device status notification to verify RTC`);
+              console.log(`   Will check RTC validity when next device status notification arrives (after 5s delay)`);
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION:
               break;
@@ -3970,11 +4834,65 @@ class BLEService {
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS:
               break;
+            case SYSTEM_COMMAND_CONSTANTS.CMD.SET_DATA_INTERVAL:
+              // ✅ FIX: Ensure device status polling is started after data acquisition interval is set
+              // Native code should start polling, but we add this as a safety measure
+              console.log(`✅ [DATA INTERVAL] Data acquisition interval set successfully for ${deviceId}`);
+              console.log(`🔄 [POLLING] Native code should start polling - if not, will use fallback`);
+              
+              // Fallback: Start periodic device status reading from JS if native polling doesn't start
+              // Check after 5 seconds if we're receiving notifications
+              setTimeout(() => {
+                if (this.isDeviceConnected(deviceId)) {
+                  // Start periodic reading as fallback (every 30 seconds)
+                  this.startDeviceStatusPollingFallback(deviceId, 30);
+                }
+              }, 5000);
+              break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START:
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_STOP:
               break;
+          case SYSTEM_COMMAND_CONSTANTS.CMD.FACTORY_RESET:
+            // ✅ After factory reset, ensure device is removed from native bonded list to prevent auto-reconnect
+            (async () => {
+              try {
+                console.log(`🧹 [FACTORY RESET] Removing ${deviceId} from bonded list to prevent auto-connect`);
+                await this.removeDeviceFromBondedList(deviceId);
+                console.log(`✅ [FACTORY RESET] Device ${deviceId} removed from bonded list`);
+              } catch (error) {
+                console.error(`❌ [FACTORY RESET] Failed to remove ${deviceId} from bonded list:`, error);
+              }
+            })();
+            break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.SYSTEM_RESTART:
+              // ✅ AUTO TIME SYNC: After system restart, device RTC may be reset
+              // Track restart time so handleDeviceStatusUpdate can trigger sync
+              if (!this.deviceRestartTimes) {
+                this.deviceRestartTimes = new Map();
+              }
+              this.deviceRestartTimes.set(deviceId, Date.now());
+              console.log(`🔄 [SYSTEM RESTART] Device restarted, tracking restart time for auto time sync`);
+              
+              // Also schedule a direct time sync after delay (backup in case status notifications don't come)
+              setTimeout(async () => {
+                try {
+                  // Check if RTC is still invalid before syncing
+                  const device = this.scannedDevices.get(deviceId);
+                  const deviceData = device?.deviceData;
+                  const rtcStillInvalid = !deviceData?.rtcValid || 
+                    (deviceData?.lastUpdate && deviceData.lastUpdate < new Date('2020-01-01'));
+                  
+                  if (rtcStillInvalid) {
+                    console.log(`⏰ [AUTO TIME SYNC] Device restarted, RTC still invalid, syncing time...`);
+                    await this.syncDeviceTime(deviceId);
+                  } else {
+                    console.log(`✅ [AUTO TIME SYNC] Device restarted, RTC already valid, skipping sync`);
+                  }
+                } catch (error) {
+                  console.error(`❌ [AUTO TIME SYNC] Failed after restart:`, error);
+                }
+              }, 5000);
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER:
               break;
@@ -4013,12 +4931,21 @@ class BLEService {
         }
       }));
     } catch (error) {
-      if (error.message && error.message.includes('not found')) {
+      // ✅ FIX: Handle read failures gracefully - don't throw errors for optional characteristics
+      // This prevents MODEL_NUMBER and other optional characteristic read failures from breaking sync operations
+      if (error.message && (
+        error.message.includes('not found') ||
+        error.message.includes('timeout') ||
+        error.message.includes('Failed to initiate read') ||
+        error.message.includes('READ_FAILED') ||
+        error.message.includes('READ_NOT_SUPPORTED') ||
+        error.code === 'READ_FAILED' ||
+        error.code === 'READ_NOT_SUPPORTED'
+      )) {
+        // Return null for read failures - these are non-fatal for optional characteristics
         return null;
       }
-      if (error.message && error.message.includes('timeout')) {
-        return null;
-      }
+      // Only throw for unexpected errors
       throw error;
     }
   }
@@ -4256,6 +5183,18 @@ class BLEService {
     
     const recordCount = device.syncRecords?.length || 0;
     
+    // ✅ FIX: Find the latest record with valid temperature (not null/undefined)
+    // Sometimes the latest record by timestamp has temperature: 0 (padding), so find most recent with valid temp
+    // Note: temperature 0°C is valid (freezing), but we check if it's from a valid record with steps > 0
+    const latestRecordWithTemp = (device.syncRecords || []).slice().reverse().find(r => 
+      r.temperature != null && r.temperature !== undefined && (r.temperature > 0 || (r.steps > 0 && r.temperature === 0))
+    ) || latestRecord;
+    
+    // ✅ FIX: Find the latest record with valid steps (not null/undefined)
+    const latestRecordWithSteps = (device.syncRecords || []).slice().reverse().find(r => 
+      r.steps != null && r.steps !== undefined && r.steps > 0
+    ) || latestRecord;
+    
     console.log(`📊 [SYNC COMPLETE] Latest record:`, {
       timestamp: latestRecord.timestamp,
       timestampDate: latestRecord.timestampDate,
@@ -4285,19 +5224,43 @@ class BLEService {
     
     console.log(`📅 [SYNC COMPLETE] Synced date: ${syncedDate.toISOString()}`);
     
+    // ✅ FIX: Use !== null check instead of || to handle temperature: 0 correctly
+    // Use latest record with valid temperature/steps if available
+    // If latest record has temp: 0 but it's from a valid record (has steps), use it
+    const finalTemperature = latestRecordWithTemp.temperature != null && latestRecordWithTemp.temperature !== undefined
+      ? latestRecordWithTemp.temperature 
+      : (device.deviceData.temperature != null ? device.deviceData.temperature : null);
+    
+    const finalSteps = latestRecordWithSteps.steps != null && latestRecordWithSteps.steps !== undefined
+      ? latestRecordWithSteps.steps 
+      : (device.deviceData.steps != null ? device.deviceData.steps : null);
+    
+    // ✅ CRITICAL FIX: After sync, recordCount should reflect remaining records on device
+    // After a successful sync, all records are cleared from the device, so recordCount should be 0.
+    // The Device Status notification will arrive shortly after sync completes and confirm this value.
+    // We explicitly set it to 0 here (instead of relying on device.deviceData?.recordCount which might be stale)
+    // to ensure the UI updates immediately without waiting for the next Device Status notification.
+    const finalRecordCount = 0; // After successful sync, all records are cleared from device
+    
     // Use synced data to update current device state
     device.deviceData = {
       ...device.deviceData,
-      temperature: latestRecord.temperature || device.deviceData.temperature,
-      steps: latestRecord.steps || device.deviceData.steps,
+      temperature: finalTemperature,
+      steps: finalSteps,
       totalSteps: totalSteps, // ✅ NEW: Total steps from all historical records
-      recordCount: recordCount, // ✅ NEW: Number of historical records
+      recordCount: finalRecordCount, // ✅ FIX: Set to 0 after successful sync (all records cleared)
       // ✅ ONLY store Date object, remove raw timestamp to avoid confusion
       lastUpdate: syncedDate,
       // Mark that this data came from sync, not live notifications
       dataSource: 'synced',
       syncedAt: new Date()
     };
+    
+    // ✅ CRITICAL FIX: Also update manufacturerData.recordCount for UI consistency
+    if (device.manufacturerData) {
+      device.manufacturerData.recordCount = finalRecordCount;
+      device.manufacturerData.hasRecords = finalRecordCount > 0;
+    }
     
     console.log(`💾 [SYNC COMPLETE] Updated device data:`, {
       temperature: device.deviceData.temperature,
@@ -4315,9 +5278,21 @@ class BLEService {
     }
     
     // ✅ CRITICAL: Also trigger device list update for UI refresh
+    // Force immediate UI update with fresh data after sync completes
     if (this.onDeviceListUpdated) {
-      this.onDeviceListUpdated();
+      // Use setTimeout to ensure state updates are processed first
+      setTimeout(() => {
+        this.onDeviceListUpdated();
+      }, 100);
     }
+    
+    // ✅ CRITICAL: Emit deviceDataUpdate event for immediate UI refresh
+    this.emit('deviceDataUpdate', {
+      deviceId,
+      type: 'sync_complete',
+      deviceData: device.deviceData,
+      recordCount: device.deviceData.recordCount
+    });
     
     return true;
   }
@@ -4735,8 +5710,19 @@ class BLEService {
             this.handleDeviceStatusUpdate(deviceId, value);
           }
         } else {
+          // ✅ FIX: Silently handle read failures for optional characteristics
+          // This prevents MODEL_NUMBER and other optional characteristic read failures from being logged as errors
         }
       } catch (error) {
+        // ✅ FIX: Catch and ignore errors for optional characteristics to prevent them from breaking sync
+        // Optional characteristics like MODEL_NUMBER, MANUFACTURER_NAME, etc. can fail to read
+        // without affecting core functionality like data sync
+        if (optional) {
+          // Silently ignore errors for optional characteristics
+          return;
+        }
+        // Re-throw for required characteristics (though none are currently marked as required)
+        throw error;
       }
     }
     } catch (error) {
@@ -4851,8 +5837,52 @@ class BLEService {
   // High-level system command methods for easier usage
   async getFirmwareVersion(deviceId) {
     try {
+      // Clear any previous response
+      const responseKey = `${deviceId}_${SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION}`;
+      this.systemCommandResponses?.delete(responseKey);
+      
+      console.log(`🔍 [GET_FW_VERSION] Looking for response with key: ${responseKey}`);
+      console.log(`🔍 [GET_FW_VERSION] Current responses keys:`, Array.from(this.systemCommandResponses?.keys() || []));
+      
       // ✅ SDD Table 10: GET_FW_VERSION - Length=1, Data=0x00
-      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION, [0x00]);
+      const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION, [0x00]);
+      
+      if (!result.success) {
+        return result;
+      }
+      
+      // Wait for response (max 5 seconds)
+      for (let i = 0; i < 50; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Try exact match first
+        let response = this.systemCommandResponses?.get(responseKey);
+        
+        // If not found, try case-insensitive match (deviceId might have different casing)
+        if (!response && this.systemCommandResponses) {
+          for (const [key, value] of this.systemCommandResponses.entries()) {
+            if (key.toLowerCase() === responseKey.toLowerCase()) {
+              response = value;
+              console.log(`✅ [GET_FW_VERSION] Found response with case-insensitive match: ${key}`);
+              break;
+            }
+          }
+        }
+        
+        if (response) {
+          const version = response.parsedData?.version || 'Unknown';
+          console.log(`✅ [GET_FW_VERSION] Found response! Version: ${version}`);
+          return { success: true, data: version, parsedData: response.parsedData };
+        }
+        
+        // Log progress every 10 iterations
+        if (i > 0 && i % 10 === 0) {
+          console.log(`⏳ [GET_FW_VERSION] Still waiting... (${i * 100}ms elapsed), available keys:`, Array.from(this.systemCommandResponses?.keys() || []));
+        }
+      }
+      
+      console.log(`❌ [GET_FW_VERSION] Timeout! Available keys:`, Array.from(this.systemCommandResponses?.keys() || []));
+      return { success: false, error: 'Response timeout' };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -4860,8 +5890,39 @@ class BLEService {
 
   async getHardwareVersion(deviceId) {
     try {
+      // Clear any previous response
+      const responseKey = `${deviceId}_${SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION}`;
+      this.systemCommandResponses?.delete(responseKey);
+      
       // ✅ SDD Table 10: GET_HW_VERSION - Length=1, Data=0x00
-      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION, [0x00]);
+      const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION, [0x00]);
+      
+      if (!result.success) {
+        return result;
+      }
+      
+      // Wait for response (max 5 seconds)
+      for (let i = 0; i < 50; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Try exact match first, then case-insensitive
+        let response = this.systemCommandResponses?.get(responseKey);
+        if (!response && this.systemCommandResponses) {
+          for (const [key, value] of this.systemCommandResponses.entries()) {
+            if (key.toLowerCase() === responseKey.toLowerCase()) {
+              response = value;
+              break;
+            }
+          }
+        }
+        
+        if (response) {
+          const version = response.parsedData?.version || 'Unknown';
+          return { success: true, data: version, parsedData: response.parsedData };
+        }
+      }
+      
+      return { success: false, error: 'Response timeout' };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -4869,8 +5930,39 @@ class BLEService {
 
   async getDiagnostics(deviceId) {
     try {
+      // Clear any previous response
+      const responseKey = `${deviceId}_${SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS}`;
+      this.systemCommandResponses?.delete(responseKey);
+      
       // ✅ SDD Table 10: GET_DIAGNOSTICS - Length=1, Data=0x00
-      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS, [0x00]);
+      const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS, [0x00]);
+      
+      if (!result.success) {
+        return result;
+      }
+      
+      // Wait for response (max 5 seconds)
+      for (let i = 0; i < 50; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Try exact match first, then case-insensitive
+        let response = this.systemCommandResponses?.get(responseKey);
+        if (!response && this.systemCommandResponses) {
+          for (const [key, value] of this.systemCommandResponses.entries()) {
+            if (key.toLowerCase() === responseKey.toLowerCase()) {
+              response = value;
+              break;
+            }
+          }
+        }
+        
+        if (response) {
+          const diagnostics = response.parsedData?.diagnostics || 'N/A';
+          return { success: true, data: diagnostics, parsedData: response.parsedData };
+        }
+      }
+      
+      return { success: false, error: 'Response timeout' };
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -4920,12 +6012,20 @@ class BLEService {
 
   async setDataAcquisitionInterval(deviceId, intervalSeconds) {
     try {
+      // ✅ SDD v1.4: Data acquisition interval is now in MILLISECONDS (was seconds in v1.3)
+      // Convert seconds to milliseconds
+      const intervalMs = intervalSeconds * 1000;
+      
+      console.log(`📊 [DATA INTERVAL] Setting data acquisition interval: ${intervalSeconds}s (${intervalMs}ms)`);
+      
+      // Send as 32-bit unsigned integer (little-endian) in milliseconds
       const payload = [
-        (intervalSeconds >> 0) & 0xFF,
-        (intervalSeconds >> 8) & 0xFF,
-        (intervalSeconds >> 16) & 0xFF,
-        (intervalSeconds >> 24) & 0xFF
+        (intervalMs >> 0) & 0xFF,   // Byte 0: LSB
+        (intervalMs >> 8) & 0xFF,   // Byte 1
+        (intervalMs >> 16) & 0xFF,  // Byte 2
+        (intervalMs >> 24) & 0xFF   // Byte 3: MSB
       ];
+      
       return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.SET_DATA_INTERVAL, payload);
     } catch (error) {
       return { success: false, error: error.message };
@@ -4934,8 +6034,60 @@ class BLEService {
 
   async startDataSync(deviceId) {
     try {
+      // ✅ FIX: Track record count before sync starts (to avoid sending duplicates)
+      const device = this.scannedDevices.get(deviceId);
+      if (device) {
+        // Store the current record count as baseline for this sync
+        device.syncRecordsBeforeSync = device.syncRecords ? device.syncRecords.length : 0;
+        console.log(`📊 [SYNC START] Tracking baseline: ${device.syncRecordsBeforeSync} records before sync`);
+      }
+      
+      // ✅ CRITICAL FIX: On Android, use native startDataSync method which handles characteristic writability checks
+      // The native method properly checks characteristic properties and handles write types
+      if (Platform.OS === 'android' && SampleBridgeAndroid) {
+        try {
+          const result = await SampleBridgeAndroid.startDataSync(deviceId);
+          
+          // Initialize sync state if not exists
+          if (!this.dataSyncStates) {
+            this.dataSyncStates = new Map();
+          }
+          
+          // Mark sync as starting (will be properly initialized when sync_start notification arrives)
+          this.dataSyncStates.set(deviceId, {
+            isActive: true,
+            startTime: Date.now(),
+            recordsReceived: 0,
+            totalRecords: null,
+            lastActivity: Date.now()
+          });
+          
+          return result;
+        } catch (error) {
+          console.error('❌ [SYNC START] Native Android startDataSync failed:', error);
+          return { success: false, error: error.message || 'Failed to start data sync' };
+        }
+      }
+      
+      // ✅ iOS: Use sendSystemCommand (iOS handles characteristic properties correctly)
       // ✅ SDD Table 10: DATA_SYNC_START - Length=1, Data=0x00
-      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START, [0x00]);
+      const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START, [0x00]);
+      
+      // Initialize sync state if not exists
+      if (!this.dataSyncStates) {
+        this.dataSyncStates = new Map();
+      }
+      
+      // Mark sync as starting (will be properly initialized when sync_start notification arrives)
+      this.dataSyncStates.set(deviceId, {
+        isActive: true,
+        startTime: Date.now(),
+        recordsReceived: 0,
+        totalRecords: null,
+        lastActivity: Date.now()
+      });
+      
+      return result;
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -4960,10 +6112,153 @@ class BLEService {
     }
   }
 
-  async toggleBuzzer(deviceId, activate = true) {
+  async toggleBuzzer(deviceId, activate = true, beepCount = 0xFF) {
     try {
-      const payload = [activate ? 0x00 : 0x01]; // 0x00 = Activate, 0x01 = Deactivate
+      // ✅ SDD v1.4 Table 9: Toggle Buzzer - Length: 2 bytes
+      // Reference: ET-DSSID-SSD-V1.4_10112025.md - Table 9 System Command List
+      // Activate: [0x00, beepCount] where beepCount is 0x00-0xFE (number of beeps) or 0xFF (max 4 minutes/default)
+      // Deactivate: [0x01, 0x00]
+      let payload;
+      if (activate) {
+        // Validate beepCount: 0x00-0xFF (0xFF = default/max 4 minutes)
+        const validBeepCount = beepCount === null || beepCount === undefined ? 0xFF : Math.min(Math.max(beepCount, 0), 0xFF);
+        payload = [0x00, validBeepCount];
+      } else {
+        payload = [0x01, 0x00];
+      }
       return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER, payload);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async unpairDevice(deviceId) {
+    try {
+      console.log(`🔓 [UNPAIR] Starting unpair process for device: ${deviceId}`);
+      
+      // ✅ STEP 1: Set manual disconnect cooldown BEFORE unpair to prevent reconnection
+      this.manualDisconnectCooldown.set(deviceId, Date.now());
+      console.log('⏳ [UNPAIR] Set 10-second cooldown to prevent reconnection');
+      
+      // ✅ STEP 2: Send unpair command to device WHILE IT'S STILL CONNECTED
+      // IMPORTANT: Don't stop auto-connect or disconnect first - it will disconnect the device!
+      // The native iOS code will automatically handle everything after unpair command:
+      // - Disconnect the device
+      // - Remove from bonded list
+      // - Add to forgotten list
+      // - Clean up all resources
+      console.log('📤 [UNPAIR] Sending unpair command to connected device...');
+      const result = await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.UNPAIR_DEVICE, [0x00]);
+      
+      if (result.success) {
+        console.log('✅ [UNPAIR] Unpair command successful - native code handling cleanup');
+        
+        // ✅ STEP 3: Stop auto-connect AFTER unpair succeeds to prevent immediate reconnection
+        try {
+          console.log('🛑 [UNPAIR] Stopping auto-connect to prevent reconnection...');
+          await AutoConnectService.stopAutoConnect();
+        } catch (error) {
+          console.warn('⚠️ [UNPAIR] Failed to stop auto-connect:', error);
+        }
+        
+        // ✅ STEP 4: Clean up JS-side state after native code processes the unpair
+        // Wait a moment for native disconnection to complete
+        setTimeout(async () => {
+          console.log('🧹 [UNPAIR] Cleaning up JavaScript state...');
+          
+          // Update device state
+          const device = this.scannedDevices.get(deviceId);
+          if (device) {
+            device.connectionState = CONNECTION_STATES.DISCONNECTED;
+            this.scannedDevices.set(deviceId, device);
+          }
+          
+          // Remove from connected devices
+          this.connectedDevices.delete(deviceId);
+          
+          // Stop any adaptive API calling for this device
+          this.stopAdaptiveApiCalling(deviceId);
+          
+          // Clean up device-specific data
+          this.deviceRequestQueues.delete(deviceId);
+          this.notificationStats.delete(deviceId);
+          
+          console.log('✅ [UNPAIR] JavaScript cleanup completed');
+        }, 1000); // Wait 1 second for native cleanup
+        
+        // ✅ STEP 5: Restart auto-connect after cooldown period
+        setTimeout(async () => {
+          try {
+            console.log('🔄 [UNPAIR] Restarting auto-connect after cooldown...');
+            await AutoConnectService.startAutoConnect();
+          } catch (error) {
+            console.warn('⚠️ [UNPAIR] Failed to restart auto-connect:', error);
+          }
+        }, 10000); // 10 second cooldown
+        
+        // ✅ STEP 6: Clear manual disconnect cooldown after 10 seconds
+        setTimeout(() => {
+          this.manualDisconnectCooldown.delete(deviceId);
+          console.log('✅ [UNPAIR] Cooldown cleared for device:', deviceId);
+        }, 10000);
+        
+        console.log('✅ [UNPAIR] Device unpaired successfully - cooldown active for 10 seconds');
+      } else {
+        console.error('❌ [UNPAIR] Unpair command failed:', result.error);
+        
+        // If unpair failed, clear the cooldown
+        this.manualDisconnectCooldown.delete(deviceId);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('❌ [UNPAIR] Unpair process failed:', error);
+      
+      // Clean up on error
+      this.manualDisconnectCooldown.delete(deviceId);
+      
+      return { success: false, error: error.message };
+    }
+  }
+
+  async factoryReset(deviceId) {
+    try {
+      // ✅ SDD v1.4 Table 9: Factory Reset - Length: 1, Data: No Data (0x00)
+      // Reference: ET-DSSID-SSD-V1.4_10112025.md - Table 9 System Command List
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.FACTORY_RESET, [0x00]);
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  async updatePasskey(deviceId, passkey) {
+    try {
+      // ✅ SDD v1.4 Table 9: Passkey Update - Length: 3, Data: 6 digits Passkey in numeric (0 to 9)
+      // Reference: ET-DSSID-SSD-V1.4_10112025.md - Table 9 System Command List
+      // Validate passkey format: must be exactly 6 digits (0-9)
+      if (!passkey || typeof passkey !== 'string' || passkey.length !== 6) {
+        return { success: false, error: 'Passkey must be exactly 6 digits (0-9)' };
+      }
+      
+      // Validate all characters are numeric
+      if (!/^\d{6}$/.test(passkey)) {
+        return { success: false, error: 'Passkey must contain only numeric digits (0-9)' };
+      }
+      
+      // Convert passkey string to integer (max 999999)
+      const passkeyInt = parseInt(passkey, 10);
+      if (passkeyInt > 999999) {
+        return { success: false, error: 'Passkey out of range (max 999999)' };
+      }
+      
+      // Encode as 3-byte little-endian integer
+      const payload = [
+        (passkeyInt >> 0) & 0xFF,   // Byte 0: LSB
+        (passkeyInt >> 8) & 0xFF,   // Byte 1: Middle
+        (passkeyInt >> 16) & 0xFF   // Byte 2: MSB (only 4 bits needed for max 999999)
+      ];
+      
+      return await this.sendSystemCommand(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.PASSKEY_UPDATE, payload);
     } catch (error) {
       return { success: false, error: error.message };
     }
@@ -5125,6 +6420,54 @@ class BLEService {
     poll();
   }
 
+  // ✅ FIX: Fallback device status polling if native polling doesn't start
+  // This ensures live notifications work even if SET_DATA_ACQUISITION_INTERVAL response doesn't trigger native polling
+  startDeviceStatusPollingFallback(deviceId, intervalSeconds) {
+    // Stop any existing polling
+    this.stopDeviceStatusPollingFallback(deviceId);
+    
+    if (!this.deviceStatusPollingTimers) {
+      this.deviceStatusPollingTimers = new Map();
+    }
+    
+    console.log(`🔄 [POLLING FALLBACK] Starting periodic Device Status reading every ${intervalSeconds} seconds for ${deviceId}`);
+    
+    // Read device status periodically
+    const timer = setInterval(async () => {
+      if (!this.isDeviceConnected(deviceId)) {
+        console.log(`⚠️ [POLLING FALLBACK] Device disconnected, stopping polling for ${deviceId}`);
+        this.stopDeviceStatusPollingFallback(deviceId);
+        return;
+      }
+      
+      try {
+        // Read device status characteristic to trigger notification
+        // This ensures we get live updates even if notifications aren't auto-sent
+        const { BridgingCodeModule } = NativeModules;
+        if (BridgingCodeModule && BridgingCodeModule.readDeviceStatus) {
+          await BridgingCodeModule.readDeviceStatus(deviceId);
+          console.log(`🔄 [POLLING FALLBACK] Read Device Status for ${deviceId}`);
+        } else {
+          // Fallback: Use readCharacteristic if readDeviceStatus not available
+          await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DEVICE_STATUS);
+        }
+      } catch (error) {
+        console.error(`❌ [POLLING FALLBACK] Failed to read device status for ${deviceId}:`, error);
+      }
+    }, intervalSeconds * 1000);
+    
+    this.deviceStatusPollingTimers.set(deviceId, timer);
+    console.log(`✅ [POLLING FALLBACK] Timer started for ${deviceId}`);
+  }
+  
+  stopDeviceStatusPollingFallback(deviceId) {
+    if (this.deviceStatusPollingTimers && this.deviceStatusPollingTimers.has(deviceId)) {
+      clearInterval(this.deviceStatusPollingTimers.get(deviceId));
+      this.deviceStatusPollingTimers.delete(deviceId);
+      console.log(`🛑 [POLLING FALLBACK] Stopped for ${deviceId}`);
+    }
+  }
+
   stopRSSIPolling(deviceId) {
     if (!this.rssiTimers) return;
     const timer = this.rssiTimers.get(deviceId);
@@ -5214,6 +6557,41 @@ class BLEService {
     
     */
 
+    // ✅ SDD v1.4 ENFORCEMENT: Only one device can be connected concurrently
+    // Disconnect all other devices before auto-connecting this one
+    const currentlyConnectedDevices = Array.from(this.connectedDevices.keys()).filter(
+      connectedId => connectedId !== deviceInfo.deviceId && this.isDeviceConnected(connectedId)
+    );
+    
+    if (currentlyConnectedDevices.length > 0) {
+      console.log(`🔌 [AUTO-CONNECT] Enforcing single-connection limit: Disconnecting ${currentlyConnectedDevices.length} other device(s) before auto-connecting ${deviceInfo.deviceId}`);
+      console.log(`   📋 Devices to disconnect: ${currentlyConnectedDevices.join(', ')}`);
+      
+      // Disconnect all other devices
+      const disconnectPromises = currentlyConnectedDevices.map(async (otherDeviceId) => {
+        try {
+          console.log(`   🔌 Disconnecting device: ${otherDeviceId}`);
+          await this.disconnectFromDevice(otherDeviceId);
+          console.log(`   ✅ Successfully disconnected: ${otherDeviceId}`);
+        } catch (error) {
+          console.warn(`   ⚠️ Failed to disconnect ${otherDeviceId}:`, error.message);
+          // Continue even if one disconnect fails
+        }
+      });
+      
+      // Wait for all disconnections to complete (with timeout)
+      try {
+        await Promise.race([
+          Promise.all(disconnectPromises),
+          new Promise((resolve) => setTimeout(resolve, 5000)) // 5 second timeout
+        ]);
+        console.log(`✅ [AUTO-CONNECT] All other devices disconnected, proceeding with auto-connection to ${deviceInfo.deviceId}`);
+      } catch (error) {
+        console.warn(`⚠️ [AUTO-CONNECT] Error during disconnect of other devices:`, error.message);
+        // Continue with auto-connection anyway
+      }
+    }
+
     // Update our internal state to reflect the auto-connection
     const device = {
       id: deviceInfo.deviceId,
@@ -5240,6 +6618,15 @@ class BLEService {
       
       // Start heartbeat monitoring for connection health
       this.startHeartbeatMonitoring(deviceInfo.deviceId);
+      
+      // ✅ FIX: Ensure monitoring is started after service discovery (safety measure for auto-connect)
+      // ServiceDiscoveryComplete event should trigger startMonitoring, but we add this as backup
+      setTimeout(() => {
+        // Only start monitoring if device is still connected
+        if (this.isDeviceConnected(deviceInfo.deviceId)) {
+          this.startMonitoring(deviceInfo.deviceId);
+        }
+      }, 2000); // Wait for service discovery to complete
       
       // ✅ CLEAN ARCHITECTURE: Native handles command sequence via ServiceDiscoveryComplete
       // No need to call requestDeviceData - it happens automatically
@@ -5576,7 +6963,72 @@ class BLEService {
 
   // ==================== INDUSTRY STANDARD IMPROVEMENTS ====================
 
-  // 1. Exponential Backoff Reconnection
+  // ✅ SYNC WITH ANDROID & iOS: Reconnection Constants (matching Android & iOS implementation)
+  // Using constants from BLEConstants.js for consistency
+
+  /**
+   * ✅ SYNC WITH ANDROID & iOS: Classify error type for automatic retry logic
+   * Matches Android BLEError.getErrorType() and iOS BLEErrorType enum implementation
+   */
+  classifyError(error) {
+    if (!error) return ERROR_TYPES.TRANSIENT;
+
+    const errorCode = error.code || '';
+    const errorMessage = (error.message || '').toLowerCase();
+
+    // Transient errors - can retry
+    if (errorCode.includes('TIMEOUT') || 
+        errorCode.includes('CONNECTION_ERROR') ||
+        errorMessage.includes('timeout') ||
+        errorMessage.includes('temporary') ||
+        errorMessage.includes('connection failed') ||
+        errorCode === 'OPERATION_TIMEOUT' ||
+        errorCode === 'DEVICE_CONNECTION_FAILED') {
+      return ERROR_TYPES.TRANSIENT;
+    }
+
+    // Permanent errors - cannot retry
+    if (errorCode.includes('NOT_FOUND') ||
+        errorCode.includes('INVALID') ||
+        errorMessage.includes('not found') ||
+        errorMessage.includes('invalid') ||
+        errorCode === 'DEVICE_NOT_FOUND' ||
+        errorCode === 'INVALID_IDENTIFIERS') {
+      return ERROR_TYPES.PERMANENT;
+    }
+
+    // User action required
+    if (errorCode.includes('PERMISSION') ||
+        errorCode.includes('AUTHORIZATION') ||
+        errorCode.includes('AUTHENTICATION') ||
+        errorMessage.includes('permission') ||
+        errorMessage.includes('authorization') ||
+        errorMessage.includes('pairing') ||
+        errorCode === 'PERMISSION_DENIED' ||
+        errorCode === 'PAIRING_FAILED') {
+      return ERROR_TYPES.USER_ACTION;
+    }
+
+    // Default to transient for unknown errors (can retry)
+    return ERROR_TYPES.TRANSIENT;
+  }
+
+  /**
+   * ✅ SYNC WITH ANDROID & iOS: Check if error can be retried automatically
+   */
+  canRetryError(error) {
+    return this.classifyError(error) === ERROR_TYPES.TRANSIENT;
+  }
+
+  /**
+   * ✅ SYNC WITH ANDROID & iOS: Check if error requires user action
+   */
+  requiresUserAction(error) {
+    return this.classifyError(error) === ERROR_TYPES.USER_ACTION;
+  }
+
+  // 1. Exponential Backoff Reconnection (✅ SYNCED WITH ANDROID & iOS)
+  // Note: iOS handles reconnection natively, but this method uses the same constants/logic
   startExponentialBackoffReconnection(deviceId) {
     if (this.reconnectionTimers && this.reconnectionTimers.has(deviceId)) {
       return; // Already reconnecting
@@ -5586,13 +7038,28 @@ class BLEService {
     if (!this.reconnectionAttempts) this.reconnectionAttempts = new Map();
 
     const attempt = this.reconnectionAttempts.get(deviceId) || 0;
-    const maxAttempts = 3; // Max 3 attempts
-    const baseDelay = 2000; // 2 seconds base
-    const maxDelay = 60000; // 1 minute max
-    const jitter = Math.random() * 1000; // Add randomness to prevent thundering herd
+    // ✅ SYNC WITH ANDROID & iOS: Use 5 attempts (matching Android & iOS MAX_RECONNECT_ATTEMPTS)
+    const maxAttempts = RECONNECTION_CONSTANTS.MAX_ATTEMPTS;
+    const baseDelay = RECONNECTION_CONSTANTS.INITIAL_BACKOFF_MS;
+    const maxDelay = RECONNECTION_CONSTANTS.MAX_BACKOFF_MS;
+    const jitter = Math.random() * RECONNECTION_CONSTANTS.JITTER_MS;
 
+    // ✅ SYNC WITH ANDROID & iOS: Check max attempts
     if (attempt >= maxAttempts) {
+      console.log(`🛑 [JS RECONNECT] Max reconnection attempts (${maxAttempts}) reached for: ${deviceId}`);
+      this.reconnectionAttempts.delete(deviceId);
       return;
+    }
+
+    // ✅ SYNC WITH ANDROID & iOS: Check RSSI before reconnecting (skip if too weak)
+    const device = this.scannedDevices.get(deviceId);
+    if (device && device.rssi !== null && device.rssi !== undefined) {
+      const minRssi = RECONNECTION_CONSTANTS.MIN_RSSI_FOR_RECONNECTION;
+      if (device.rssi < minRssi) {
+        console.log(`📶 [JS RECONNECT] Device RSSI too weak (${device.rssi} dBm < ${minRssi} dBm) - skipping reconnection for: ${deviceId}`);
+        this.reconnectionAttempts.delete(deviceId); // Don't count this as an attempt
+        return;
+      }
     }
 
     const delay = Math.min(baseDelay * Math.pow(2, attempt) + jitter, maxDelay);
@@ -6115,47 +7582,100 @@ class BLEService {
   }
 
   handleNativeSystemCommandResponse(eventData) {
-    const { type, deviceId, commandId, rawData, dataLength, responseStatus, status, commandName } = eventData;
+    const { type, deviceId, commandId, rawData, rawResponse, dataLength, responseStatus, status, commandName, firmwareVersion, hardwareVersion } = eventData;
+    
+    console.log(`📥 [NATIVE SYSTEM COMMAND] Received eventData:`, { type, deviceId, commandId, rawData: rawData?.substring(0, 20), rawResponse: rawResponse?.substring(0, 30), status });
     
     // ✅ PLATFORM-INDEPENDENT: Handle both Android and iOS formats
-    // Android: { type: 'system_command_response', ... }
-    // iOS: { deviceId, commandId, commandName, status, ... }
+    // Android: { type: 'system_command_response', rawData: hex_string (data only) }
+    // iOS: { deviceId, commandId, commandName, status, rawResponse: hex_string (full response with spaces) }
     const isAndroidFormat = type === 'system_command_response';
     const isiOSFormat = status !== undefined && commandName !== undefined;
     
-    if ((isAndroidFormat && rawData) || isiOSFormat) {
+    // iOS sends rawResponse (full response), Android sends rawData (data portion only)
+    const responseHex = rawResponse || rawData;
+    
+    if ((isAndroidFormat && rawData) || (isiOSFormat && rawResponse)) {
       
-      // Parse the response data
+      // Parse the response data using BLEDataParser for consistency
       try {
-        const responseBuffer = Buffer.from(rawData, 'hex');
+        // Convert hex string to base64 for parser
+        let dataToParse = responseHex;
         
-        // Handle specific command responses
-        switch (commandId) {
-          case SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION:
-            const firmwareVersion = responseBuffer.toString('utf8');
-            break;
-            
-          case SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION:
-            const hardwareVersion = responseBuffer.toString('utf8');
-            break;
-            
-          case SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS:
-            break;
-            
-          case SYSTEM_COMMAND_CONSTANTS.CMD.SET_SYSTEM_TIME:
-            if (responseBuffer.length >= 4) {
-              const timestamp = responseBuffer.readUInt32LE(0);
-              const timestampDate = new Date(timestamp * 1000);
+        // iOS sends space-separated hex: "BB 05 05 00 31 2E 30 2E 32"
+        // Android sends continuous hex: "310E302E32"
+        if (typeof responseHex === 'string') {
+          // Remove spaces if present (iOS format)
+          const cleanHex = responseHex.replace(/\s+/g, '');
+          
+          // Validate it's hex
+          if (/^[0-9a-fA-F]+$/i.test(cleanHex)) {
+            const buffer = Buffer.from(cleanHex, 'hex');
+            dataToParse = buffer.toString('base64');
+          } else {
+            console.warn(`⚠️ [NATIVE SYSTEM COMMAND] Invalid hex format: ${responseHex.substring(0, 20)}`);
+            return;
+          }
+        } else {
+          console.warn(`⚠️ [NATIVE SYSTEM COMMAND] rawResponse/rawData is not a string:`, typeof responseHex);
+          return;
+        }
+        
+        console.log(`📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: ${deviceId}, hex length: ${responseHex.replace(/\s+/g, '').length}`);
+        
+        // Use the same parser to ensure consistency
+        const response = BLEDataParser.parseSystemCommandResponse(dataToParse);
+        
+        if (response && response.sddCompliant) {
+          // ✅ CRITICAL: Store response IMMEDIATELY for async command methods
+          // This must happen before handleSystemCommandResponse to ensure getFirmwareVersion can find it
+          const responseKey = `${deviceId}_${response.command}`;
+          if (!this.systemCommandResponses) {
+            this.systemCommandResponses = new Map();
+          }
+          
+          // ✅ Normalize response structure: parser returns "data" but code expects "parsedData"
+          const normalizedResponse = {
+            ...response,
+            parsedData: response.data || response.parsedData
+          };
+          this.systemCommandResponses.set(responseKey, normalizedResponse);
+          
+          const version = normalizedResponse.parsedData?.version || firmwareVersion || hardwareVersion || 'N/A';
+          console.log(`💾 [NATIVE SYSTEM COMMAND] Stored response for key: ${responseKey}, command: ${response.command}, version: ${version}`);
+          console.log(`💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:`, Array.from(this.systemCommandResponses.keys()));
+          
+          // Also call handleSystemCommandResponse for consistency (it will handle events/logging)
+          // Note: handleSystemCommandResponse will also store it, but that's okay - it ensures consistency
+          this.handleSystemCommandResponse(deviceId, dataToParse);
+        } else {
+          console.warn(`⚠️ [NATIVE SYSTEM COMMAND] Response not SDD compliant or invalid:`, response);
+          
+          // ✅ FALLBACK: If iOS already parsed the version, store it directly
+          if (isiOSFormat && (firmwareVersion || hardwareVersion)) {
+            const responseKey = `${deviceId}_${commandId}`;
+            if (!this.systemCommandResponses) {
+              this.systemCommandResponses = new Map();
             }
-            break;
-            
-          default:
-            break;
+            const fallbackResponse = {
+              command: commandId,
+              success: status === 'success',
+              parsedData: {
+                version: firmwareVersion || hardwareVersion || 'Unknown',
+                commandName: commandName
+              },
+              sddCompliant: true
+            };
+            this.systemCommandResponses.set(responseKey, fallbackResponse);
+            console.log(`💾 [NATIVE SYSTEM COMMAND] Stored fallback response for key: ${responseKey}, version: ${fallbackResponse.parsedData.version}`);
+          }
         }
         
       } catch (error) {
+        console.error(`❌ [NATIVE SYSTEM COMMAND] Error parsing response:`, error);
       }
     } else {
+      console.warn(`⚠️ [NATIVE SYSTEM COMMAND] Unknown format - isAndroidFormat: ${isAndroidFormat}, isiOSFormat: ${isiOSFormat}, rawResponse: ${rawResponse?.substring(0, 30)}, rawData: ${rawData?.substring(0, 20)}`);
     }
   }
 
@@ -6222,11 +7742,26 @@ class BLEService {
             });
           }
           
-          // ✅ INDUSTRY STANDARD: Send ALL historical records + aggregates
-          const allRecords = this.getSyncRecords(deviceId);
-          if (allRecords && allRecords.length > 0) {
-            console.log(`📤 [HISTORICAL SYNC] Preparing to send ${allRecords.length} historical records`);
-            await this.sendHistoricalRecords(deviceId, allRecords);
+          // ✅ FIX: Only send records from THIS sync, not all accumulated records
+          // Track records that were just synced by getting records added since sync started
+          const device = this.scannedDevices.get(deviceId);
+          if (device && device.syncRecords) {
+            // Get the record count before this sync started (default to 0 if not set)
+            const recordsBeforeSync = device.syncRecordsBeforeSync !== undefined ? device.syncRecordsBeforeSync : 0;
+            
+            // Only send records that were added in this sync (new records)
+            const newRecords = device.syncRecords.slice(recordsBeforeSync);
+            
+            if (newRecords && newRecords.length > 0) {
+              console.log(`📤 [HISTORICAL SYNC] Preparing to send ${newRecords.length} NEW records from this sync (total stored: ${device.syncRecords.length}, baseline: ${recordsBeforeSync})`);
+              await this.sendHistoricalRecords(deviceId, newRecords);
+              
+              // ✅ Update the baseline for next sync
+              device.syncRecordsBeforeSync = device.syncRecords.length;
+              this.scannedDevices.set(deviceId, device);
+            } else {
+              console.log(`⚠️ [HISTORICAL SYNC] No new records to send (all ${device.syncRecords.length} records were already sent, baseline: ${recordsBeforeSync})`);
+            }
           } else {
             console.log(`⚠️ [HISTORICAL SYNC] No records available to send`);
           }
@@ -6275,6 +7810,23 @@ class BLEService {
                 return;  // Skip this record
               }
               
+              // ✅ FIX: Check for duplicate records by timestamp (and steps/temperature for robustness)
+              // This prevents the same record from being added multiple times
+              const recordTimestamp = record.timestamp;
+              const existingRecordIndex = device.syncRecords.findIndex(r => {
+                const existingTimestamp = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : null);
+                // Match by timestamp, and optionally by steps/temperature to catch exact duplicates
+                return existingTimestamp === recordTimestamp && 
+                       r.steps === record.steps && 
+                       r.temperature === record.temperature;
+              });
+              
+              if (existingRecordIndex >= 0) {
+                console.log(`🔄 [RECORD] Duplicate detected - skipping: Steps=${record.steps}, Temp=${record.temperature}°C, Time=${record.timestampDate || new Date(record.timestamp * 1000).toISOString()}`);
+                invalidRecordsCount++;
+                return;  // Skip duplicate record
+              }
+              
               validRecordsCount++;
               console.log(`📋 [RECORD] Storing: Steps=${record.steps}, Temp=${record.temperature}°C, Time=${record.timestampDate || new Date(record.timestamp * 1000).toISOString()}`);
               
@@ -6293,6 +7845,24 @@ class BLEService {
             console.log(`📊 [RECORD] Filtered: ${validRecordsCount} valid, ${invalidRecordsCount} invalid records`);
             
             console.log(`📊 [RECORD] Total records stored for ${deviceId}: ${device.syncRecords.length}`);
+            
+            // ✅ Update recordCount incrementally as records are added (like steps)
+            if (validRecordsCount > 0) {
+              if (!device.deviceData) {
+                device.deviceData = {};
+              }
+              device.deviceData.recordCount = device.syncRecords.length;
+              
+              // Trigger UI update
+              if (this.onDeviceDataUpdated && this.appState === 'active') {
+                this.onDeviceDataUpdated(deviceId, device.deviceData);
+              }
+              
+              // Trigger device list update for UI refresh
+              if (this.onDeviceListUpdated) {
+                this.onDeviceListUpdated();
+              }
+            }
             
             this.scannedDevices.set(deviceId, device);
           } else {
@@ -7086,7 +8656,16 @@ class BLEService {
       // 7. Stop any ongoing operations for this device
       this.stopDeviceOperations(deviceId);
       
-      // 8. Trigger UI update
+      // 8. Emit deviceDisconnected event for UI update (matching iOS behavior)
+      // This ensures UI properly updates when device is forgotten
+      this.emit('deviceDisconnected', {
+        deviceId,
+        deviceName,
+        reason: 'forgotten',
+        forgotten: true
+      });
+      
+      // 9. Trigger UI update
       if (this.onDeviceListUpdated) {
         this.onDeviceListUpdated();
       }
@@ -7276,13 +8855,17 @@ class BLEService {
         DeviceEventEmitter.removeAllListeners('ConnectionStateChanged');
         DeviceEventEmitter.removeAllListeners('CharacteristicDataReceived');
         DeviceEventEmitter.removeAllListeners('CharacteristicChanged');
+        DeviceEventEmitter.removeAllListeners('CharacteristicData'); // Matching iOS event name
         DeviceEventEmitter.removeAllListeners('DeviceDataUpdated');
         DeviceEventEmitter.removeAllListeners('HealthDataApiRequest');
         DeviceEventEmitter.removeAllListeners('SystemCommandEvent');
+        DeviceEventEmitter.removeAllListeners('SystemCommandResponse'); // Matching iOS event name
         DeviceEventEmitter.removeAllListeners('DataTransferEvent');
+        DeviceEventEmitter.removeAllListeners('DataTransfer'); // Matching iOS event name
         DeviceEventEmitter.removeAllListeners('ServiceDiscoveryComplete');
         DeviceEventEmitter.removeAllListeners('ServicesDiscovered');
         DeviceEventEmitter.removeAllListeners('RSSIUpdated');
+        DeviceEventEmitter.removeAllListeners('RSSIUpdate'); // Matching iOS event name
         DeviceEventEmitter.removeAllListeners('ScanStateChanged');
         DeviceEventEmitter.removeAllListeners('DeviceDisconnected');
         DeviceEventEmitter.removeAllListeners('DeviceReconnected');

@@ -1,6 +1,6 @@
 const NavigationRoutes = {
     Counter: "Counter",
-    BLEManager: "BLEManager",
+    ModernBLEManager: "ModernBLEManager",
     DeviceDetails: "DeviceDetails",
     DFU: "DFU",
 }

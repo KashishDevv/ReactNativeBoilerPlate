@@ -2,8 +2,9 @@ import * as React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import Counter from '../../screens/Counter/Counter';
 import Welcome from '../../screens/Welcome/Welcome';
-import BLEManager from '../../screens/BLEManager/ModernBLEManager';
+import ModernBLEManager from '../../screens/BLEManager/ModernBLEManager';
 import DeviceDetails from '../../screens/DeviceDetails/DeviceDetails';
+import SyncRecordsScreen from '../../screens/DeviceDetails/SyncRecordsScreen';
 import DFUScreen from '../../screens/DFU/DFUScreen';
 
 
@@ -11,7 +12,15 @@ const Stack = createNativeStackNavigator();
 
 function HomeStack() {
     return (
-        <Stack.Navigator>
+        <Stack.Navigator initialRouteName="ModernBLEManager">
+            <Stack.Screen
+                options={{ 
+                    headerShown: true,
+                    title: 'BLE Device Scanner'
+                }}
+                name="ModernBLEManager"
+                component={ModernBLEManager}
+            />
             <Stack.Screen
                 options={{ headerShown: false }}
                 name="Welcome"
@@ -25,18 +34,18 @@ function HomeStack() {
             <Stack.Screen
                 options={{ 
                     headerShown: true,
-                    title: 'BLE Device Scanner'
-                }}
-                name="BLEManager"
-                component={BLEManager}
-            />
-            <Stack.Screen
-                options={{ 
-                    headerShown: true,
                     title: 'Device Details'
                 }}
                 name="DeviceDetails"
                 component={DeviceDetails}
+            />
+            <Stack.Screen
+                options={{ 
+                    headerShown: true,
+                    title: 'Sync Records'
+                }}
+                name="SyncRecords"
+                component={SyncRecordsScreen}
             />
             <Stack.Screen
                 options={{ 

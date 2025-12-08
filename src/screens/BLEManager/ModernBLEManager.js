@@ -64,6 +64,7 @@ const ModernBLEManager = ({ navigation }) => {
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
   const rssiScanTimerRef = React.useRef(null);
   const rssiScanCycleRef = React.useRef(null);
+  const scanTimeoutRef = React.useRef(null); // ✅ Auto-stop scan timeout
 
   useEffect(() => {
     checkBLEState();
@@ -126,6 +127,35 @@ const ModernBLEManager = ({ navigation }) => {
         const connected = await BLEService.getConnectedDevices();
         setConnectedDevices(connected);
         console.log('🔗 [Modern] Refreshed connected devices:', connected.length);
+        
+            // ✅ CRITICAL FIX: Force UI refresh by updating refresh trigger
+        // This ensures allDevices useMemo recalculates with fresh data from BLEService
+        setRefreshTrigger(prev => prev + 1);
+        
+        // Also update devices state for immediate UI feedback
+        const allKnownDevices = BLEService.getScannedDevices();
+        setDevices(prevDevices => {
+          const deviceMap = new Map();
+          
+          // First add all existing devices to preserve them
+          prevDevices.forEach(device => {
+            deviceMap.set(device.id, device);
+          });
+          
+          // Then update with fresh data from BLE service
+          allKnownDevices.forEach(device => {
+            const existing = deviceMap.get(device.id);
+            if (existing) {
+              // Update existing device with fresh data (connection state, RSSI, etc.)
+              deviceMap.set(device.id, { ...existing, ...device });
+            } else {
+              // Add new device
+              deviceMap.set(device.id, device);
+            }
+          });
+          
+          return Array.from(deviceMap.values());
+        });
       } catch (e) {
         console.warn('⚠️ [Modern] Refresh connected failed:', e?.message);
       }
@@ -138,6 +168,323 @@ const ModernBLEManager = ({ navigation }) => {
       setCurrentProfile(data.newProfile);
     });
     console.log('📞 [Modern] Power profile change listener registered');
+    
+    // ✅ Register device disconnection listener to clear stale data
+    BLEService.on('deviceDisconnected', (device) => {
+      console.log('🧹 [Modern] Device disconnected, clearing stale data:', device.id);
+      
+      // ✅ Show iOS Settings alert if passkey was changed (iOS only - Android handles it differently)
+      if ((device.passkeyChanged || device.needsSystemForget) && Platform.OS === 'ios') {
+        Alert.alert(
+          '🔐 Passkey Updated Successfully',
+          `The device passkey has been changed.\n\n⚠️ IMPORTANT: You must forget this device from iOS Settings to reconnect:\n\n1. Open iOS Settings → Bluetooth\n2. Find "${device.name || 'DyreID'}"\n3. Tap (i) icon → "Forget This Device"\n4. Return to app and reconnect with NEW passkey\n\nThis is required because iOS caches the old passkey at system level.`,
+          [
+            {
+              text: 'Open Settings',
+              onPress: () => {
+                // iOS doesn't allow direct deep link to specific device
+                // But we can open Bluetooth settings
+                Linking.openURL('App-Prefs:root=Bluetooth').catch(() => {
+                  // Fallback if Bluetooth deep link doesn't work
+                  Linking.openSettings();
+                });
+              }
+            },
+            { text: 'I Understand', style: 'cancel' }
+          ]
+        );
+      }
+      
+      setDevices(prevDevices => 
+        prevDevices.map(d => {
+          if (d.id === device.id) {
+            // Clear stale characteristic data on disconnect
+            return {
+              ...d,
+              batteryLevel: null,
+              temperature: 0,
+              steps: 0,
+              timestamp: null,
+              services: [],
+              characteristics: [],
+              deviceData: null, // Clear deviceData object
+              connectionState: CONNECTION_STATES.DISCONNECTED,
+              disconnectedAt: new Date(),
+            };
+          }
+          return d;
+        })
+      );
+    });
+    console.log('📞 [Modern] Device disconnection listener registered');
+    
+    // ✅ CRITICAL FIX: Listen for deviceFound events to update UI automatically
+    // This ensures UI updates when Android discovers devices during scanning
+    BLEService.on('deviceFound', (device) => {
+      console.log('🔍 [Modern] Device found event received:', device.name, device.id);
+      setDevices(prevDevices => {
+        const existingIndex = prevDevices.findIndex(d => d.id === device.id);
+        if (existingIndex >= 0) {
+          // Update existing device with fresh scan data
+          const updatedDevices = [...prevDevices];
+          updatedDevices[existingIndex] = {
+            ...updatedDevices[existingIndex],
+            ...device,
+            lastSeen: Date.now(),
+            isFreshDiscovery: true
+          };
+          return updatedDevices;
+        } else {
+          // Add newly discovered device
+          return [...prevDevices, {
+            ...device,
+            lastSeen: Date.now(),
+            isFreshDiscovery: true
+          }];
+        }
+      });
+      // Also trigger refresh to ensure allDevices useMemo recalculates
+      setRefreshTrigger(prev => prev + 1);
+    });
+    console.log('📞 [Modern] Device found event listener registered');
+    
+    // ✅ CRITICAL FIX: Listen for deviceConnected events to update UI automatically
+    // Android sends DeviceConnected events that need to update the UI
+    BLEService.on('deviceConnected', (device) => {
+      console.log('🔗 [Modern] Device connected event received:', device.deviceId || device.id, device.deviceName || device.name);
+      
+      // ✅ CRITICAL FIX: Refresh from BLEService.getScannedDevices() to get complete device info
+      // Auto-connected devices are stored in BLEService.scannedDevices, so we need to fetch from there
+      const allKnownDevices = BLEService.getScannedDevices();
+      const deviceId = device.deviceId || device.id;
+      const knownDevice = allKnownDevices.find(d => d.id === deviceId);
+      
+      setDevices(prevDevices => {
+        const existingIndex = prevDevices.findIndex(d => d.id === deviceId);
+        
+        // Use device info from BLEService if available (more complete), otherwise use event data
+        const deviceData = knownDevice || device;
+        
+        if (existingIndex >= 0) {
+          // Update existing device
+          const updatedDevices = [...prevDevices];
+          updatedDevices[existingIndex] = {
+            ...updatedDevices[existingIndex],
+            ...deviceData,
+            id: deviceId,
+            name: deviceData.name || device.deviceName || device.name || updatedDevices[existingIndex].name,
+            connectionState: CONNECTION_STATES.CONNECTED,
+            connectedAt: new Date(),
+            lastSeen: Date.now()
+          };
+          return updatedDevices;
+        } else {
+          // ✅ CRITICAL FIX: Add new device if it doesn't exist (for auto-connected devices)
+          // Auto-connected devices may not be in the scan list yet
+          const newDevice = {
+            ...deviceData,
+            id: deviceId,
+            name: deviceData.name || device.deviceName || device.name || 'Unknown Device',
+            connectionState: CONNECTION_STATES.CONNECTED,
+            connectionType: device.connectionType || deviceData.connectionType || 'auto',
+            connectedAt: new Date(),
+            lastSeen: Date.now(),
+            rssi: deviceData.rssi || device.rssi || null,
+            isSmartTag: deviceData.isSmartTag || device.isSmartTag || false
+          };
+          console.log('➕ [Modern] Adding new auto-connected device to list:', newDevice.name, newDevice.id);
+          return [...prevDevices, newDevice];
+        }
+      });
+      // Trigger refresh to ensure allDevices useMemo recalculates
+      setRefreshTrigger(prev => prev + 1);
+    });
+    console.log('📞 [Modern] Device connected event listener registered');
+    
+    // ✅ CRITICAL FIX: Listen for deviceDataUpdate events to update recordCount and live data
+    // This ensures UI updates immediately when recordCount changes or live data arrives
+    BLEService.on('deviceDataUpdate', (eventData) => {
+      console.log('📥 [Modern] deviceDataUpdate event received:', eventData.type, 'for device:', eventData.deviceId);
+      if (!eventData.deviceId) {
+        console.warn('⚠️ [Modern] deviceDataUpdate event missing deviceId:', eventData);
+        return;
+      }
+      
+      // Handle sync_complete events
+      if (eventData.type === 'sync_complete' && eventData.recordCount !== undefined) {
+        console.log('📊 [Modern] Sync complete - recordCount updated:', eventData.deviceId, 'records:', eventData.recordCount);
+        setDevices(prevDevices => {
+          return prevDevices.map(d => {
+            if (d.id === eventData.deviceId) {
+              return {
+                ...d,
+                deviceData: {
+                  ...d.deviceData,
+                  ...eventData.deviceData,
+                  recordCount: eventData.recordCount
+                },
+                // Also update manufacturerData for consistency
+                manufacturerData: d.manufacturerData ? {
+                  ...d.manufacturerData,
+                  recordCount: eventData.recordCount,
+                  hasRecords: eventData.recordCount > 0
+                } : d.manufacturerData
+              };
+            }
+            return d;
+          });
+        });
+        // Trigger refresh to ensure allDevices useMemo recalculates
+        setRefreshTrigger(prev => prev + 1);
+        // Remove device from syncing set
+        setSyncingDevices(prev => {
+          const next = new Set(prev);
+          next.delete(eventData.deviceId);
+          return next;
+        });
+      }
+      
+      // ✅ Handle live_data events (live steps/temperature updates)
+      if (eventData.type === 'live_data' && eventData.deviceData) {
+        console.log('📊 [Modern] Live data received:', eventData.deviceId, {
+          steps: eventData.deviceData.steps,
+          temperature: eventData.deviceData.temperature,
+          batteryLevel: eventData.deviceData.batteryLevel
+        });
+        setDevices(prevDevices => {
+          return prevDevices.map(d => {
+            if (d.id === eventData.deviceId) {
+              return {
+                ...d,
+                deviceData: {
+                  ...d.deviceData,
+                  ...eventData.deviceData,
+                  // Preserve existing recordCount if not in event
+                  recordCount: eventData.deviceData.recordCount !== undefined 
+                    ? eventData.deviceData.recordCount 
+                    : d.deviceData?.recordCount
+                }
+              };
+            }
+            return d;
+          });
+        });
+        // Trigger refresh to ensure allDevices useMemo recalculates
+        setRefreshTrigger(prev => prev + 1);
+      }
+      
+      // ✅ Handle device_status events (recordCount updates)
+      if (eventData.type === 'device_status' && eventData.deviceData?.recordCount !== undefined) {
+        console.log('📊 [Modern] Device status - recordCount updated:', eventData.deviceId, 'records:', eventData.deviceData.recordCount);
+        setDevices(prevDevices => {
+          return prevDevices.map(d => {
+            if (d.id === eventData.deviceId) {
+              return {
+                ...d,
+                deviceData: {
+                  ...d.deviceData,
+                  ...eventData.deviceData
+                },
+                // Also update manufacturerData for consistency
+                manufacturerData: d.manufacturerData ? {
+                  ...d.manufacturerData,
+                  recordCount: eventData.deviceData.recordCount,
+                  hasRecords: eventData.deviceData.recordCount > 0
+                } : d.manufacturerData
+              };
+            }
+            return d;
+          });
+        });
+        // Trigger refresh to ensure allDevices useMemo recalculates
+        setRefreshTrigger(prev => prev + 1);
+      }
+      
+      // ✅ Handle sync_records events (live sync progress updates)
+      if (eventData.type === 'sync_records') {
+        const totalReceived = eventData.totalReceived || 0;
+        const totalExpected = eventData.totalExpected || 0;
+        const recordsReceived = eventData.recordsReceived || 0;
+        const remainingRecords = Math.max(0, totalExpected - totalReceived);
+        
+        console.log('📊 [Modern] Sync progress received:', eventData.deviceId, `${totalReceived}/${totalExpected} records (${remainingRecords} remaining)`);
+        
+        setDevices(prevDevices => {
+          return prevDevices.map(d => {
+            if (d.id === eventData.deviceId) {
+              return {
+                ...d,
+                deviceData: {
+                  ...d.deviceData,
+                  recordCount: remainingRecords, // Update with remaining records
+                  syncProgress: {
+                    totalReceived,
+                    totalExpected,
+                    recordsReceived
+                  }
+                },
+                // Also update manufacturerData for consistency
+                manufacturerData: d.manufacturerData ? {
+                  ...d.manufacturerData,
+                  recordCount: remainingRecords,
+                  hasRecords: remainingRecords > 0
+                } : d.manufacturerData
+              };
+            }
+            return d;
+          });
+        });
+        // Trigger refresh to ensure allDevices useMemo recalculates
+        setRefreshTrigger(prev => prev + 1);
+      }
+    });
+    console.log('📞 [Modern] Device data update event listener registered');
+    
+    // ✅ CRITICAL FIX: Set up device data update callback for live notifications
+    // This ensures UI updates immediately when device data changes (battery, steps, temperature, recordCount)
+    BLEService.setDeviceDataUpdateCallback((deviceId, deviceData) => {
+      console.log('📊 [Modern] Device data updated via callback:', deviceId, {
+        batteryLevel: deviceData.batteryLevel,
+        temperature: deviceData.temperature,
+        steps: deviceData.steps,
+        recordCount: deviceData.recordCount,
+        dataSource: deviceData.dataSource,
+      });
+      
+      // Update the specific device in the devices list
+      setDevices(prevDevices => {
+        return prevDevices.map(d => {
+          if (d.id === deviceId) {
+            // Get fresh device data from BLEService to ensure we have all latest updates
+            const allKnownDevices = BLEService.getScannedDevices();
+            const freshDevice = allKnownDevices.find(dev => dev.id === deviceId);
+            
+            return {
+              ...d,
+              deviceData: freshDevice?.deviceData || {
+                ...d.deviceData,
+                ...deviceData, // Fallback to callback data if fresh device not found
+              },
+              // Also update manufacturerData.recordCount if available in deviceData
+              manufacturerData: (deviceData.recordCount !== undefined && d.manufacturerData) ? {
+                ...d.manufacturerData,
+                recordCount: deviceData.recordCount,
+                hasRecords: deviceData.recordCount > 0,
+              } : (freshDevice?.manufacturerData || d.manufacturerData),
+              // Update other fields from fresh device if available
+              ...(freshDevice && {
+                rssi: freshDevice.rssi,
+                connectionState: freshDevice.connectionState,
+              }),
+            };
+          }
+          return d;
+        });
+      });
+      // Trigger refresh to ensure allDevices useMemo recalculates
+      setRefreshTrigger(prev => prev + 1);
+    });
+    console.log('📞 [Modern] Device data update callback registered for live notifications');
     
     // Fade in animation
     Animated.timing(fadeAnim, {
@@ -165,12 +512,20 @@ const ModernBLEManager = ({ navigation }) => {
     // Cleanup interval on unmount
     return () => {
       clearInterval(refreshInterval);
-    };
-
-    return () => {
+      // ✅ Clean up scan timeout
+      if (scanTimeoutRef.current) {
+        clearTimeout(scanTimeoutRef.current);
+        scanTimeoutRef.current = null;
+      }
       BLEService.stopScanning();
       BLEService.setDeviceListUpdateCallback(null);
-      console.log('🧹 [Modern] Device list update callback cleaned up');
+      BLEService.setDeviceDataUpdateCallback(null); // ✅ Clean up device data update callback
+      BLEService.off('powerProfileChanged');
+      BLEService.off('deviceDisconnected');
+      BLEService.off('deviceFound'); // ✅ Clean up deviceFound listener
+      BLEService.off('deviceConnected'); // ✅ Clean up deviceConnected listener
+      BLEService.off('deviceDataUpdate'); // ✅ Clean up deviceDataUpdate listener
+      console.log('🧹 [Modern] Cleaned up listeners, callbacks, intervals, and scan timeout');
     };
   }, [fadeAnim]);
 
@@ -193,6 +548,21 @@ const ModernBLEManager = ({ navigation }) => {
         try {
           const connected = await BLEService.getConnectedDevices();
           setConnectedDevices(connected);
+          
+          // ✅ CRITICAL FIX: Force UI refresh by updating refresh trigger
+          setRefreshTrigger(prev => prev + 1);
+          
+          // Also update devices state for immediate UI feedback
+          const allKnownDevices = BLEService.getScannedDevices();
+          setDevices(prevDevices => {
+            const deviceMap = new Map();
+            prevDevices.forEach(device => deviceMap.set(device.id, device));
+            allKnownDevices.forEach(device => {
+              const existing = deviceMap.get(device.id);
+              deviceMap.set(device.id, existing ? { ...existing, ...device } : device);
+            });
+            return Array.from(deviceMap.values());
+          });
         } catch {}
       });
       
@@ -269,11 +639,38 @@ const ModernBLEManager = ({ navigation }) => {
         return;
       }
 
+      // Clear any existing scan timeout
+      if (scanTimeoutRef.current) {
+        clearTimeout(scanTimeoutRef.current);
+        scanTimeoutRef.current = null;
+      }
+
       setIsScanning(true);
       
       // Don't clear devices - preserve existing ones and add new discoveries
       // This follows industry standards where device lists persist across scan cycles
       console.log('🔍 Starting scan while preserving existing devices...');
+      
+      // ✅ INDUSTRY STANDARD: Auto-stop scan after 15 seconds (15000ms)
+      // This matches native layer timeout and prevents battery drain
+      const SCAN_DURATION_MS = 15000; // 15 seconds - industry standard for BLE scanning
+      scanTimeoutRef.current = setTimeout(() => {
+        console.log('⏰ Auto-stopping scan after 15 seconds (industry standard)');
+        // Stop scanning (idempotent - safe to call even if already stopped)
+        BLEService.stopScanning();
+        setIsScanning(false);
+        // Clear timeout reference
+        scanTimeoutRef.current = null;
+        // Clear fresh discovery flags after scan stops
+        setTimeout(() => {
+          setDevices(prevDevices => 
+            prevDevices.map(device => ({
+              ...device,
+              isFreshDiscovery: false
+            }))
+          );
+        }, 3000);
+      }, SCAN_DURATION_MS);
       
       await BLEService.startScanning(
         (device) => {
@@ -310,18 +707,34 @@ const ModernBLEManager = ({ navigation }) => {
           console.error('Scan error:', error);
           Alert.alert('Scan Error', error.message || 'Failed to scan for devices');
           setIsScanning(false);
+          // Clear timeout on error
+          if (scanTimeoutRef.current) {
+            clearTimeout(scanTimeoutRef.current);
+            scanTimeoutRef.current = null;
+          }
         }
       );
     } catch (error) {
       console.error('Error starting scan:', error);
       Alert.alert('Error', error.message || 'Failed to start scanning');
       setIsScanning(false);
+      // Clear timeout on error
+      if (scanTimeoutRef.current) {
+        clearTimeout(scanTimeoutRef.current);
+        scanTimeoutRef.current = null;
+      }
     }
   }, []);
 
   const stopScan = useCallback(() => {
     BLEService.stopScanning();
     setIsScanning(false);
+    
+    // ✅ Clear scan timeout if it exists
+    if (scanTimeoutRef.current) {
+      clearTimeout(scanTimeoutRef.current);
+      scanTimeoutRef.current = null;
+    }
     
     // Clear fresh discovery flags after scan stops (industry standard behavior)
     // This prevents "New" badges from staying forever
@@ -336,6 +749,9 @@ const ModernBLEManager = ({ navigation }) => {
     
     console.log('🔍 Scan stopped, fresh discovery flags will clear in 3 seconds');
   }, []);
+
+  // ✅ Force refresh trigger - increments when we need to refresh allDevices from BLEService
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Combine connected devices with ALL known devices from BLE service
   const allDevices = React.useMemo(() => {
@@ -378,6 +794,25 @@ const ModernBLEManager = ({ navigation }) => {
     });
 
     let result = Array.from(deviceMap.values());
+    
+    // ✅ CRITICAL FIX: Ensure deviceData.recordCount is populated from manufacturerData if not set
+    // This ensures the sync button appears when recordCount is available in manufacturer data
+    result = result.map(d => {
+      // If deviceData.recordCount is not set but manufacturerData.recordCount is available, copy it
+      if ((d.deviceData?.recordCount === null || d.deviceData?.recordCount === undefined) &&
+          d.manufacturerData?.recordCount !== null && 
+          d.manufacturerData?.recordCount !== undefined) {
+        return {
+          ...d,
+          deviceData: {
+            ...d.deviceData,
+            recordCount: d.manufacturerData.recordCount
+          }
+        };
+      }
+      return d;
+    });
+    
     // Smart device lifecycle management - follow industry standards
     const now = Date.now();
     const STALE_MS = 5 * 60 * 1000; // 5 minutes for disconnected devices (industry standard)
@@ -449,7 +884,7 @@ const ModernBLEManager = ({ navigation }) => {
     });
     // console.log('📱 [Modern] Final device list:', result.map(d => `${d.name} (${d.connectionState})`));
     return result;
-  }, [connectedDevices, devices]);
+  }, [connectedDevices, devices, refreshTrigger]); // ✅ Added refreshTrigger to force recalculation on Android events
 
   const connectToDevice = useCallback(async (device) => {
     try {
@@ -494,19 +929,52 @@ const ModernBLEManager = ({ navigation }) => {
         )
       );
       
-      // Show user-friendly error message
-      let errorMessage = 'Failed to connect to device';
-      if (error.message.includes('Device not connected')) {
-        errorMessage = 'Connection failed - device may be out of range or turned off';
-      } else if (error.message.includes('timeout')) {
-        errorMessage = 'Connection timed out - please try again';
-      } else if (error.message.includes('permission')) {
-        errorMessage = 'Bluetooth permission required - please enable in settings';
-      } else {
-        errorMessage = error.message || 'Failed to connect to device';
+      // ✅ Check for pairing/passkey errors first
+      if (error.code === 'PAIRING_FAILED' || error.message.includes('Pairing failed') || error.message.includes('incorrect passkey')) {
+        Alert.alert(
+          '🔐 Wrong Passkey',
+          `Pairing failed - incorrect passkey entered.\n\nPlease try again and enter the correct 6-digit passkey when prompted.\n\n💡 Tip: The passkey is shown on the device during pairing.`,
+          [
+            { text: 'Try Again', onPress: () => connectToDevice(device) },
+            { text: 'Cancel', style: 'cancel' }
+          ]
+        );
+        return;
       }
       
-      Alert.alert('❌ Connection Error', errorMessage);
+      // ✅ SYNC WITH ANDROID: Use error classification for better error handling
+      const errorType = BLEService.classifyError ? BLEService.classifyError(error) : null;
+      const canRetry = BLEService.canRetryError ? BLEService.canRetryError(error) : false;
+      const requiresUserAction = BLEService.requiresUserAction ? BLEService.requiresUserAction(error) : false;
+      
+      // Show user-friendly error message based on error classification
+      let errorMessage = 'Failed to connect to device';
+      let errorTitle = '❌ Connection Error';
+      let showRetryButton = false;
+      
+      if (error.message.includes('cooldown')) {
+        errorMessage = error.message; // Use the cooldown message as-is (shows remaining seconds)
+      } else if (error.message.includes('Device not connected')) {
+        errorMessage = 'Connection failed - device may be out of range or turned off';
+      } else if (error.message.includes('timeout') || (errorType === 'TRANSIENT' && canRetry)) {
+        errorMessage = 'Connection timed out - please try again';
+        showRetryButton = true; // Show retry for transient errors
+      } else if (error.message.includes('permission') || requiresUserAction) {
+        errorMessage = 'Bluetooth permission required - please enable in settings';
+      } else if (errorType === 'PERMANENT') {
+        errorMessage = 'Device not found or invalid - please scan again';
+      } else {
+        errorMessage = error.message || 'Failed to connect to device';
+        showRetryButton = canRetry; // Show retry if error can be retried
+      }
+      
+      // Show alert with retry option for transient errors
+      const alertButtons = showRetryButton ? [
+        { text: 'Retry', onPress: () => connectToDevice(device) },
+        { text: 'Cancel', style: 'cancel' }
+      ] : [{ text: 'OK', style: 'cancel' }];
+      
+      Alert.alert(errorTitle, errorMessage, alertButtons);
     }
   }, [navigation]);
 
@@ -665,6 +1133,7 @@ const ModernBLEManager = ({ navigation }) => {
     }
   };
 
+
   const renderDevice = ({ item, index }) => (
     <Animated.View 
       style={[
@@ -691,11 +1160,6 @@ const ModernBLEManager = ({ navigation }) => {
             <View style={styles.deviceNameContainer}>
               <Text style={styles.deviceName}>{item.name || 'Unknown Device'}</Text>
               <View style={styles.deviceBadgesContainer}>
-                {item.deviceData?.isSmartTag && (
-                  <View style={styles.smartTagBadge}>
-                    <Text style={styles.smartTagText}>🏷️ Smart Tag</Text>
-                  </View>
-                )}
                 {item.isFreshDiscovery && (
                   <View style={styles.freshDiscoveryBadge}>
                     <Text style={styles.freshDiscoveryText}>🆕 New</Text>
@@ -705,25 +1169,59 @@ const ModernBLEManager = ({ navigation }) => {
             </View>
             <Text style={styles.deviceId}>{item.id}</Text>
             
-            {/* ✅ Manufacturer Data Display */}
+            {/* ✅ Manufacturer Data Display (SDD v1.4) */}
             {item.manufacturerData && (
               <View style={styles.manufacturerDataContainer}>
-                {item.manufacturerData.batteryLevel !== null && (
-                  <Text style={styles.manufacturerDataText}>
-                    🔋 {item.manufacturerData.batteryLevel}% ({item.manufacturerData.batteryMillivolts}mV)
-                  </Text>
-                )}
+                {/* Record count (available in both v1.2 and v1.3) */}
                 {item.manufacturerData.recordCount !== undefined && item.manufacturerData.recordCount > 0 && (
                   <Text style={styles.manufacturerDataText}>
-                    📊 {item.manufacturerData.recordCount} records
+                    📊 {String(item.manufacturerData.recordCount)} records
                   </Text>
                 )}
-                {item.manufacturerData.statusText && (
+
+                {/* Device status (available in both versions) */}
+                {item.manufacturerData.deviceStatus && (
                   <Text style={[
                     styles.manufacturerDataText,
-                    { color: item.manufacturerData.statusText === 'Good' ? '#4CAF50' : '#FF9800' }
+                    { color: item.manufacturerData.deviceStatus === 'Good' ? '#4CAF50' : '#FF9800' }
                   ]}>
-                    ⚙️ {item.manufacturerData.statusText}
+                    ⚙️ {item.manufacturerData.deviceStatus}
+                  </Text>
+                )}
+
+                {/* New SDD v1.4 fields */}
+                {item.manufacturerData.version !== undefined && (
+                  <Text style={styles.manufacturerDataText}>
+                    📋 v{String(item.manufacturerData.version)}
+                  </Text>
+                )}
+
+                {item.manufacturerData.macId && (
+                  <Text style={[styles.manufacturerDataText, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 11 }]}>
+                    📍 {item.manufacturerData.macId}
+                  </Text>
+                )}
+
+                {item.manufacturerData.connectIndication !== undefined && (
+                  <Text style={[
+                    styles.manufacturerDataText,
+                    { color: item.manufacturerData.connectIndication ? '#2196F3' : '#757575' }
+                  ]}>
+                    🔗 {item.manufacturerData.connectIndication ? 'Connect' : 'Standby'}
+                  </Text>
+                )}
+
+                {/* Battery display - Prioritize 2A19 characteristic battery level over manufacturer data */}
+                {/* Show manufacturer data battery only if we don't have characteristic battery level */}
+                {!item.deviceData?.batteryLevel && item.manufacturerData.batteryLevel > 0 && (
+                  <Text style={styles.manufacturerDataText}>
+                    {`🔋 ${item.manufacturerData.batteryLevel}% (${item.manufacturerData.batteryMillivolts || 'N/A'}mV)`}
+                  </Text>
+                )}
+                {/* Show characteristic battery level when available (more accurate) */}
+                {item.deviceData?.batteryLevel > 0 && (
+                  <Text style={styles.manufacturerDataText}>
+                    {`🔋 ${item.deviceData.batteryLevel}%`}
                   </Text>
                 )}
               </View>
@@ -745,51 +1243,71 @@ const ModernBLEManager = ({ navigation }) => {
       {/* Data Row - Live/Synced Data */}
       {(item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined || 
         item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined || 
-        item.deviceData?.steps !== null && item.deviceData?.steps !== undefined) && (
-        <View style={styles.dataRow}>
-          {/* Data Source Indicator */}
-          {item.deviceData?.dataSource && (
-            <View style={styles.dataSourceBadge}>
-              <Text style={styles.dataSourceText}>
-                {item.deviceData.dataSource === 'live' ? '🔴 LIVE' : 
-                 item.deviceData.dataSource === 'synced' ? '💾 SYNCED' : '📦 CACHED'}
-              </Text>
-            </View>
-          )}
-          
-          {item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined && (
-            <View style={styles.dataItem}>
-              <Text style={styles.dataLabel}>🔋 Battery</Text>
-              <Text style={[styles.dataValue, { color: getBatteryColor(item.deviceData.batteryLevel) }]}>
-                {item.deviceData.batteryLevel}%
-              </Text>
-            </View>
-          )}
-          
-          {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && (
-            <View style={styles.dataItem}>
-              <Text style={styles.dataLabel}>🌡️ Temp</Text>
-              <Text style={styles.dataValue}>
-                {item.deviceData.temperature?.toFixed(1)}°C
-              </Text>
-            </View>
-          )}
+        item.deviceData?.steps !== null && item.deviceData?.steps !== undefined ||
+        item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined) && (
+        <View>
+          {/* First Row: Data Source, Battery, Temperature, Latest Steps */}
+          <View style={styles.dataRow}>
+            {/* Data Source Indicator */}
+            {item.deviceData?.dataSource && (
+              <View style={styles.dataSourceBadge}>
+                <Text style={styles.dataSourceText}>
+                  {item.deviceData.dataSource === 'live' ? '🔴 LIVE' : 
+                   item.deviceData.dataSource === 'synced' ? '💾 SYNCED' : '📦 CACHED'}
+                </Text>
+              </View>
+            )}
+            
+            {/* Battery - Only show after connection with valid data */}
+            {item.deviceData?.batteryLevel > 0 && (
+              <View style={styles.dataItem}>
+                <Text style={styles.dataLabel}>🔋 Battery</Text>
+                <Text style={[styles.dataValue, { color: getBatteryColor(item.deviceData.batteryLevel) }]}>
+                  {item.deviceData.batteryLevel}%
+                </Text>
+              </View>
+            )}
+            
+            {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && (
+              <View style={styles.dataItem}>
+                <Text style={styles.dataLabel}>🌡️ Temp</Text>
+                <Text style={styles.dataValue}>
+                  {String(item.deviceData.temperature?.toFixed(1))}°C
+                </Text>
+              </View>
+            )}
 
-          {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
-            <View style={styles.dataItem}>
-              <Text style={styles.dataLabel}>👟 Latest</Text>
-              <Text style={styles.dataValue}>
-                {item.deviceData.steps?.toLocaleString()}
-              </Text>
-            </View>
-          )}
+            {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
+              <View style={styles.dataItem}>
+                <Text style={styles.dataLabel}>👟 Latest</Text>
+                <Text style={styles.dataValue}>
+                  {String(item.deviceData.steps?.toLocaleString())}
+                </Text>
+              </View>
+            )}
+          </View>
 
-          {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
-            <View style={styles.dataItem}>
-              <Text style={styles.dataLabel}>🏃 Total</Text>
-              <Text style={[styles.dataValue, styles.totalStepsValue]}>
-                {item.deviceData.totalSteps?.toLocaleString()}
-              </Text>
+          {/* Second Row: Total Steps, Records */}
+          {(item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined ||
+            item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined ) && (
+            <View style={styles.dataRow}>
+              {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
+                <View style={styles.dataItem}>
+                  <Text style={styles.dataLabel}>🏃 Total</Text>
+                  <Text style={[styles.dataValue, styles.totalStepsValue]}>
+                    {item.deviceData.totalSteps.toLocaleString()}
+                  </Text>
+                </View>
+              )}
+
+              {item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
+                <View style={styles.dataItem}>
+                  <Text style={styles.dataLabel}>📊 Records</Text>
+                  <Text style={[styles.dataValue, { color: item.deviceData.recordCount > 0 ? Colors.primary : Colors.lightText }]}>
+                    {item.deviceData.recordCount}
+                  </Text>
+                </View>
+              )}
             </View>
           )}
         </View>
@@ -932,7 +1450,7 @@ const ModernBLEManager = ({ navigation }) => {
         <View style={styles.headerContent}>
           <Text style={styles.title}>Smart Tags</Text>
           <Text style={styles.subtitle}>
-            { (connectedDevices.length + devices.length) } device{ (connectedDevices.length + devices.length) !== 1 ? 's' : '' } found
+            {`${allDevices.length} device${allDevices.length !== 1 ? 's' : ''} found`}
           </Text>
         </View>
         
@@ -965,7 +1483,7 @@ const ModernBLEManager = ({ navigation }) => {
       </View>
 
       {/* Phone Battery & Power Profile */}
-      <View style={styles.powerProfileContainer}>
+      {/* <View style={styles.powerProfileContainer}>
         <View style={styles.batteryAndPowerHeader}>
           <View style={styles.phoneBatteryContainer}>
             <Text style={styles.phoneBatteryLabel}>📱 Phone Battery:</Text>
@@ -983,21 +1501,27 @@ const ModernBLEManager = ({ navigation }) => {
         </View>
         
         <Text style={styles.powerModeDisplay}>
-          Current Power Mode: <Text style={styles.powerModeValue}>{currentPowerProfile === 'default' ? '⚡ Normal' : 
-                           currentPowerProfile === 'lowPower' ? '🔋 Low Power' : 
-                           '💡 Ultra Low Power'}</Text>
+          {'Current Power Mode: '}
+          <Text style={styles.powerModeValue}>
+            {currentPowerProfile === 'default' ? '⚡ Normal' : 
+             currentPowerProfile === 'lowPower' ? '🔋 Low Power' : 
+             '💡 Ultra Low Power'}
+          </Text>
         </Text>
         
         <Text style={styles.powerProfileInfo}>
           💡 Power mode automatically adjusts based on phone battery level
         </Text>
         <Text style={styles.powerProfileSummary}>
-          📊 Current Mode: {currentPowerProfile === 'default' ? 'Normal (30s health, 30s RSSI, 15s API)' : 
-                           currentPowerProfile === 'lowPower' ? 'Low Power (60s health, 30s RSSI, 30s API)' : 
-                           'Ultra-Low Power (60s health, 60s RSSI, 60s API)'}
+          {`📊 Current Mode: ${currentPowerProfile === 'default' ? 'Normal (30s health, 30s RSSI)' : 
+                           currentPowerProfile === 'lowPower' ? 'Low Power (60s health, 30s RSSI)' : 
+                           'Ultra-Low Power (60s health, 60s RSSI)'}`}
+        </Text>
+        <Text style={[styles.powerProfileInfo, {fontSize: 11, marginTop: 4}]}>
+          📡 Data is batched and uploaded every 5 minutes (live updates sent immediately on alerts)
         </Text>
 
-      </View>
+      </View> */}
 
       {isScanning && (
         <Animated.View style={[styles.scanningIndicator, { opacity: fadeAnim }]}>
@@ -1210,6 +1734,12 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     marginBottom: 4,
   },
+  deviceBadgesContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Metrics.smallMargin,
+  },
   deviceName: {
     fontSize: Fonts.size.large,
     fontFamily: Fonts.type.bold,
@@ -1237,18 +1767,6 @@ const styles = StyleSheet.create({
     marginRight: 8,
     marginBottom: 4,
     overflow: 'hidden',
-  },
-  smartTagBadge: {
-    backgroundColor: Colors.successLight,
-    paddingHorizontal: Metrics.smallMargin,
-    paddingVertical: 2,
-    borderRadius: 12,
-    alignSelf: 'flex-start',
-  },
-  smartTagText: {
-    color: Colors.success,
-    fontSize: Fonts.size.tiny,
-    fontFamily: Fonts.type.bold,
   },
   freshDiscoveryBadge: {
     backgroundColor: Colors.primaryLight,

@@ -58,9 +58,27 @@ export const postPetHealthBLEData = async (petHealthData) => {
     } catch (error) {
         // Log the error details
         console.error('❌ Failed to send pet health BLE data:', error);
-        console.error('Response status:', error.response.status);
-        console.error('Response data:', error.response.data);
-        return { success: false, error: error.message };
+        
+        // ✅ FIX: Check if error.response exists before accessing it
+        // Network errors (no internet, timeout) don't have error.response
+        if (error.response) {
+            console.error('Response status:', error.response.status);
+            console.error('Response data:', error.response.data);
+            return { 
+                success: false, 
+                error: error.message,
+                status: error.response.status,
+                data: error.response.data
+            };
+        } else {
+            // Network error (no response from server)
+            console.error('Network error - no response from server');
+            return { 
+                success: false, 
+                error: error.message || 'Network Error',
+                isNetworkError: true
+            };
+        }
     }
 }
 

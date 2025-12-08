@@ -395,4 +395,78 @@ public class BLEError {
                            reason, 
                            deviceId);
     }
+    
+    // ✅ OPTIMIZATION: Error Classification (Priority 2 - Industry Standard)
+    /**
+     * Classify error type for automatic retry logic
+     * TRANSIENT: Can retry (timeout, temporary disconnection)
+     * PERMANENT: Cannot retry (device not found, pairing failed)
+     * USER_ACTION: Requires user action (permissions, pairing)
+     */
+    public enum ErrorType {
+        TRANSIENT,      // Can retry (timeout, temporary disconnection)
+        PERMANENT,      // Cannot retry (device not found, pairing failed)
+        USER_ACTION     // Requires user action (permissions, pairing)
+    }
+    
+    /**
+     * Classify error type based on error code
+     */
+    public ErrorType getErrorType() {
+        switch (errorCode) {
+            // Transient errors - can retry
+            case OPERATION_TIMEOUT:
+            case DEVICE_CONNECTION_FAILED:
+            case SERVICE_DISCOVERY_FAILED:
+            case CHARACTERISTIC_READ_FAILED:
+            case CHARACTERISTIC_WRITE_FAILED:
+            case DESCRIPTOR_READ_FAILED:
+            case DESCRIPTOR_WRITE_FAILED:
+            case OPERATION_FAILED:
+                return ErrorType.TRANSIENT;
+            
+            // Permanent errors - cannot retry
+            case DEVICE_NOT_FOUND:
+            case DEVICE_NOT_CONNECTED:
+            case DEVICE_SERVICES_NOT_DISCOVERED:
+            case SERVICE_NOT_FOUND:
+            case CHARACTERISTIC_NOT_FOUND:
+            case DESCRIPTOR_NOT_FOUND:
+            case CHARACTERISTIC_NOT_READABLE:
+            case CHARACTERISTIC_NOT_WRITABLE:
+            case INVALID_WRITE_DATA:
+            case INVALID_IDENTIFIERS:
+                return ErrorType.PERMANENT;
+            
+            // User action required
+            case PERMISSION_DENIED:
+            case LOCATION_PERMISSION_REQUIRED:
+            case BLUETOOTH_PERMISSION_REQUIRED:
+            case BLUETOOTH_UNAUTHORIZED:
+            case BLUETOOTH_STATE_CHANGE_FAILED:
+                return ErrorType.USER_ACTION;
+            
+            // System errors - usually transient but may require user action
+            case SYSTEM_ERROR:
+            case BLUETOOTH_MANAGER_DESTROYED:
+            case OPERATION_CANCELLED:
+            case UNKNOWN_ERROR:
+            default:
+                return ErrorType.TRANSIENT; // Default to transient for unknown errors
+        }
+    }
+    
+    /**
+     * Check if error can be retried automatically
+     */
+    public boolean canRetry() {
+        return getErrorType() == ErrorType.TRANSIENT;
+    }
+    
+    /**
+     * Check if error requires user action
+     */
+    public boolean requiresUserAction() {
+        return getErrorType() == ErrorType.USER_ACTION;
+    }
 }

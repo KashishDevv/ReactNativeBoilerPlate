@@ -38,25 +38,43 @@ export const BLE_CHARACTERISTICS = {
 };
 
 // Advertisement parsing
-export const MANUFACTURER_COMPANY_ID = 0x1234; // TODO: Replace with actual Bluetooth SIG assigned Company ID before release
+// ⚠️ ACTION REQUIRED: Replace this with actual Bluetooth SIG assigned Company ID before production
+// Current value 0x1234 is a PLACEHOLDER and must be updated
+export const MANUFACTURER_COMPANY_ID = 0x1234; 
+// TODO: Obtain official Company ID from Bluetooth SIG: https://www.bluetooth.com/specifications/assigned-numbers/
 
-// AES-128 key/iv placeholders for decrypting manufacturer data payloads.
-// Replace with values provided by firmware/security team.
+// ✅ AES-128 Encryption Configuration (per SDD Section 6.5 & 6.6)
+// ✅ IMPLEMENTED: Uses Device ID as encryption key (dynamic per device)
+// The AESEncryption utility (src/utils/AESEncryption.js) generates keys from device IDs
+// No static keys needed - each device uses its own ID as the encryption key
 export const ADV_AES_CONFIG = {
-  keyHex: '00000000000000000000000000000000', // 16 bytes hex
-  ivHex: '00000000000000000000000000000000', // 16 bytes hex if CBC is used; confirm mode
-  mode: 'ECB', // Or 'CBC' per firmware spec; ECB shown as placeholder
-  padding: 'PKCS7',
+  mode: 'ECB',          // AES-128 ECB mode per SDD
+  padding: 'PKCS7',     // PKCS7 padding standard
+  keySource: 'device_id', // ✅ NEW: Key derived from device ID (SHA-256 hash, first 128 bits)
+  // Legacy fields (not used with device ID encryption):
+  // keyHex: Generated dynamically from device ID
+  // ivHex: Not used in ECB mode
 };
 
-// Device Status Characteristic Layout (from SDD Table 12 - 20 bytes total)
+// ✅ Device Status Characteristic Layout (from SDD Table 13 v1.4 - 8 bytes total)
+// ⚠️ CRITICAL: SDD v1.4 maintains same 8-byte format as v1.2/v1.3
+// Device Status shows: Timestamp + Available Records + Battery Level
+// Steps and Temperature are ONLY in Data Transfer (sync) records
 export const DEVICE_STATUS_LAYOUT = {
+  TIMESTAMP_OFFSET: 0,         // Bytes 0-3: Unix Timestamp (Little Endian)
+  RECORD_COUNT_OFFSET: 4,      // Bytes 4-5: Available Records count (Little Endian)
+  BATTERY_VOLTAGE_OFFSET: 6,   // Bytes 6-7: Battery Value in milliVolt (Little Endian)
+  TOTAL_SIZE: 8,               // Total size is 8 bytes
+};
+
+// ✅ Data Transfer Record Layout (from SDD Table 16 v1.4 - 8 bytes per record)
+// This is where Steps and Temperature are located (in sync data, not device status)
+export const DATA_RECORD_LAYOUT = {
   TIMESTAMP_OFFSET: 0,      // Bytes 0-3: Unix Timestamp (Little Endian)
-  STEPS_OFFSET: 4,          // Bytes 4-5: Steps counter data (Little Endian) - CORRECTED
-  TEMP_OFFSET: 6,           // Bytes 6: Temperature (1 byte) - CORRECTED
-  FLAGS_OFFSET: 7,          // Bytes 7: Device status flag (1 byte) - CORRECTED
-  RESERVED_OFFSET: 8,       // Bytes 8-19: Reserved (0x00) - CORRECTED
-  TOTAL_SIZE: 20,           // Total size is 20 bytes
+  STEPS_OFFSET: 4,          // Bytes 4-5: Steps counter data (Little Endian)
+  TEMP_OFFSET: 6,           // Byte 6: Temperature (1 byte)
+  FLAGS_OFFSET: 7,          // Byte 7: Device status flag (1 byte)
+  RECORD_SIZE: 8,           // Each record is 8 bytes
 };
 
 // Advertising payload layout helpers
@@ -90,12 +108,12 @@ export const SYSTEM_COMMAND_CONSTANTS = {
     RESPONSE_DATA_OFFSET: 4,  // Bytes 4-19: Response Data (up to 16 bytes)
   },
 
-  // Command IDs (from SDD Table 9)
+  // Command IDs (from SDD Table 9 - v1.4)
   CMD: {
     SET_SYSTEM_TIME: 0x01,      // Length: 4, Data: Unix Timestamp (seconds)
     SET_ADV_INTERVAL: 0x02,     // Length: 4, Data: Advertising interval (ms)
     SET_CONN_INTERVAL: 0x03,    // Length: 4, Data: Connection interval (ms)
-    SET_DATA_INTERVAL: 0x04,    // Length: 4, Data: Data interval (seconds)
+    SET_DATA_INTERVAL: 0x04,    // Length: 4, Data: Data interval (milliseconds) ⚠️ CHANGED in v1.4: was seconds in v1.3
     GET_FW_VERSION: 0x05,       // Length: 1, Data: No Data (0x00)
     GET_HW_VERSION: 0x06,       // Length: 1, Data: No Data (0x00)
     GET_DIAGNOSTICS: 0x07,      // Length: 1, Data: No Data (0x00)
@@ -103,7 +121,10 @@ export const SYSTEM_COMMAND_CONSTANTS = {
     DATA_SYNC_STOP: 0x09,       // Length: 1, Data: 0x01=Clear Flash, 0x00=Failed
     ENTER_DFU_MODE: 0x0A,       // Length: 0, Data: No Data (enters DFU bootloader)
     SYSTEM_RESTART: 0x10,       // Length: 1, Data: No Data (0x00)
-    TOGGLE_BUZZER: 0x11,        // Length: 1, Data: 0x00=Activate, 0x01=Deactivate - ADDED
+    TOGGLE_BUZZER: 0x11,        // Length: 2, Data: [0x00, beepCount]=Activate (0xFF=max 4min), [0x01, 0x00]=Deactivate
+    UNPAIR_DEVICE: 0x12,        // Length: 1, Data: No Data (0x00)
+    FACTORY_RESET: 0x13,        // Length: 1, Data: No Data (0x00)
+    PASSKEY_UPDATE: 0x14,       // Length: 3, Data: 6 digits Passkey in numeric (0 to 9)
   },
 
   // Response Status Codes
@@ -115,9 +136,32 @@ export const SYSTEM_COMMAND_CONSTANTS = {
 
 export const DATA_TRANSFER_TYPES = {
   SYNC_START: 0x01, // length 4: total records info
-  SYNC_COMPLETE: 0x02, // length 2: 0xFFFF=Force termination, 0x0001-0x01F4=Number of records - CORRECTED
+  SYNC_COMPLETE: 0x02, // length 2: 0xFFFF=Force termination, 0x0001-0x01F4=Number of records transmitted (SDD v1.4)
   RECORD: 0x03, // length 6-18: record payload (timestamp/temp/steps compressed)
   READ_ERROR: 0x04, // length 1: 0x00
+};
+
+// ✅ NEW in v1.4: Data Sync File Management
+export const DATA_SYNC_CONFIG = {
+  RECORDS_PER_FILE: 500,        // Each file holds 500 records (SDD v1.4 Section 6.12.3)
+  MAX_TOTAL_RECORDS: 25000,     // Maximum total records across all files (SDD v1.4 Section 6.12.3)
+  MAX_FILES: 50,                // 50 files total (200KB / 4KB per file)
+  FILE_SIZE_KB: 4,              // Each file is 4KB
+  RECORD_SIZE_BYTES: 8,         // Each record is 8 bytes
+  // Example: 1,500 records = 3 file chunks, requiring 3 Start/Stop command pairs
+};
+
+// ✅ NEW in v1.4: Device Fault Status Codes (SDD v1.4 Table 18 - Enhanced from v1.3)
+// These are bit flags that can be combined (e.g., 0x03 = Watchdog + RTC failures)
+export const DEVICE_FAULT_STATUS = {
+  GOOD: 0x00,                    // All peripherals working correctly
+  WATCHDOG_FAILURE: 0x01,        // Watchdog timer failure
+  RTC_FAILURE: 0x02,             // Real-Time Clock failure
+  ADC_FAILURE: 0x04,             // Analog-to-Digital Converter failure
+  PWM_FAILURE: 0x08,             // Pulse Width Modulation failure
+  FLASH_FAILURE: 0x10,           // Flash memory failure
+  BLE_FAILURE: 0x20,             // Bluetooth Low Energy failure
+  ACCELEROMETER_FAILURE: 0x40,   // Accelerometer (BMA400) failure
 };
 
 // Connection & scanning configuration
@@ -202,4 +246,20 @@ export const SCAN_STATES = {
   IDLE: 'idle',
   SCANNING: 'scanning',
   STOPPED: 'stopped',
+};
+
+// ✅ SYNC WITH ANDROID: Reconnection Constants (matching Android implementation)
+export const RECONNECTION_CONSTANTS = {
+  MAX_ATTEMPTS: 5,                    // Max 5 attempts (matching Android MAX_RECONNECT_ATTEMPTS)
+  INITIAL_BACKOFF_MS: 1000,           // 1 second initial backoff (matching Android)
+  MAX_BACKOFF_MS: 60000,              // 60 seconds max backoff (matching Android)
+  JITTER_MS: 1000,                    // 0-1 second random jitter (matching Android)
+  MIN_RSSI_FOR_RECONNECTION: -90      // Minimum RSSI (dBm) to attempt reconnection (matching Android)
+};
+
+// ✅ SYNC WITH ANDROID: Error Classification (matching Android BLEError.ErrorType)
+export const ERROR_TYPES = {
+  TRANSIENT: 'TRANSIENT',      // Can retry (timeout, temporary disconnection)
+  PERMANENT: 'PERMANENT',      // Cannot retry (device not found, pairing failed)
+  USER_ACTION: 'USER_ACTION'   // Requires user action (permissions, pairing)
 };

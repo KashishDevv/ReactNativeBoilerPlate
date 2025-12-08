@@ -244,15 +244,17 @@ public class BLECompanionDeviceService {
                     Log.d(TAG, "✅ Companion device connected successfully: " + deviceId);
                     
                     // Send local notification for auto-connection (like iOS)
-                    String deviceName = getDeviceName(deviceId);
-                    sendLocalNotificationIfBackground("Device Connected", "Connected to " + deviceName);
+                    // COMMENTED OUT: Local notifications for connection/disconnection/restore/auto-connect
+                    // String deviceName = getDeviceName(deviceId);
+                    // sendLocalNotificationIfBackground("Device Connected", "Connected to " + deviceName);
                     
                 } else if (state == BLEConnectionManager.ConnectionState.DISCONNECTED) {
                     Log.d(TAG, "❌ Companion device disconnected: " + deviceId);
                     
                     // Send local notification for disconnection
-                    String deviceName = getDeviceName(deviceId);
-                    sendLocalNotificationIfBackground("Device Disconnected", deviceName + " has disconnected");
+                    // COMMENTED OUT: Local notifications for connection/disconnection/restore/auto-connect
+                    // String deviceName = getDeviceName(deviceId);
+                    // sendLocalNotificationIfBackground("Device Disconnected", deviceName + " has disconnected");
                     
                     // Device will be monitored for reconnection automatically
                 }

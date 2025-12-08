@@ -69,7 +69,7 @@ function Welcome() {
             
             <View style={{ marginTop: 20 }}>
                 <Button
-                    onPress={() => navigation.navigate('BLEManager')}
+                    onPress={() => navigation.navigate('ModernBLEManager')}
                     title="Open BLE Manager"
                 />
             </View>

@@ -1,18 +1,27 @@
 import { Buffer } from 'buffer';
 import { 
   DEVICE_STATUS_LAYOUT, 
+  DATA_RECORD_LAYOUT,
   DATA_TRANSFER_TYPES, 
   ADV_LAYOUT, 
   MANUFACTURER_COMPANY_ID,
   ADV_AES_CONFIG,
   SYSTEM_COMMAND_CONSTANTS
 } from '../constants/BLEConstants';
+import AESEncryption from './AESEncryption';
 
 // Utility class for parsing BLE data from smart tags
 class BLEDataParser {
   
   /**
-   * Parse device status notification data (SDD compliant - 20 bytes)
+   * ✅ Parse device status notification data (SDD v1.4 compliant - 8 bytes)
+   * ⚠️ BREAKING CHANGE: SDD v1.2 changed format from 20 bytes to 8 bytes (maintained in v1.3/v1.4)
+   * ✅ Current: SDD v1.4 compliant - 8 bytes format
+   * Format: [Timestamp(4), RecordCount(2), BatteryVoltage(2)]
+   * Steps and Temperature are ONLY in Data Transfer records (sync data)
+   * 
+   * Reference: ET-DSSID-SSD-V1.4_10112025.md - Table 13 Device status characteristic data format
+   *
    * @param {string} base64Data - Base64 encoded data from device status characteristic
    * @returns {Object} Parsed device status data
    */
@@ -24,82 +33,57 @@ class BLEDataParser {
 
       const buffer = Buffer.from(base64Data, 'base64');
       
-      // Handle different data formats - device may send 8 bytes instead of 20
+      // ✅ SDD v1.4: Device Status is 8 bytes (Timestamp + RecordCount + Battery)
+      // Reference: ET-DSSID-SSD-V1.4_10112025.md - Table 13
       if (buffer.length < DEVICE_STATUS_LAYOUT.TOTAL_SIZE) {
-        // If we have 8 bytes, try to parse as compact format
-        if (buffer.length === 8) {
-          return this.parseCompactDeviceStatus(buffer);
-        }
-        
-        // Try to parse anyway if we have at least the minimum required bytes
+        console.warn(`⚠️ Device Status buffer too short: ${buffer.length} bytes, expected ${DEVICE_STATUS_LAYOUT.TOTAL_SIZE}`);
         if (buffer.length < 4) {
           return null;
         }
       }
 
-      // Parse according to SDD DEVICE_STATUS_LAYOUT (Little Endian format)
-      let timestamp = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.TIMESTAMP_OFFSET);
-      let steps = buffer.readUInt16LE(DEVICE_STATUS_LAYOUT.STEPS_OFFSET);
+      // Parse according to SDD v1.4 DEVICE_STATUS_LAYOUT (Little Endian format)
+      const timestamp = buffer.readUInt32LE(DEVICE_STATUS_LAYOUT.TIMESTAMP_OFFSET);
+      const recordCount = buffer.readUInt16LE(DEVICE_STATUS_LAYOUT.RECORD_COUNT_OFFSET);
+      const batteryVoltage = buffer.readUInt16LE(DEVICE_STATUS_LAYOUT.BATTERY_VOLTAGE_OFFSET);
       
-      // Sanity check: Steps should be reasonable (0 to few thousands per day)
-      if (steps === 65535) {
-        // Try big endian
-        steps = buffer.readUInt16BE(DEVICE_STATUS_LAYOUT.STEPS_OFFSET);
-      }
-      
-      // Validate timestamp - if it's clearly invalid (before 2020), use current time
-      const currentTime = Math.floor(Date.now() / 1000);
-      const timestampDate = new Date(timestamp * 1000);
+      // Validate timestamp - if it's clearly invalid (before 2020), flag it
       const isValidTimestamp = timestamp > 1577836800; // After 2020-01-01
       
       if (!isValidTimestamp) {
-        timestamp = currentTime;
+        console.warn(`⚠️ Device RTC appears unset: ${new Date(timestamp * 1000).toISOString()}`);
       }
       
-      // Temperature parsing according to SDD Table 12 - 1 byte at offset 6
-      let temperatureRaw;
-      let temperature;
+      // ✅ FIXED: Battery range: 0mV (0%) to 3000mV (100%)
+      // Linear scale: percentage = (voltage / 3000) × 100
+      const BATTERY_MIN_MV = 0;    // 0% battery
+      const BATTERY_MAX_MV = 3000; // 100% battery
       
-      try {
-        temperatureRaw = buffer.readUInt8(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
-        temperature = temperatureRaw;
-      } catch (error) {
-        temperatureRaw = buffer.readUInt8(DEVICE_STATUS_LAYOUT.TEMP_OFFSET);
-        temperature = null;
+      let batteryPercentage = 0;
+      if (batteryVoltage >= BATTERY_MIN_MV && batteryVoltage <= BATTERY_MAX_MV) {
+        batteryPercentage = Math.round((batteryVoltage / BATTERY_MAX_MV) * 100);
+      } else if (batteryVoltage > BATTERY_MAX_MV) {
+        batteryPercentage = 100;
+      } else if (batteryVoltage < BATTERY_MIN_MV) {
+        batteryPercentage = 0;
       }
-      
-      const flags = buffer.readUInt8(DEVICE_STATUS_LAYOUT.FLAGS_OFFSET);
-      
-      // Read reserved bytes if available (bytes 8-19, should be 0x00)
-      let reserved = null;
-      if (buffer.length >= DEVICE_STATUS_LAYOUT.TOTAL_SIZE) {
-        const reservedBytes = buffer.slice(DEVICE_STATUS_LAYOUT.RESERVED_OFFSET, DEVICE_STATUS_LAYOUT.TOTAL_SIZE);
-        reserved = reservedBytes.toString('hex');
-      }
-
-      // Parse device status flags according to SDD Table 12
-      const parsedFlags = {
-        isActive: (flags & 0x01) !== 0,
-        isCharging: (flags & 0x02) !== 0,
-        lowBattery: (flags & 0x04) !== 0,
-        tempAlert: (flags & 0x08) !== 0,
-        motionDetected: (flags & 0x10) !== 0,
-        reserved: (flags & 0xE0) !== 0,
-      };
 
       const result = {
         type: 'device_status',
         timestamp: new Date(timestamp * 1000),
-        steps,
-        temperature,
-        temperatureRaw,
-        flags: parsedFlags,
-        rawFlags: flags,
-        reserved,
+        deviceRTC: timestamp,
+        recordCount,                    // ✅ NEW: Number of records available for sync
+        batteryVoltage,                 // ✅ NEW: Battery voltage in millivolts
+        batteryLevel: batteryPercentage, // Converted to percentage
+        rtcValid: isValidTimestamp,
         lastUpdate: new Date(),
         rawBuffer: buffer.toString('hex'),
-        sddCompliant: buffer.length === DEVICE_STATUS_LAYOUT.TOTAL_SIZE
+        sddCompliant: buffer.length === DEVICE_STATUS_LAYOUT.TOTAL_SIZE,
+        sddVersion: '1.4',              // ✅ UPDATED: Track SDD version (v1.4)
+        note: 'SDD v1.4 format - Steps/Temperature are in Data Transfer records only'
       };
+
+      console.log(`📊 Device Status (SDD v1.4): Records=${recordCount}, Battery=${batteryVoltage}mV (${batteryPercentage}%), Time=${result.timestamp.toISOString()}`);
       
       return result;
 
@@ -110,83 +94,20 @@ class BLEDataParser {
   }
 
   /**
-   * Parse compact 8-byte device status format
+   * ⚠️ DEPRECATED: This function is kept for backward compatibility only
+   * parseCompactDeviceStatus is NO LONGER NEEDED in SDD v1.4
+   * The standard parseDeviceStatus now handles the 8-byte format correctly
+   *
+   * @deprecated Use parseDeviceStatus instead
    * @param {Buffer} buffer - 8-byte buffer
    * @returns {Object} Parsed device status data
    */
   parseCompactDeviceStatus(buffer) {
-    try {
-      // Analyze the 8-byte format: [timestamp(4)] [steps(2)] [temperature(1)] [flags(1)]
-      const rawTimestamp = buffer.readUInt32LE(0);
-      const rawSteps = buffer.readUInt16LE(4);
-      const rawTemperature = buffer.readUInt8(6);
-      const rawFlags = buffer.readUInt8(7);
-      
-      // Use device RTC timestamp directly
-      const timestamp = rawTimestamp;
-      const steps = rawSteps;
-      const timestampDate = new Date(timestamp * 1000);
-      
-      // Log if timestamp seems invalid but still use it
-      if (timestamp < 1577836800) { // Before 2020-01-01
-        console.warn(`⚠️ Device RTC appears unset: ${timestampDate.toISOString()}`);
-      }
-      
-      const temperatureRaw = rawTemperature;
-      const flags = rawFlags;
-      
-      // Parse device status flags
-      const flagAnalysis = {
-        isActive: (flags & 0x01) !== 0,
-        isCharging: (flags & 0x02) !== 0,
-        lowBattery: (flags & 0x04) !== 0,
-        tempAlert: (flags & 0x08) !== 0,
-        motionDetected: (flags & 0x10) !== 0,
-        reserved: (flags & 0xE0) !== 0,
-      };
-      
-      // Temperature parsing - 1 byte raw value
-      const temperature = temperatureRaw;
-      
-      // Parse device status flags
-      const parsedFlags = {
-        isActive: flagAnalysis.isActive,
-        isCharging: flagAnalysis.isCharging,
-        lowBattery: flagAnalysis.lowBattery,
-        tempAlert: flagAnalysis.tempAlert,
-        motionDetected: flagAnalysis.motionDetected,
-        reserved: flagAnalysis.reserved,
-      };
-      
-      const result = {
-        type: 'device_status',
-        timestamp: new Date(timestamp * 1000),
-        deviceRTC: timestamp,
-        steps,
-        temperature,
-        temperatureRaw,
-        temperatureFormat: 'raw-1byte',
-        flags: parsedFlags,
-        rawFlags: flags,
-        lastUpdate: new Date(timestamp * 1000),
-        rawBuffer: buffer.toString('hex'),
-        rawData: {
-          timestamp: rawTimestamp,
-          steps: rawSteps,
-          temperature: rawTemperature,
-          flags: rawFlags,
-          buffer: buffer.toString('hex')
-        },
-        sddCompliant: false,
-        format: 'compact_8byte'
-      };
-      
-      return result;
-      
-    } catch (error) {
-      console.error('❌ [BLEDataParser] Error parsing compact device status:', error);
-      return null;
-    }
+    console.warn('⚠️ parseCompactDeviceStatus is deprecated. Use parseDeviceStatus for SDD v1.4 format.');
+    
+    // Forward to the main parser which now handles 8-byte format correctly
+    const base64Data = buffer.toString('base64');
+    return this.parseDeviceStatus(base64Data);
   }
 
   /**
@@ -425,8 +346,12 @@ class BLEDataParser {
   }
 
   /**
-   * Parse advertisement manufacturer data according to SDD specification
-   * @param {Object} device - BLE device object
+   * Parse advertisement manufacturer data according to SDD v1.4 specification
+   * Reference: ET-DSSID-SSD-V1.4_10112025.md - Table 18 BLE Advertising -- Manufacturers Data structure
+   * ✅ UPDATED: Now supports AES-128 encryption with device ID as key (SDD Section 6.5)
+   * ✅ UPDATED: New advertisement packet structure per SDD v1.4 Table 18
+   *
+   * @param {Object} device - BLE device object with manufacturerData and deviceId
    * @returns {Object|null} Parsed advertisement data
    */
   parseAdvertisementData(device) {
@@ -436,23 +361,81 @@ class BLEDataParser {
       }
 
       const buffer = Buffer.from(device.manufacturerData, 'base64');
-      
-      // SDD requirement: minimum 4 bytes (length + type + company ID + indication)
-      if (buffer.length < 4) {
+
+      // SDD v1.4: Minimum buffer length for manufacturer specific data
+      if (buffer.length < 15) {
+        console.warn(`⚠️ Advertisement buffer too short for SDD v1.4: ${buffer.length} bytes, expected at least 15`);
         return null;
       }
 
-      // Parse according to SDD Table 13 structure
-      const totalLength = buffer.readUInt8(0);     // First byte is length (0x0C = 10 bytes data + 2 bytes header)
-      const dataType = buffer.readUInt8(1);        // Should be 0xFF (Manufacturer Specific Data)
-      const companyId = buffer.readUInt16BE(2);    // Company ID (0x1234 per SDD - Big Endian: 0x34 0x12)
-      const indication = buffer.readUInt8(4);      // Indication to connect
-      const deviceStatus = buffer.readUInt8(5);    // Device functional status (0=Good, 1=Problem)
-      const recordCount = buffer.readUInt16LE(6);  // Number of records available
-      const batteryVoltage = buffer.readUInt16LE(8); // Battery value in millivolts
-      const optionalData = buffer.slice(10);       // Additional data if any
+      // ✅ NEW: Use AES encryption utility to decrypt manufacturer data
+      // This handles both encrypted and unencrypted data (fallback mode)
+      if (device.id) {
+        try {
+          const decryptedData = AESEncryption.decryptManufacturerData(buffer, device.id);
 
-      // Validate against SDD requirements
+          if (decryptedData) {
+            return {
+              type: 'advertisement',
+              companyId: decryptedData.companyId,
+              version: decryptedData.version,
+              devicePeripheralStatus: decryptedData.devicePeripheralStatus,
+              deviceStatus: decryptedData.deviceStatus,
+              macId: decryptedData.macId,
+              recordCount: decryptedData.recordCount,
+              batteryVoltage: decryptedData.batteryMv,
+              batteryPercentage: decryptedData.batteryPercent,
+              rssi: device.rssi,
+              timestamp: new Date(),
+              encrypted: decryptedData.encrypted !== false, // True if encrypted
+              sddCompliant: true,
+              sddVersion: '1.3'
+            };
+          }
+        } catch (error) {
+          console.warn(`⚠️ Encrypted parsing failed, trying unencrypted fallback:`, error.message);
+        }
+      }
+
+      // ✅ FALLBACK: Parse as unencrypted (for backward compatibility during firmware transition)
+      // Parse according to SDD v1.4 Table 18 structure - Manufacturer Specific Data only
+      // Note: The full advertisement packet includes flags and local name, but we only parse manufacturer data here
+
+      // Manufacturer Specific Data starts after the standard BLE advertisement headers
+      // We expect the buffer to contain just the manufacturer specific data portion
+      const mfgLength = buffer.readUInt8(0);        // Length of manufacturer specific data (0x0F = 15)
+      const dataType = buffer.readUInt8(1);         // Should be 0xFF (Manufacturer Specific Data)
+      const companyId = buffer.readUInt16BE(2);     // Company ID (0x1234 per SDD - Big Endian: 0x34 0x12)
+      const version = buffer.readUInt8(4);          // Version (0x01)
+      const deviceFaultStatus = buffer.readUInt8(5); // ✅ ENHANCED in v1.4: Device fault status (detailed fault codes)
+      const deviceStatusRaw = buffer.readUInt8(6);  // Device status with bit fields
+
+      // ✅ ENHANCED in v1.4: Parse device fault status bit flags (SDD v1.4 Table 18)
+      // These are bit flags that can be combined (e.g., 0x03 = Watchdog + RTC failures)
+      const faultStatusBits = {
+        watchdogFailure: (deviceFaultStatus & 0x01) !== 0,      // bit 0: Watchdog timer failure
+        rtcFailure: (deviceFaultStatus & 0x02) !== 0,           // bit 1: RTC failure
+        adcFailure: (deviceFaultStatus & 0x04) !== 0,           // bit 2: ADC failure
+        pwmFailure: (deviceFaultStatus & 0x08) !== 0,           // bit 3: PWM failure
+        flashFailure: (deviceFaultStatus & 0x10) !== 0,         // bit 4: Flash failure
+        bleFailure: (deviceFaultStatus & 0x20) !== 0,           // bit 5: BLE failure
+        accelerometerFailure: (deviceFaultStatus & 0x40) !== 0, // bit 6: Accelerometer failure
+        reserved: (deviceFaultStatus & 0x80) >> 7               // bit 7: Reserved
+      };
+
+      // ✅ Parse device status bit fields
+      const deviceStatusBits = {
+        connectIndication: (deviceStatusRaw & 0x01) !== 0,    // bit 0: Connect indication (1=connect, 0=no need)
+        timeSet: (deviceStatusRaw & 0x02) !== 0,              // bit 1: Time set (1=configured, 0=not set)
+        factoryDefaults: (deviceStatusRaw & 0x04) !== 0,      // bit 2: Factory defaults (1=using defaults, 0=customized)
+        reserved: (deviceStatusRaw & 0xF8) >> 3               // bits 3-7: Reserved for future use
+      };
+
+      // MAC ID (6 bytes)
+      const macId = buffer.slice(7, 13).toString('hex').toUpperCase(); // Bytes 7-12: MAC ID
+      const recordCount = buffer.readUInt16LE(13);   // Bytes 13-14: Number of records available (Little Endian)
+
+      // Validate against SDD v1.4 requirements
       if (dataType !== 0xFF) {
         console.warn(`Invalid advertisement data type: 0x${dataType.toString(16)}, expected 0xFF`);
         return null;
@@ -463,57 +446,65 @@ class BLEDataParser {
         return null; // Not our manufacturer
       }
 
-      // Convert battery voltage to percentage based on SDD specification
-      // Example: 0CFA (hex) = 3322 (decimal) = 3322mV
-      // Full battery = 4000mV, Empty battery = 3000mV (typical range)
-      let batteryPercentage = 0;
-      if (batteryVoltage >= 3000 && batteryVoltage <= 4000) {
-        // Linear conversion: 3000mV = 0%, 4000mV = 100%
-        batteryPercentage = Math.round(((batteryVoltage - 3000) / 1000) * 100);
-      } else if (batteryVoltage > 4000) {
-        batteryPercentage = 100;
-      } else if (batteryVoltage < 3000) {
-        batteryPercentage = 0;
-      }
+      // ✅ ENHANCED in v1.4: Create human-readable fault status string with specific failures
+      const deviceStatus = deviceFaultStatus === 0 ? 'Good' : 'Fault Detected';
+      const faultDetails = [];
+      if (faultStatusBits.watchdogFailure) faultDetails.push('Watchdog');
+      if (faultStatusBits.rtcFailure) faultDetails.push('RTC');
+      if (faultStatusBits.adcFailure) faultDetails.push('ADC');
+      if (faultStatusBits.pwmFailure) faultDetails.push('PWM');
+      if (faultStatusBits.flashFailure) faultDetails.push('Flash');
+      if (faultStatusBits.bleFailure) faultDetails.push('BLE');
+      if (faultStatusBits.accelerometerFailure) faultDetails.push('Accelerometer');
+      const faultDescription = faultDetails.length > 0 ? faultDetails.join(', ') : 'None';
 
       const result = {
         type: 'advertisement',
         companyId,
-        indication,
-        deviceStatus: deviceStatus === 0 ? 'Good' : 'Problem',
-        recordCount,
-        batteryVoltage,
-        batteryPercentage: Math.min(Math.max(batteryPercentage, 0), 100),
-        optionalData: optionalData.toString('hex'),
+        version,                                 // Firmware version
+        deviceFaultStatus,                       // ✅ ENHANCED in v1.4: Device fault status (detailed fault codes)
+        devicePeripheralStatus: deviceFaultStatus, // Legacy field name for backward compatibility
+        deviceStatus,                            // Human readable status
+        faultDescription,                        // ✅ NEW in v1.4: Human readable fault details
+        faultStatusBits,                         // ✅ NEW in v1.4: Parsed fault status bit flags
+        deviceStatusRaw,                         // Raw device status byte
+        deviceStatusBits,                        // Parsed device status bit fields
+        macId,                                   // MAC address
+        recordCount,                             // Number of records available
+        connectIndication: deviceStatusBits.connectIndication, // Helper: should connect
+        timeSet: deviceStatusBits.timeSet,       // Helper: time is configured
+        factoryDefaults: deviceStatusBits.factoryDefaults, // Helper: using factory defaults
         rssi: device.rssi,
         timestamp: new Date(),
+        encrypted: false, // Unencrypted fallback mode
         // SDD compliance info
         sddCompliant: true,
+        sddVersion: '1.4',                       // ✅ UPDATED: Now tracking v1.4
         dataType: dataType,
-        totalLength: totalLength
+        mfgLength: mfgLength
       };
 
-      console.log(`📊 Advertisement data parsed:`, {
+      console.log(`📊 Advertisement data parsed (SDD v1.4 - UNENCRYPTED FALLBACK):`, {
         companyId: `0x${companyId.toString(16)}`,
-        indication: indication === 1 ? 'Ready to connect' : 'Not ready',
-        deviceStatus: deviceStatus === 0 ? 'Good' : 'Problem',
+        version: `0x${version.toString(16)}`,
+        deviceFaultStatus: `0x${deviceFaultStatus.toString(16)} (${deviceStatus})`,
+        faultDescription,
+        faultStatusBits,
+        deviceStatusBits: {
+          connectIndication: deviceStatusBits.connectIndication,
+          timeSet: deviceStatusBits.timeSet,
+          factoryDefaults: deviceStatusBits.factoryDefaults
+        },
+        macId,
         recordCount,
-        batteryVoltage: `${batteryVoltage}mV`,
-        batteryPercentage: `${batteryPercentage}%`,
-        optionalData: optionalData.toString('hex'),
-        sddCompliant: true
+        sddCompliant: true,
+        sddVersion: '1.4'
       });
-      
-      // Example calculation for 0CFA (hex) = 3322mV
-      if (batteryVoltage === 3322) {
-        console.log(`🔋 Battery calculation example: 0CFA (hex) = ${batteryVoltage}mV = ${batteryPercentage}%`);
-        console.log(`   Formula: (${batteryVoltage} - 3000) / 1000 * 100 = ${batteryPercentage}%`);
-      }
 
       return result;
 
     } catch (error) {
-      console.error('Error parsing advertisement data:', error);
+      console.error('❌ Error parsing advertisement data:', error);
       return null;
     }
   }
@@ -584,25 +575,48 @@ class BLEDataParser {
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.SET_DATA_INTERVAL:
           if (data.length >= 4) {
+            const intervalMs = data.readUInt32LE(0);
             parsedData = {
               commandName: 'Set Data Acquisition Interval',
-              intervalSeconds: data.readUInt32LE(0)
+              intervalMs: intervalMs,                    // ✅ CHANGED in v1.4: Now in milliseconds (was seconds in v1.3)
+              intervalSeconds: intervalMs / 1000,        // Legacy field for backward compatibility
+              note: 'v1.4: Now accepts milliseconds (was seconds in v1.3)'
             };
           }
           break;
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION:
-          parsedData = {
-            commandName: 'Get Firmware Version',
-            version: data.length > 0 ? data.toString('utf8') : 'Unknown'
-          };
+          // ✅ SDD v1.4: Response data contains version string (e.g., "1.0.2")
+          console.log(`🔍 [PARSER] GET_FW_VERSION - data length: ${data.length}, hex: ${data.toString('hex')}, utf8: ${data.toString('utf8')}`);
+          if (data.length > 0) {
+            const version = data.toString('utf8');
+            parsedData = {
+              commandName: 'Get Firmware Version',
+              version: version || 'Unknown'
+            };
+          } else {
+            parsedData = {
+              commandName: 'Get Firmware Version',
+              version: 'Unknown'
+            };
+          }
           break;
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION:
-          parsedData = {
-            commandName: 'Get Hardware Version',
-            version: data.length > 0 ? data.toString('utf8') : 'Unknown'
-          };
+          // ✅ SDD v1.4: Response data contains version string (e.g., "1.0.2")
+          console.log(`🔍 [PARSER] GET_HW_VERSION - data length: ${data.length}, hex: ${data.toString('hex')}, utf8: ${data.toString('utf8')}`);
+          if (data.length > 0) {
+            const version = data.toString('utf8');
+            parsedData = {
+              commandName: 'Get Hardware Version',
+              version: version || 'Unknown'
+            };
+          } else {
+            parsedData = {
+              commandName: 'Get Hardware Version',
+              version: 'Unknown'
+            };
+          }
           break;
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS:
@@ -638,14 +652,39 @@ class BLEDataParser {
           break;
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER:
-          if (data.length >= 1) {
+          if (data.length >= 2) {
+            // ✅ SDD v1.4: Toggle Buzzer response has 2 bytes [state, beepCount] (introduced in v1.2, maintained in v1.3/v1.4)
             const buzzerState = data.readUInt8(0);
+            const beepCount = data.readUInt8(1);
             parsedData = {
               commandName: 'Toggle Buzzer',
               activated: buzzerState === 0x00,
-              deactivated: buzzerState === 0x01
+              deactivated: buzzerState === 0x01,
+              beepCount: buzzerState === 0x00 ? beepCount : 0,  // ✅ SDD v1.4: Beep count (0xFF = max 4 minutes/default)
+              note: 'SDD v1.4 format: [state, beepCount]'
             };
           }
+          break;
+          
+        case SYSTEM_COMMAND_CONSTANTS.CMD.UNPAIR_DEVICE:
+          parsedData = {
+            commandName: 'Unpair BLE Device',  // ✅ NEW in v1.2, maintained in v1.3
+            success: true
+          };
+          break;
+          
+        case SYSTEM_COMMAND_CONSTANTS.CMD.FACTORY_RESET:
+          parsedData = {
+            commandName: 'Factory Reset',      // ✅ NEW in v1.2, maintained in v1.3
+            success: true
+          };
+          break;
+          
+        case SYSTEM_COMMAND_CONSTANTS.CMD.PASSKEY_UPDATE:
+          parsedData = {
+            commandName: 'Passkey Update',     // ✅ NEW in SDD v1.4
+            success: true
+          };
           break;
           
         default:
@@ -741,9 +780,12 @@ class BLEDataParser {
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.SET_DATA_INTERVAL:
           if (data.length >= 4) {
+            const intervalMs = data.readUInt32LE(0);
             parsedData = {
               commandName: 'Set Data Acquisition Interval',
-              intervalSeconds: data.readUInt32LE(0)
+              intervalMs: intervalMs,                    // ✅ CHANGED in v1.4: Now in milliseconds (was seconds in v1.3)
+              intervalSeconds: intervalMs / 1000,        // Legacy field for backward compatibility
+              note: 'v1.4: Now accepts milliseconds (was seconds in v1.3)'
             };
           }
           break;
@@ -760,14 +802,32 @@ class BLEDataParser {
           break;
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER:
-          if (data.length >= 1) {
+          if (data.length >= 2) {
+            // ✅ SDD v1.4: Toggle Buzzer now has 2 bytes [state, beepCount]
             const buzzerState = data.readUInt8(0);
+            const beepCount = data.readUInt8(1);
             parsedData = {
               commandName: 'Toggle Buzzer',
               activated: buzzerState === 0x00,
-              deactivated: buzzerState === 0x01
+              deactivated: buzzerState === 0x01,
+              beepCount: buzzerState === 0x00 ? beepCount : 0,  // ✅ SDD v1.4: Beep count (0xFF = max 4 minutes/default)
+              note: 'SDD v1.4 format: [state, beepCount]'
             };
           }
+          break;
+          
+        case SYSTEM_COMMAND_CONSTANTS.CMD.UNPAIR_DEVICE:
+          parsedData = {
+            commandName: 'Unpair BLE Device',  // ✅ NEW in v1.2, maintained in v1.3
+            noData: true
+          };
+          break;
+          
+        case SYSTEM_COMMAND_CONSTANTS.CMD.FACTORY_RESET:
+          parsedData = {
+            commandName: 'Factory Reset',      // ✅ NEW in v1.2, maintained in v1.3
+            noData: true
+          };
           break;
           
         default:
@@ -785,8 +845,11 @@ class BLEDataParser {
         data: parsedData,
         rawData: data.toString('hex'),
         timestamp: new Date(),
+        // ✅ NEW in v1.4: Support for both write and read operations
+        operation: 'write',  // Default is write, read would be handled by characteristic read operation
         // SDD compliance info
-        sddCompliant: true
+        sddCompliant: true,
+        sddVersion: '1.4'
       };
 
     } catch (error) {
@@ -796,7 +859,7 @@ class BLEDataParser {
   }
 
   /**
-   * Get command name from command ID
+   * Get command name from command ID (SDD v1.4)
    * @param {number} commandId - Command ID
    * @returns {string} Command name
    */
@@ -812,7 +875,10 @@ class BLEDataParser {
       [SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START]: 'Data Sync Start Request',
       [SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_STOP]: 'Data Sync Stop Request',
       [SYSTEM_COMMAND_CONSTANTS.CMD.SYSTEM_RESTART]: 'System Restart',
-      [SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER]: 'Toggle Buzzer'
+      [SYSTEM_COMMAND_CONSTANTS.CMD.TOGGLE_BUZZER]: 'Toggle Buzzer',
+      [SYSTEM_COMMAND_CONSTANTS.CMD.UNPAIR_DEVICE]: 'Unpair BLE Device',    // ✅ NEW in v1.2, maintained in v1.3
+      [SYSTEM_COMMAND_CONSTANTS.CMD.FACTORY_RESET]: 'Factory Reset',        // ✅ NEW in v1.2, maintained in v1.3
+      [SYSTEM_COMMAND_CONSTANTS.CMD.PASSKEY_UPDATE]: 'Passkey Update'       // ✅ NEW in SDD v1.4
     };
     return commandNames[commandId] || `Unknown Command (0x${commandId.toString(16)})`;
   }
@@ -1135,7 +1201,10 @@ class BLEDataParser {
   }
 
   /**
-   * Parse data transfer characteristic data
+   * Parse data transfer characteristic data (SDD v1.4 compliant - 20 bytes)
+   * Reference: ET-DSSID-SSD-V1.4_10112025.md - Table 14 Data Transfer characteristic data format
+   * Format: [Data Type(1), Length(1), Record data(18)]
+   * 
    * @param {string} base64Data - Base64 encoded data transfer data
    * @returns {object|null} Parsed data transfer information
    */

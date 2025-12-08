@@ -245,7 +245,8 @@ class AutoConnectService {
       if (Platform.OS === 'ios') {
         result = await BridgingCodeModule.disconnectFromNative(deviceId);
       } else {
-        result = await SampleBridgeAndroid.cancelConnection(deviceId);
+        // ✅ UPDATED: Use new disconnectFromNative method (matching iOS)
+        result = await SampleBridgeAndroid.disconnectFromNative(deviceId);
       }
       
       console.log('✅ Native disconnect result:', result);
@@ -267,12 +268,8 @@ class AutoConnectService {
       if (Platform.OS === 'ios') {
         result = await BridgingCodeModule.debugConnectionStatus();
       } else {
-        // Android doesn't have this specific method, return basic status
-        result = {
-          platform: 'android',
-          autoConnectEnabled: this.isEnabled,
-          bondedDevicesCount: this.bondedDevices.size
-        };
+        // ✅ UPDATED: Use new debugConnectionStatus method (matching iOS)
+        result = await SampleBridgeAndroid.debugConnectionStatus();
       }
       
       console.log('🐛 Debug Connection Status:', result);
@@ -311,8 +308,8 @@ class AutoConnectService {
       if (Platform.OS === 'ios') {
         result = await BridgingCodeModule.connectToKnownPeripherals();
       } else {
-        // Android doesn't have this specific method, but we can start auto-connect
-        result = await SampleBridgeAndroid.startAutoConnect();
+        // ✅ UPDATED: Use new connectToKnownPeripherals method (matching iOS)
+        result = await SampleBridgeAndroid.connectToKnownPeripherals();
       }
       
       console.log('✅ Connect to known peripherals result:', result);
@@ -323,7 +320,49 @@ class AutoConnectService {
     }
   }
 
+  /**
+   * Get resource status for debugging (memory, timers, etc.)
+   */
+  async getResourceStatus() {
+    try {
+      console.log('📊 Getting resource status...');
+      let result;
+      
+      if (Platform.OS === 'ios') {
+        result = await BridgingCodeModule.getResourceStatus();
+      } else {
+        result = await SampleBridgeAndroid.getResourceStatus();
+      }
+      
+      console.log('📊 Resource Status:', result);
+      return { success: true, result };
+    } catch (error) {
+      console.error('❌ Failed to get resource status:', error);
+      return { success: false, error: error.message };
+    }
+  }
 
+  /**
+   * Get manufacturer information (manufacturer ID, etc.)
+   */
+  async getManufacturerInfo() {
+    try {
+      console.log('🏭 Getting manufacturer info...');
+      let result;
+      
+      if (Platform.OS === 'ios') {
+        result = await BridgingCodeModule.getManufacturerInfo();
+      } else {
+        result = await SampleBridgeAndroid.getManufacturerInfo();
+      }
+      
+      console.log('🏭 Manufacturer Info:', result);
+      return { success: true, result };
+    } catch (error) {
+      console.error('❌ Failed to get manufacturer info:', error);
+      return { success: false, error: error.message };
+    }
+  }
 
   /**
    * Add callback for device connection events

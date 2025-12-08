@@ -50,7 +50,8 @@ public class BLEForegroundService extends Service {
         Log.d(TAG, "Device connected: " + deviceId);
         
         // Show connection notification
-        showConnectionNotification(deviceId, true);
+        // COMMENTED OUT: Local notifications for connection/disconnection/restore/auto-connect
+        // showConnectionNotification(deviceId, true);
     }
     
     public void removeConnectedDevice(String deviceId) {
@@ -59,7 +60,8 @@ public class BLEForegroundService extends Service {
         Log.d(TAG, "Device disconnected: " + deviceId);
         
         // Show disconnection notification
-        showConnectionNotification(deviceId, false);
+        // COMMENTED OUT: Local notifications for connection/disconnection/restore/auto-connect
+        // showConnectionNotification(deviceId, false);
     }
     
     public void addMonitoredDevice(String deviceId) {
@@ -220,9 +222,25 @@ public class BLEForegroundService extends Service {
         return new ConcurrentHashMap<>(connectedDevices);
     }
     
+    // ✅ FIX: Notification deduplication tracking
+    private Map<String, Long> lastConnectionNotificationTime = new ConcurrentHashMap<>();
+    private static final long CONNECTION_NOTIFICATION_COOLDOWN_MS = 10000; // 10 seconds between connection notifications
+    
     // Notification methods for connection events
     private void showConnectionNotification(String deviceId, boolean connected) {
         try {
+            // ✅ FIX: Add debouncing to prevent notification spam
+            long currentTime = System.currentTimeMillis();
+            String notificationKey = deviceId + "_" + (connected ? "connected" : "disconnected");
+            
+            Long lastTime = lastConnectionNotificationTime.get(notificationKey);
+            if (lastTime != null && (currentTime - lastTime) < CONNECTION_NOTIFICATION_COOLDOWN_MS) {
+                Log.d(TAG, "🔔 Skipping duplicate connection notification (debounced) for device: " + deviceId);
+                return; // Skip duplicate notification
+            }
+            
+            lastConnectionNotificationTime.put(notificationKey, currentTime);
+            
             Log.d(TAG, "🔔 Attempting to show connection notification for device: " + deviceId + ", connected: " + connected);
             
             String deviceName = getDeviceName(deviceId);
