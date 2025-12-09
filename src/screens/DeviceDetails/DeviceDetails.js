@@ -29,6 +29,7 @@ const DeviceDetails = ({ route, navigation }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedServices, setExpandedServices] = useState(new Set());
+  const [servicesSectionExpanded, setServicesSectionExpanded] = useState(false);
   const [appState, setAppState] = useState(AppState.currentState);
   const [inputModalVisible, setInputModalVisible] = useState(false);
   const [inputModalConfig, setInputModalConfig] = useState(null);
@@ -375,6 +376,12 @@ const DeviceDetails = ({ route, navigation }) => {
         <Text style={styles.infoLabel}>ID:</Text>
         <Text style={styles.infoValue}>{device.id}</Text>
       </View>
+      {device.manufacturerData?.macId && (
+        <View style={styles.infoRow}>
+          <Text style={styles.infoLabel}>MAC Address:</Text>
+          <Text style={styles.infoValue}>{device.manufacturerData.macId}</Text>
+        </View>
+      )}
       <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>RSSI:</Text>
         <Text style={styles.infoValue}>{device.rssi || 'N/A'} dBm</Text>
@@ -423,7 +430,7 @@ const DeviceDetails = ({ route, navigation }) => {
 
     return (
       <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Live Data {deviceData.sddVersion && `(SDD v${deviceData.sddVersion})`}</Text>
+        <Text style={styles.sectionTitle}>Details</Text>
         
         {device.connectionState !== CONNECTION_STATES.CONNECTED && (
           <View style={styles.disconnectedWarning}>
@@ -558,76 +565,103 @@ const DeviceDetails = ({ route, navigation }) => {
     if (!device || !device.services || device.services.length === 0) {
       return (
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Services</Text>
-          <Text style={styles.emptyText}>
-            {device && device.connectionState === CONNECTION_STATES.CONNECTED 
-              ? 'No services discovered' 
-              : 'Connect to device to view services'}
-          </Text>
-          <Text style={[styles.emptyText, {fontSize: 12, marginTop: 10}]}>
-            Debug: Device={!!device}, Services={device?.services?.length || 0}, Connected={device?.connectionState === CONNECTION_STATES.CONNECTED}
-          </Text>
+          <TouchableOpacity
+            style={styles.collapsibleHeader}
+            onPress={() => setServicesSectionExpanded(!servicesSectionExpanded)}
+          >
+            <Text style={styles.sectionTitle}>Services & Characteristics</Text>
+            <Text style={styles.expandIcon}>
+              {servicesSectionExpanded ? '▼' : '▶'}
+            </Text>
+          </TouchableOpacity>
+          {servicesSectionExpanded && (
+            <>
+              <Text style={styles.emptyText}>
+                {device && device.connectionState === CONNECTION_STATES.CONNECTED 
+                  ? 'No services discovered' 
+                  : 'Connect to device to view services'}
+              </Text>
+              <Text style={[styles.emptyText, {fontSize: 12, marginTop: 10}]}>
+                Debug: Device={!!device}, Services={device?.services?.length || 0}, Connected={device?.connectionState === CONNECTION_STATES.CONNECTED}
+              </Text>
+            </>
+          )}
         </View>
       );
     }
 
     return (
       <View style={styles.section}>
-        <View style={styles.sectionHeader}>
+        <TouchableOpacity
+          style={styles.collapsibleHeader}
+          onPress={() => setServicesSectionExpanded(!servicesSectionExpanded)}
+        >
           <Text style={styles.sectionTitle}>Services & Characteristics</Text>
-          <TouchableOpacity
-            style={styles.refreshButton}
-            onPress={refreshServices}
-          >
-            <Text style={styles.refreshButtonText}>Refresh</Text>
-          </TouchableOpacity>
-        </View>
-        {device.services.map((service, index) => (
-          <View key={`${service.uuid}-${index}`} style={styles.serviceCard}>
+          <View style={styles.collapsibleHeaderRight}>
             <TouchableOpacity
-              style={styles.serviceHeader}
-              onPress={() => toggleServiceExpansion(service.uuid)}
+              style={[styles.refreshButton, { marginRight: Metrics.smallMargin }]}
+              onPress={(e) => {
+                e.stopPropagation();
+                refreshServices();
+              }}
             >
-              <View>
-                <Text style={styles.serviceName}>
-                  Service ({service.uuid.substring(0, 8)}...)
-                </Text>
-                <Text style={styles.serviceUuid}>{service.uuid}</Text>
-              </View>
-              <Text style={styles.expandIcon}>
-                {expandedServices.has(service.uuid) ? '▼' : '▶'}
-              </Text>
+              <Text style={styles.refreshButtonText}>Refresh</Text>
             </TouchableOpacity>
+            <Text style={styles.expandIcon}>
+              {servicesSectionExpanded ? '▼' : '▶'}
+            </Text>
+          </View>
+        </TouchableOpacity>
+        {servicesSectionExpanded && (
+          <>
+            {device.services.map((service, index) => (
+              <View key={`${service.uuid}-${index}`} style={styles.serviceCard}>
+                <TouchableOpacity
+                  style={styles.serviceHeader}
+                  onPress={() => toggleServiceExpansion(service.uuid)}
+                >
+                  <View>
+                    <Text style={styles.serviceName}>
+                      Service ({service.uuid.substring(0, 8)}...)
+                    </Text>
+                    <Text style={styles.serviceUuid}>{service.uuid}</Text>
+                  </View>
+                  <Text style={styles.expandIcon}>
+                    {expandedServices.has(service.uuid) ? '▼' : '▶'}
+                  </Text>
+                </TouchableOpacity>
 
-            {expandedServices.has(service.uuid) && (
-              <View style={styles.characteristicsContainer}>
-                {service.characteristics && service.characteristics.length > 0 ? (
-                  service.characteristics.map((char, index) => (
-                    <View key={`${char.uuid}-${index}-${service.uuid}`} style={styles.characteristicCard}>
-                      <View style={styles.characteristicHeader}>
-                        <Text style={styles.characteristicName}>
-                          Characteristic ({char.uuid.substring(0, 8)}...)
-                        </Text>
-                        <Text style={styles.characteristicUuid}>{char.uuid}</Text>
-                        <Text style={styles.characteristicProperties}>
-                          Properties: {JSON.stringify(char.properties || {})}
+                {expandedServices.has(service.uuid) && (
+                  <View style={styles.characteristicsContainer}>
+                    {service.characteristics && service.characteristics.length > 0 ? (
+                      service.characteristics.map((char, index) => (
+                        <View key={`${char.uuid}-${index}-${service.uuid}`} style={styles.characteristicCard}>
+                          <View style={styles.characteristicHeader}>
+                            <Text style={styles.characteristicName}>
+                              Characteristic ({char.uuid.substring(0, 8)}...)
+                            </Text>
+                            <Text style={styles.characteristicUuid}>{char.uuid}</Text>
+                            <Text style={styles.characteristicProperties}>
+                              Properties: {JSON.stringify(char.properties || {})}
+                            </Text>
+                          </View>
+                        </View>
+                      ))
+                    ) : (
+                      <View>
+                        <Text style={styles.emptyText}>No characteristics found</Text>
+                        <Text style={[styles.emptyText, {fontSize: 12, marginTop: 5}]}>
+                          Debug: service.characteristics = {service.characteristics ? 'exists' : 'null'}, 
+                          length = {service.characteristics?.length || 0}
                         </Text>
                       </View>
-                    </View>
-                  ))
-                ) : (
-                  <View>
-                    <Text style={styles.emptyText}>No characteristics found</Text>
-                    <Text style={[styles.emptyText, {fontSize: 12, marginTop: 5}]}>
-                      Debug: service.characteristics = {service.characteristics ? 'exists' : 'null'}, 
-                      length = {service.characteristics?.length || 0}
-                    </Text>
+                    )}
                   </View>
                 )}
               </View>
-            )}
-          </View>
-        ))}
+            ))}
+          </>
+        )}
       </View>
     );
   };
@@ -799,7 +833,8 @@ const DeviceDetails = ({ route, navigation }) => {
           <Text style={styles.debugButtonText}>🔓 Unpair Device</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
+        {/* All Records Button - Commented Out */}
+        {/* <TouchableOpacity
           style={[styles.debugButton, styles.infoButton]}
           onPress={() => {
             console.log('📋 [UI] Navigating to Sync Records screen...');
@@ -827,7 +862,7 @@ const DeviceDetails = ({ route, navigation }) => {
           }}
         >
           <Text style={styles.debugButtonText}>All Records</Text>
-        </TouchableOpacity>
+        </TouchableOpacity> */}
 
         {/* Set Advertising Interval */}
         <TouchableOpacity
@@ -1109,11 +1144,19 @@ const DeviceDetails = ({ route, navigation }) => {
                         ]
                       );
                     } else {
-                      // Android: Simpler message (Android handles bonding differently)
+                      // Android: Show alert with instructions to forget/unpair device
                       Alert.alert(
                         '🔐 Passkey Updated Successfully',
-                        `New passkey: ${value}\n\nThe device will disconnect momentarily.\n\nYou can reconnect using the new passkey when prompted.`,
-                        [{ text: 'OK' }]
+                        `New passkey: ${value}\n\nThe device will disconnect momentarily.\n\n⚠️ IMPORTANT: To reconnect, you MUST:\n\n1. Open Android Settings → Bluetooth\n2. Find "${device?.name || 'DyreID'}"\n3. Tap the settings icon → "Forget" or "Unpair"\n4. Return to app and reconnect\n5. Enter NEW passkey when prompted\n\nThis is required because Android caches the old passkey at system level.`,
+                        [
+                          {
+                            text: 'Open Settings',
+                            onPress: () => {
+                              Linking.openSettings();
+                            }
+                          },
+                          { text: 'I Understand', style: 'cancel' }
+                        ]
                       );
                     }
                   } else {
@@ -1284,8 +1327,8 @@ const DeviceDetails = ({ route, navigation }) => {
     >
       {renderDeviceInfo()}
       {renderDeviceData()}
-      {renderServices()}
       {renderDebugSection()}
+      {renderServices()}
     </ScrollView>
   );
 };
@@ -1349,6 +1392,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: Metrics.baseMargin,
+  },
+  collapsibleHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Metrics.baseMargin,
+  },
+  collapsibleHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   refreshButton: {
     backgroundColor: Colors.primary,

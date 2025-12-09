@@ -35,6 +35,7 @@ RCT_EXTERN_METHOD(startDataSync:(NSString*)deviceId resolver:(RCTPromiseResolveB
 RCT_EXTERN_METHOD(readDeviceStatus:(NSString*)deviceId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(getDataSyncState:(NSString*)deviceId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(getManufacturerInfo:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(updatePasskey:(NSString*)deviceId passkey:(NSString*)passkey resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 
 // Auto-Connect methods
 RCT_EXTERN_METHOD(startAutoConnect:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)

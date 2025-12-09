@@ -190,6 +190,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   private var dataSyncRequested: [String: Bool] = [:] // Track if we actually requested data sync (ignore unsolicited data)
   private var deviceStatusNotificationCount: [String: Int] = [:] // Track Device Status notification count for debugging
   private var deviceRTCValidity: [String: Bool] = [:] // ✅ Track RTC validity per device (from device status notifications)
+  private var setTimeRetryAttempts: [String: Int] = [:] // Track SET TIME retry attempts per device
+  private var setTimeTimeoutTimers: [String: Timer] = [:] // Track SET TIME timeout timers
+  private var setTimeResponseReceived: [String: Bool] = [:] // Track if SET TIME response was received
   
   // ✅ NEW in v1.4: File-based data sync chunking (500 records per file)
   private let RECORDS_PER_FILE = 500  // Each file holds 500 records (SDD v1.4)
@@ -1375,9 +1378,12 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   }
   
   // Send Set System Time command (Command ID: 0x01)
-  private func sendSetSystemTimeCommand(deviceId: String) {
+  // ✅ RETRY LOGIC: If response not received within 3 seconds, retry once
+  // Only proceed with other commands after SET TIME succeeds or retry fails
+  private func sendSetSystemTimeCommand(deviceId: String, retryAttempt: Int = 0) {
     // Update state to time_syncing
     dataSyncState[deviceId] = "time_syncing"
+    setTimeResponseReceived[deviceId] = false
     
     // Get current Unix timestamp in seconds
     let currentTimestamp = UInt32(Date().timeIntervalSince1970)
@@ -1391,7 +1397,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     
     // Log the command being sent
     let timestampHex = String(format: "%02X%02X%02X%02X", payload[0], payload[1], payload[2], payload[3])
-    NSLog("📤 Sending Set System Time command to \(deviceId)")
+    if retryAttempt > 0 {
+      NSLog("📤 [RETRY \(retryAttempt)] Sending Set System Time command to \(deviceId)")
+    } else {
+      NSLog("📤 Sending Set System Time command to \(deviceId)")
+    }
     NSLog("   Command: AA 01 04 \(timestampHex)")
     NSLog("   Timestamp: \(currentTimestamp) (\(Date()))")
     
@@ -1400,9 +1410,60 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     
     if success {
       NSLog("✅ Set System Time command sent successfully")
+      
+      // ✅ TIMEOUT & RETRY: If Set System Time response is not received within 3 seconds,
+      // retry once. Only proceed with other commands after SET TIME succeeds or retry fails.
+      let timeoutTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] timer in
+        guard let self = self else { return }
+        
+        // Check if response was received
+        if self.setTimeResponseReceived[deviceId] != true {
+          let currentRetry = self.setTimeRetryAttempts[deviceId] ?? 0
+          
+          if currentRetry < 1 {
+            // Retry once after 3 seconds
+            NSLog("⚠️ [TIME SYNC TIMEOUT] Set System Time response not received within 3 seconds")
+            NSLog("   Retrying SET TIME command (attempt \(currentRetry + 1)/2)...")
+            
+            self.setTimeRetryAttempts[deviceId] = currentRetry + 1
+            self.setTimeTimeoutTimers.removeValue(forKey: deviceId)
+            
+            // Retry after 3 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+              self?.sendSetSystemTimeCommand(deviceId: deviceId, retryAttempt: currentRetry + 1)
+            }
+          } else {
+            // Retry failed - proceed anyway but log warning
+            NSLog("❌ [TIME SYNC FAILED] Set System Time response not received after 2 attempts")
+            NSLog("   Proceeding with other commands, but RTC may remain invalid")
+            NSLog("   Device may not have valid time, but live updates will still work")
+            
+            self.setTimeTimeoutTimers.removeValue(forKey: deviceId)
+            self.dataSyncState[deviceId] = "time_sync_failed"
+            
+            // Proceed with other commands even though time sync failed
+            self.sendDataAcquisitionAndLiveNotifications(deviceId: deviceId)
+          }
+        } else {
+          // Response was received - timer is no longer needed
+          self.setTimeTimeoutTimers.removeValue(forKey: deviceId)
+        }
+      }
+      
+      // Store timer so we can cancel it if response arrives
+      setTimeTimeoutTimers[deviceId] = timeoutTimer
+      RunLoop.current.add(timeoutTimer, forMode: .common)
+      
     } else {
       NSLog("❌ Failed to send Set System Time command")
       dataSyncState[deviceId] = "idle"
+      setTimeTimeoutTimers.removeValue(forKey: deviceId)
+      
+      // If this was a retry attempt, proceed anyway
+      if retryAttempt > 0 {
+        NSLog("⚠️ [TIME SYNC] Failed to send command on retry - proceeding with other commands")
+        sendDataAcquisitionAndLiveNotifications(deviceId: deviceId)
+      }
     }
   }
   
@@ -2035,6 +2096,38 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     guard responseStatus == BLEProtocolConstants.successStatus else {
       NSLog("❌ Command failed with status: 0x%02X", responseStatus)
       
+      // ✅ Handle SET TIME command failure with retry logic
+      if commandId == 0x01 { // SET_SYSTEM_TIME
+        setTimeResponseReceived[deviceId] = true // Mark as received (even though failed)
+        setTimeTimeoutTimers[deviceId]?.invalidate()
+        setTimeTimeoutTimers.removeValue(forKey: deviceId)
+        
+        let currentRetry = setTimeRetryAttempts[deviceId] ?? 0
+        
+        if currentRetry < 1 {
+          // Retry once after 3 seconds
+          NSLog("⚠️ [TIME SYNC FAILED] Set System Time command failed with status 0x%02X", responseStatus)
+          NSLog("   Retrying SET TIME command (attempt \(currentRetry + 1)/2)...")
+          
+          setTimeRetryAttempts[deviceId] = currentRetry + 1
+          
+          // Retry after 3 seconds
+          DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.sendSetSystemTimeCommand(deviceId: deviceId, retryAttempt: currentRetry + 1)
+          }
+        } else {
+          // Retry failed - proceed anyway but log warning
+          NSLog("❌ [TIME SYNC FAILED] Set System Time command failed after 2 attempts")
+          NSLog("   Proceeding with other commands, but RTC may remain invalid")
+          NSLog("   Device may not have valid time, but live updates will still work")
+          
+          dataSyncState[deviceId] = "time_sync_failed"
+          
+          // Proceed with other commands even though time sync failed
+          sendDataAcquisitionAndLiveNotifications(deviceId: deviceId)
+        }
+      }
+      
       // Send failure event to JavaScript
       DispatchQueue.main.async {
         self.sendEvent(withName: "SystemCommandResponse", body: [
@@ -2046,7 +2139,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           "rawResponse": responseHex
         ])
       }
-      return
+      
+      // Return early for non-SET_TIME commands, or after handling SET_TIME retry
+      if commandId != 0x01 {
+        return
+      } else {
+        // For SET_TIME, we've handled retry above, so return here
+        return
+      }
     }
     
     // Parse command-specific responses
@@ -2063,6 +2163,17 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     case 0x01: // SET_SYSTEM_TIME
       NSLog("✅ Set System Time command successful")
       responseData["message"] = "System time synchronized successfully"
+      
+      // ✅ Mark response as received and cancel timeout timer
+      setTimeResponseReceived[deviceId] = true
+      setTimeTimeoutTimers[deviceId]?.invalidate()
+      setTimeTimeoutTimers.removeValue(forKey: deviceId)
+      
+      // ✅ Update state to indicate time sync completed
+      dataSyncState[deviceId] = "time_synced"
+      
+      // ✅ Reset retry counter on success
+      setTimeRetryAttempts.removeValue(forKey: deviceId)
       
       // ✅ After SET time success, send Data Acquisition Command and enable live notifications
       // This ensures we always send data acquisition and enable live notifications after time sync
@@ -3292,6 +3403,10 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     deviceStatusPollingTimers[deviceId]?.invalidate()
     deviceStatusPollingTimers.removeValue(forKey: deviceId)
     
+    // ✅ Clean up SET TIME timeout timers
+    setTimeTimeoutTimers[deviceId]?.invalidate()
+    setTimeTimeoutTimers.removeValue(forKey: deviceId)
+    
     // ✅ FIXED: Clean up pairing verification timers
     pairingVerificationTimers[deviceId]?.invalidate()
     pairingVerificationTimers.removeValue(forKey: deviceId)
@@ -3301,6 +3416,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     systemCommandsSent.removeValue(forKey: deviceId)
     dataSyncState.removeValue(forKey: deviceId)
     dataSyncRetryCount.removeValue(forKey: deviceId)
+    setTimeRetryAttempts.removeValue(forKey: deviceId)
+    setTimeResponseReceived.removeValue(forKey: deviceId)
     deviceRecordCounts.removeValue(forKey: deviceId)
     dataSyncRequested.removeValue(forKey: deviceId)
     deviceStatusNotificationCount.removeValue(forKey: deviceId)

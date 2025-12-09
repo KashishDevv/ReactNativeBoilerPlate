@@ -5,6 +5,8 @@ import Welcome from '../../screens/Welcome/Welcome';
 import ModernBLEManager from '../../screens/BLEManager/ModernBLEManager';
 import DeviceDetails from '../../screens/DeviceDetails/DeviceDetails';
 import SyncRecordsScreen from '../../screens/DeviceDetails/SyncRecordsScreen';
+import LiveDataScreen from '../../screens/BLEManager/LiveDataScreen';
+import HistoricalDataScreen from '../../screens/BLEManager/HistoricalDataScreen';
 import DFUScreen from '../../screens/DFU/DFUScreen';
 
 
@@ -46,6 +48,22 @@ function HomeStack() {
                 }}
                 name="SyncRecords"
                 component={SyncRecordsScreen}
+            />
+            <Stack.Screen
+                options={{ 
+                    headerShown: false,
+                    title: 'Live Data'
+                }}
+                name="LiveData"
+                component={LiveDataScreen}
+            />
+            <Stack.Screen
+                options={{ 
+                    headerShown: false,
+                    title: 'Historical Data'
+                }}
+                name="HistoricalData"
+                component={HistoricalDataScreen}
             />
             <Stack.Screen
                 options={{ 

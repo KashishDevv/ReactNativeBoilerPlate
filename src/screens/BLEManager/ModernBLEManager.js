@@ -1162,7 +1162,7 @@ const ModernBLEManager = ({ navigation }) => {
               <View style={styles.deviceBadgesContainer}>
                 {item.isFreshDiscovery && (
                   <View style={styles.freshDiscoveryBadge}>
-                    <Text style={styles.freshDiscoveryText}>🆕 New</Text>
+                    {/* <Text style={styles.freshDiscoveryText}>🆕 New</Text> */}
                   </View>
                 )}
               </View>
@@ -1335,7 +1335,7 @@ const ModernBLEManager = ({ navigation }) => {
             onPress={() => navigation.navigate('DeviceDetails', { deviceId: item.id })}
             activeOpacity={0.8}
           >
-            <Text style={styles.detailsButtonText}>📊 View Details</Text>
+            <Text style={styles.detailsButtonText}>View Details</Text>
           </TouchableOpacity>
         )}
 
@@ -1391,6 +1391,39 @@ const ModernBLEManager = ({ navigation }) => {
           </TouchableOpacity>
         )}
       </View>
+
+      {/* Live Data & Historical Data Buttons - Only for connected devices */}
+      {item.connectionState === CONNECTION_STATES.CONNECTED && (
+        <View style={styles.dataButtonsContainer}>
+          <TouchableOpacity
+            style={styles.liveDataButton}
+            onPress={() => {
+              console.log('📊 [Modern] Navigating to Live Data screen for device:', item.id);
+              navigation.navigate('LiveData', {
+                deviceId: item.id,
+                deviceName: item.name || 'Device'
+              });
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.dataButtonText}>Live Data</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.historicalDataButton}
+            onPress={() => {
+              console.log('📋 [Modern] Navigating to Historical Data screen for device:', item.id);
+              navigation.navigate('HistoricalData', {
+                deviceId: item.id,
+                deviceName: item.name || 'Device'
+              });
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.dataButtonText}>Historical Data</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </Animated.View>
   );
 
@@ -1918,6 +1951,46 @@ const styles = StyleSheet.create({
   },
   forgetButtonTextDisabled: {
     color: Colors.lightText,
+  },
+  dataButtonsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: Metrics.smallMargin,
+    marginTop: Metrics.smallMargin,
+    flexWrap: 'wrap',
+  },
+  liveDataButton: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Metrics.baseMargin,
+    paddingVertical: 12,
+    borderRadius: 12,
+    flex: 1,
+    alignItems: 'center',
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+    minWidth: '48%',
+  },
+  historicalDataButton: {
+    backgroundColor: Colors.secondary,
+    paddingHorizontal: Metrics.baseMargin,
+    paddingVertical: 12,
+    borderRadius: 12,
+    flex: 1,
+    alignItems: 'center',
+    shadowColor: Colors.secondary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+    minWidth: '48%',
+  },
+  dataButtonText: {
+    color: Colors.white,
+    fontSize: Fonts.size.medium,
+    fontFamily: Fonts.type.bold,
   },
   refreshOverlay: {
     position: 'absolute',

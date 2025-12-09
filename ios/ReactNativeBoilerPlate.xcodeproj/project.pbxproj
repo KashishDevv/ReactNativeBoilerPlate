@@ -8,7 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		020680C8D7A68BCD1F81FBA0 /* BLEError.swift in Sources */ = {isa = PBXBuildFile; fileRef = F540EE31D4192DC01AF26BEF /* BLEError.swift */; };
-		13B07FBF1A68108700A75B9A /* BuildFile in Resources */ = {isa = PBXBuildFile; };
+		13B07FBF1A68108700A75B9A /* (null) in Resources */ = {isa = PBXBuildFile; };
 		520F96712DCE3699006A8CDE /* BridgingCodeModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 529078962C411AE500D5D254 /* BridgingCodeModule.swift */; };
 		520F96722DCE3699006A8CDE /* BridgingCodeModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 529078942C411AD000D5D254 /* BridgingCodeModule.m */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
@@ -188,7 +188,7 @@
 			files = (
 				81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */,
 				A41551C62E436C1000AD7C58 /* Images.xcassets in Resources */,
-				13B07FBF1A68108700A75B9A /* BuildFile in Resources */,
+				13B07FBF1A68108700A75B9A /* (null) in Resources */,
 				97CDB22E601C3DC01C0AD3FD /* PrivacyInfo.xcprivacy in Resources */,
 				D552DECA3169496986AC0A04 /* NunitoSans_10pt-Regular.ttf in Resources */,
 			);
@@ -243,9 +243,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ReactNativeBoilerPlate/Pods-ReactNativeBoilerPlate-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ReactNativeBoilerPlate/Pods-ReactNativeBoilerPlate-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -260,9 +264,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ReactNativeBoilerPlate/Pods-ReactNativeBoilerPlate-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ReactNativeBoilerPlate/Pods-ReactNativeBoilerPlate-resources-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -296,7 +304,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = W6642NRBTG;
 				ENABLE_BITCODE = NO;
@@ -339,7 +347,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = W6642NRBTG;
 				INFOPLIST_FILE = ReactNativeBoilerPlate/Info.plist;
@@ -444,10 +452,7 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
@@ -520,10 +525,7 @@
 					"-DFOLLY_CFG_NO_COROUTINES=1",
 					"-DFOLLY_HAVE_CLOCK_GETTIME=1",
 				);
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					" ",
-				);
+				OTHER_LDFLAGS = "$(inherited)  ";
 				REACT_NATIVE_PATH = "${PODS_ROOT}/../../node_modules/react-native";
 				SDKROOT = iphoneos;
 				USE_HERMES = true;

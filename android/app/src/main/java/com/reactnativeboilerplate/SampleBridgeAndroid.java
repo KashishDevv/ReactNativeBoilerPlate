@@ -541,6 +541,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     private Map<String, Integer> reconnectAttempts = new ConcurrentHashMap<>();
     private Map<String, Long> reconnectBackoff = new ConcurrentHashMap<>();
     
+    // ✅ SYNC WITH iOS: Retry attempts tracking for read operations (matching iOS retryAttempts)
+    private Map<String, Integer> readRetryAttempts = new ConcurrentHashMap<>();
+    
     // Health Data API Monitoring
     private Map<String, ScheduledFuture<?>> healthApiTasks = new ConcurrentHashMap<>();
     
@@ -550,6 +553,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     private Map<String, ScheduledFuture<?>> dataSyncTimers = new ConcurrentHashMap<>(); // Track delayed sync operations
     private Map<String, Integer> deviceRecordCounts = new ConcurrentHashMap<>(); // Store record counts from manufacturer data
     private Map<String, Boolean> dataSyncRequested = new ConcurrentHashMap<>(); // Track if we actually requested data sync
+    
+    // ✅ SET_SYSTEM_TIME State Management (matching iOS implementation)
+    private Map<String, Boolean> setTimeResponseReceived = new ConcurrentHashMap<>(); // Track if SET_SYSTEM_TIME response received
+    private Map<String, ScheduledFuture<?>> setTimeTimeoutTimers = new ConcurrentHashMap<>(); // Track timeout timers for SET_SYSTEM_TIME
+    private Map<String, Integer> setTimeRetryAttempts = new ConcurrentHashMap<>(); // Track retry attempts for SET_SYSTEM_TIME
     
     // ✅ NEW in v1.4: File-based data sync chunking (500 records per file)
     private static final int RECORDS_PER_FILE = 500;  // Each file holds 500 records (SDD v1.4)
@@ -2981,6 +2989,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         // ✅ NEW: Also send deviceDataUpdate event matching iOS format for React components
         // ✅ OPTIMIZED: Minimize payload size to prevent formatValueCalls warnings
+        // ✅ SYNC WITH iOS: Native code only sends event, JS layer handles auto-sync (exact same flow as iOS)
         WritableMap deviceDataUpdateEvent = Arguments.createMap();
         deviceDataUpdateEvent.putString("deviceId", deviceData.deviceId);
         deviceDataUpdateEvent.putString("type", "device_status");
@@ -2994,69 +3003,12 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         // ✅ Don't duplicate fields at root level - reduces bridge payload size
         sendEvent("deviceDataUpdate", deviceDataUpdateEvent);
         
-        // ✅ AUTO-SYNC: Auto-trigger data sync if records are available and sync not in progress
-        if (recordCount > 0 && isRTCValid) {
-            Log.d(TAG, "📦 " + recordCount + " records available for sync on " + deviceData.deviceId);
-            
-            // Check if sync is already in progress
-            String currentSyncState = dataSyncState.getOrDefault(deviceData.deviceId, "idle");
-            boolean isSyncInProgress = "syncing".equals(currentSyncState);
-            boolean isConnected = "connected".equals(deviceData.connectionState);
-            
-            // Check if historical sync was already completed
-            // Note: We'll track this via dataSyncState being "complete" or checking if we've synced recently
-            boolean shouldAutoSync = !isSyncInProgress && isConnected;
-            
-            if (shouldAutoSync) {
-                // Check if we've already synced (state is "complete" or "ready")
-                boolean alreadySynced = "complete".equals(currentSyncState) || "ready".equals(currentSyncState);
-                
-                // Get previous record count to detect if it increased
-                Integer previousRecordCount = deviceRecordCounts.get(deviceData.deviceId);
-                boolean recordCountIncreased = (previousRecordCount == null || recordCount > previousRecordCount);
-                
-                // ✅ FIX: Create final copy for inner class (Java requires final or effectively final variables)
-                final int finalRecordCount = recordCount;
-                
-                // Only auto-start sync if:
-                // 1. Sync not already in progress
-                // 2. Device is connected
-                // 3. Historical sync not already completed OR record count increased
-                if (!alreadySynced || recordCountIncreased) {
-                    Log.d(TAG, "🔄 [AUTO-SYNC] Records detected, starting data sync in 2 seconds...");
-                    
-                    // Wait 2 seconds to avoid race conditions
-                    mainHandler.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            // Double-check sync state hasn't changed
-                            String currentState = dataSyncState.getOrDefault(deviceData.deviceId, "idle");
-                            DeviceData currentDeviceData = SampleBridgeAndroid.this.deviceDataMap.get(deviceData.deviceId);
-                            
-                            if (!"syncing".equals(currentState) && currentDeviceData != null && 
-                                "connected".equals(currentDeviceData.connectionState)) {
-                                Log.d(TAG, "🔄 [AUTO-SYNC] Initiating data sync for " + deviceData.deviceId + " (" + finalRecordCount + " records)");
-                                boolean success = sendDataSyncStartCommand(deviceData.deviceId, 0);
-                                if (success) {
-                                    Log.d(TAG, "✅ [AUTO-SYNC] Data sync started successfully");
-                                } else {
-                                    Log.w(TAG, "⚠️ [AUTO-SYNC] Failed to start data sync");
-                                }
-                            } else {
-                                Log.d(TAG, "⏭️ [AUTO-SYNC] Skipping - sync already in progress or device disconnected");
-                            }
-                        }
-                    }, 2000);
-                } else {
-                    Log.d(TAG, "✅ [AUTO-SYNC] Historical sync already completed, skipping (records unchanged)");
-                }
-            } else {
-                if (isSyncInProgress) {
-                    Log.d(TAG, "⏳ [AUTO-SYNC] Sync already in progress, skipping");
-                } else if (!isConnected) {
-                    Log.d(TAG, "⚠️ [AUTO-SYNC] Device not connected, skipping");
-                }
-            }
+        // ✅ REMOVED: Native auto-sync logic - JS layer handles this (matching iOS flow exactly)
+        // iOS parseDeviceStatusData only sends deviceDataUpdate event, no native auto-sync
+        // JS layer (BLEService.js) handles auto-sync via maybeTriggerAutoSyncFromDeviceStatus
+        // This prevents "stuck in syncing" state issues and ensures consistent behavior
+        if (recordCount > 0) {
+            Log.d(TAG, "📦 " + recordCount + " records available for sync on " + deviceData.deviceId + " - JS layer will handle auto-sync");
         }
     }
     
@@ -3324,6 +3276,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         if (value == 0xFFFF) {
             Log.d(TAG, "❌ Data Sync Complete - Force termination (0xFFFF)");
             Log.d(TAG, "🔍 [DEBUG] Taking FORCE TERMINATION branch");
+            
+            // ✅ SYNC WITH iOS: Clear sync state back to "idle" on failure (matching iOS cleanupDeviceResources)
+            // This allows retry attempts and prevents stuck state from blocking future syncs
+            dataSyncState.put(deviceId, "idle");
+            Log.d(TAG, "✅ [SYNC FAILED] Sync state cleared to 'idle' - can retry");
                 
                 WritableMap eventData = Arguments.createMap();
                 eventData.putString("type", "sync_complete");
@@ -3454,6 +3411,13 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                 Log.d(TAG, "💾 [SYNC COMPLETE] All files synced - Updated UI with latest synced data");
                                 Log.d(TAG, "🔴 [LIVE READY] Device now ready for live notifications");
                                 
+                                // ✅ SYNC WITH iOS: Leave state as "complete" (not "idle")
+                                // iOS leaves state as "complete" after sync finishes, and "complete" is NOT considered active
+                                // This allows new auto-syncs to trigger when new records become available
+                                // State will be cleared in cleanupDeviceResources when device disconnects
+                                // Note: State is already "complete" from parseSyncCompleteData, so no need to set it again
+                                Log.d(TAG, "✅ [SYNC COMPLETE] Sync state is 'complete' - ready for new syncs (complete is not active)");
+                                
                                 // Clear chunking state
                                 syncTotalRecords.remove(deviceId);
                                 syncRecordsReceived.remove(deviceId);
@@ -3574,24 +3538,24 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         int currentChunkRecords = syncRecordsReceived.getOrDefault(deviceData.deviceId, 0) + records.size();
         syncRecordsReceived.put(deviceData.deviceId, currentChunkRecords);
         
-        // Calculate grand total across all chunks for this sync session
-        int grandTotalBefore = syncGrandTotalReceived.getOrDefault(deviceData.deviceId, 0);
-        int grandTotal = grandTotalBefore + records.size();
-        syncGrandTotalReceived.put(deviceData.deviceId, grandTotal);
-        
+        // ✅ SYNC WITH iOS: Don't increment syncGrandTotalReceived here - iOS only increments it on sync_complete
+        // The sync_complete notification contains the authoritative count from the device
+        // We'll use that count instead of counting records as they arrive (prevents double-counting)
         int totalExpected = syncTotalRecords.getOrDefault(deviceData.deviceId, 0);
+        int currentGrandTotal = syncGrandTotalReceived.getOrDefault(deviceData.deviceId, 0);
         
         // Send deviceDataUpdate event with sync_records type for live progress
+        // Note: totalReceived is approximate (based on records parsed so far) until sync_complete arrives
         WritableMap syncUpdateEvent = Arguments.createMap();
         syncUpdateEvent.putString("deviceId", deviceData.deviceId);
         syncUpdateEvent.putString("type", "sync_records");
         syncUpdateEvent.putInt("recordsReceived", records.size());
-        syncUpdateEvent.putInt("totalReceived", grandTotal);
+        syncUpdateEvent.putInt("totalReceived", currentChunkRecords); // Use current chunk records for progress display
         syncUpdateEvent.putInt("totalExpected", totalExpected);
         syncUpdateEvent.putInt("recordCount", records.size());
         sendEvent("deviceDataUpdate", syncUpdateEvent);
         
-        Log.d(TAG, "📊 [SYNC PROGRESS] Sent sync_records event - " + grandTotal + "/" + totalExpected + " records received");
+        Log.d(TAG, "📊 [SYNC PROGRESS] Sent sync_records event - " + currentChunkRecords + "/" + totalExpected + " records received (chunk progress)");
     }
     
     private void parseReadErrorData(DeviceData deviceData, ByteBuffer buffer) {
@@ -3684,9 +3648,47 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             return;
         }
         
+        // ✅ SYNC WITH iOS: Store command-specific message (for SystemCommandResponse event)
+        String commandMessage = null;
+        
         // Check if command was successful
         if (responseStatus != 0x00) {
             Log.w(TAG, "System command failed with status: 0x" + String.format("%02x", responseStatus));
+            
+            // ✅ SYNC WITH iOS: Handle SET TIME command failure with retry logic
+            if (commandId == CMD_SET_SYSTEM_TIME) {
+                setTimeResponseReceived.put(deviceData.deviceId, true); // Mark as received (even though failed)
+                ScheduledFuture<?> timeoutTimer = setTimeTimeoutTimers.remove(deviceData.deviceId);
+                if (timeoutTimer != null) {
+                    timeoutTimer.cancel(false);
+                }
+                
+                int currentRetry = setTimeRetryAttempts.getOrDefault(deviceData.deviceId, 0);
+                
+                if (currentRetry < 1) {
+                    // Retry once after 3 seconds
+                    Log.w(TAG, "⚠️ [TIME SYNC FAILED] Set System Time command failed with status 0x" + String.format("%02X", responseStatus));
+                    Log.w(TAG, "   Retrying SET TIME command (attempt " + (currentRetry + 1) + "/2)...");
+                    
+                    setTimeRetryAttempts.put(deviceData.deviceId, currentRetry + 1);
+                    
+                    // Retry after 3 seconds
+                    mainHandler.postDelayed(() -> {
+                        sendSetSystemTimeCommand(deviceData.deviceId, currentRetry + 1);
+                    }, 3000);
+                } else {
+                    // Retry failed - proceed anyway but log warning
+                    Log.e(TAG, "❌ [TIME SYNC FAILED] Set System Time command failed after 2 attempts");
+                    Log.e(TAG, "   Proceeding with other commands, but RTC may remain invalid");
+                    Log.e(TAG, "   Device may not have valid time, but live updates will still work");
+                    
+                    dataSyncState.put(deviceData.deviceId, "time_sync_failed");
+                    setTimeRetryAttempts.remove(deviceData.deviceId);
+                    
+                    // Proceed with other commands even though time sync failed
+                    sendDataAcquisitionAndLiveNotifications(deviceData.deviceId);
+                }
+            }
             return;
         }
         
@@ -3695,11 +3697,36 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         switch (commandId) {
             case CMD_SET_SYSTEM_TIME:
                     Log.d(TAG, "✅ Set System Time command successful");
+                    commandMessage = "System time synchronized successfully";
+                    
+                    // ✅ SYNC WITH iOS: Mark response as received and cancel timeout timer
+                    setTimeResponseReceived.put(deviceData.deviceId, true);
+                    ScheduledFuture<?> timeoutTimer = setTimeTimeoutTimers.remove(deviceData.deviceId);
+                    if (timeoutTimer != null) {
+                        timeoutTimer.cancel(false);
+                        Log.d(TAG, "⏰ [TIME SYNC] Cancelled timeout timer");
+                    }
+                    
+                    // ✅ SYNC WITH iOS: Update state to indicate time sync completed
+                    dataSyncState.put(deviceData.deviceId, "time_synced");
+                    
+                    // ✅ SYNC WITH iOS: Reset retry counter on success
+                    setTimeRetryAttempts.remove(deviceData.deviceId);
                     
                     // ✅ After SET time success, send Data Acquisition Command and enable live notifications
                     // This ensures we always send data acquisition and enable live notifications after time sync
                     Log.d(TAG, "⏰ [TIME SYNC] SET time successful - now sending Data Acquisition Command and enabling live notifications...");
                     sendDataAcquisitionAndLiveNotifications(deviceData.deviceId);
+                    break;
+                    
+            case CMD_SET_ADV_INTERVAL:
+                Log.d(TAG, "✅ Set Advertising Interval command successful");
+                commandMessage = "Advertising interval updated";
+                break;
+                
+            case CMD_SET_CONN_INTERVAL:
+                Log.d(TAG, "✅ Set Connection Interval command successful");
+                commandMessage = "Connection interval updated";
                     break;
                     
             case CMD_SET_DATA_INTERVAL:
@@ -3709,58 +3736,140 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 Log.d(TAG, "🔴 [LIVE UPDATES] Device will now send Device Status notifications periodically");
                 Log.d(TAG, "   Expected frequency: Based on configured interval");
                 Log.d(TAG, "   Watch for: 📊 [DEVICE STATUS #2+] with valid 2025 timestamps");
+                commandMessage = "Data acquisition interval updated - live updates enabled";
                 
                 // ✅ WORKAROUND: Start periodic polling since firmware doesn't auto-notify
                 startDeviceStatusPolling(deviceData.deviceId, 30); // 30 seconds interval
                 break;
                 
             case CMD_DATA_SYNC_START:
+                if (responseStatus == 0x00) {
                 Log.d(TAG, "✅ Data sync started successfully");
+                    commandMessage = "Data sync initiated";
                 dataSyncState.put(deviceData.deviceId, "syncing");
                 // ✅ CRITICAL FIX: Ensure data sync requested flag is set when sync is confirmed
                 // This handles cases where data transfers arrive before the flag is set
                 dataSyncRequested.put(deviceData.deviceId, true);
                 Log.d(TAG, "🔒 Confirmed data sync as REQUESTED from system command response");
                 dataSyncRetryCount.remove(deviceData.deviceId); // Clear retry count on success
+                } else {
+                    Log.w(TAG, "❌ Data Sync Start failed (Status: 0x" + String.format("%02X", responseStatus) + ")");
+                    Log.w(TAG, "   Possible reasons:");
+                    Log.w(TAG, "   1. Device RTC not synchronized yet (needs more time)");
+                    Log.w(TAG, "   2. Device flash not ready for read operations");
+                    Log.w(TAG, "   3. Device has no data to sync (expected if new device)");
+                    
+                    // ✅ SYNC WITH iOS: Check retry count
+                    int retryCount = dataSyncRetryCount.getOrDefault(deviceData.deviceId, 0);
+                    
+                    if (retryCount < 3) {
+                        Log.d(TAG, "🔄 Will retry data sync (attempt " + (retryCount + 1) + "/3) after longer delay...");
+                        commandMessage = "Data sync failed - retrying with longer delay...";
+                        
+                        // ✅ SYNC WITH iOS: Trigger retry logic with longer backoff
+                        retryDataSyncStart(deviceData.deviceId);
+                    } else {
+                        Log.w(TAG, "❌ Max retries reached. Device may not have data or RTC issue persists.");
+                        commandMessage = "Data sync failed - max retries reached";
+                        dataSyncState.put(deviceData.deviceId, "failed");
+                        dataSyncRetryCount.remove(deviceData.deviceId);
+                    }
+                }
                 break;
                 
             case CMD_DATA_SYNC_STOP:
                 if (responseStatus == 0x00) {
                     Log.d(TAG, "✅ Data Sync Stopped - Flash cleared successfully");
+                    commandMessage = "Data sync stopped and flash cleared";
                 } else {
                     Log.w(TAG, "⚠️ Data Sync Stop returned status: 0x" + String.format("%02X", responseStatus));
                     Log.w(TAG, "   This is expected if device auto-clears flash or doesn't support this command");
                     Log.w(TAG, "   Device may handle flash management automatically");
+                    commandMessage = "Data sync stop acknowledged (device manages flash)";
                 }
                 break;
                 
             case CMD_GET_DIAGNOSTICS:
-                Log.d(TAG, "✅ Diagnostics response received");
+                // ✅ SYNC WITH iOS: Parse battery level from response data
+                if (responseLength > 0) {
+                    // Response data will be extracted after the switch statement
+                    // We'll parse it after buffer.get(responseData) is called
+                    Log.d(TAG, "✅ Diagnostics response received (will parse battery level)");
+                } else {
+                    Log.d(TAG, "✅ Diagnostics response received (no data)");
+                }
                 break;
                 
             case CMD_GET_FW_VERSION:
-                Log.d(TAG, "✅ Firmware version response received");
+                // ✅ SYNC WITH iOS: Parse version from response data
+                if (responseLength > 0) {
+                    // Response data will be extracted after the switch statement
+                    // We'll parse it after buffer.get(responseData) is called
+                    Log.d(TAG, "✅ Firmware version response received (will parse version)");
+                } else {
+                    Log.d(TAG, "✅ Firmware version response received (no data)");
+                }
                 break;
                 
             case CMD_GET_HW_VERSION:
-                Log.d(TAG, "✅ Hardware version response received");
+                // ✅ SYNC WITH iOS: Parse version from response data
+                if (responseLength > 0) {
+                    // Response data will be extracted after the switch statement
+                    // We'll parse it after buffer.get(responseData) is called
+                    Log.d(TAG, "✅ Hardware version response received (will parse version)");
+                } else {
+                    Log.d(TAG, "✅ Hardware version response received (no data)");
+                }
                 break;
                 
             case CMD_SYSTEM_RESTART:
                 Log.d(TAG, "✅ System restart command acknowledged");
+                commandMessage = "Device restarting";
                 break;
                 
             case CMD_TOGGLE_BUZZER:
                 Log.d(TAG, "✅ Buzzer toggled successfully");
+                commandMessage = "Buzzer state changed";
                 break;
 
             case CMD_UNPAIR_DEVICE:
                 if (responseStatus == STATUS_SUCCESS) {
                     Log.d(TAG, "✅ Unpair Device command successful");
                     Log.d(TAG, "🔓 [UNPAIR] Device has been unpaired - disconnecting and cleaning up...");
+                    commandMessage = "Device unpaired successfully";
                     final String deviceIdToUnpair = deviceData.deviceId;
                     
-                    // Clean up device resources first
+                    // ✅ SYNC WITH iOS: Stop device status polling
+                    stopDeviceStatusPolling(deviceIdToUnpair);
+                    
+                    // ✅ SYNC WITH iOS: Disable all notifications before disconnecting
+                    BluetoothGatt gattForUnpair = connectedGatts.get(deviceIdToUnpair);
+                    if (gattForUnpair != null) {
+                        List<BluetoothGattService> services = gattForUnpair.getServices();
+                        if (services != null) {
+                            for (BluetoothGattService service : services) {
+                                List<BluetoothGattCharacteristic> characteristics = service.getCharacteristics();
+                                if (characteristics != null) {
+                                    for (BluetoothGattCharacteristic characteristic : characteristics) {
+                                        if (characteristic != null) {
+                                            gattForUnpair.setCharacteristicNotification(characteristic, false);
+                                            Log.d(TAG, "🔕 [UNPAIR] Disabled notifications for: " + characteristic.getUuid().toString());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // ✅ SYNC WITH iOS: Stop data sync if in progress
+                    dataSyncState.remove(deviceIdToUnpair);
+                    dataSyncRetryCount.remove(deviceIdToUnpair);
+                    ScheduledFuture<?> syncTimer = dataSyncTimers.remove(deviceIdToUnpair);
+                    if (syncTimer != null) {
+                        syncTimer.cancel(false);
+                    }
+                    
+                    // Clean up device resources
                     cleanupDeviceResources(deviceIdToUnpair);
                     
                     // Remove from bonded list and add to forgotten list
@@ -3810,6 +3919,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 if (responseStatus == STATUS_SUCCESS) {
                     Log.d(TAG, "✅ Factory Reset command successful");
                     Log.d(TAG, "🧹 [FACTORY RESET] Device has been factory reset - cleaning up...");
+                    commandMessage = "Device reset to factory settings";
                     
                     // ✅ CRITICAL: Remove from bonded list IMMEDIATELY to prevent auto-reconnect during scan
                     // Must happen BEFORE disconnect to prevent race condition with discovery
@@ -3832,6 +3942,36 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         @Override
                         public void run() {
                             Log.d(TAG, "🧹 [FACTORY RESET] Disconnecting from device: " + deviceIdToCleanup);
+                            
+                            // ✅ SYNC WITH iOS: Stop device status polling
+                            stopDeviceStatusPolling(deviceIdToCleanup);
+                            
+                            // ✅ SYNC WITH iOS: Disable all notifications before disconnecting
+                            BluetoothGatt gattForFactoryReset = connectedGatts.get(deviceIdToCleanup);
+                            if (gattForFactoryReset != null) {
+                                List<BluetoothGattService> services = gattForFactoryReset.getServices();
+                                if (services != null) {
+                                    for (BluetoothGattService service : services) {
+                                        List<BluetoothGattCharacteristic> characteristics = service.getCharacteristics();
+                                        if (characteristics != null) {
+                                            for (BluetoothGattCharacteristic characteristic : characteristics) {
+                                                if (characteristic != null) {
+                                                    gattForFactoryReset.setCharacteristicNotification(characteristic, false);
+                                                    Log.d(TAG, "🔕 [FACTORY RESET] Disabled notifications for: " + characteristic.getUuid().toString());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // ✅ SYNC WITH iOS: Stop data sync if in progress
+                            dataSyncState.remove(deviceIdToCleanup);
+                            dataSyncRetryCount.remove(deviceIdToCleanup);
+                            ScheduledFuture<?> syncTimer = dataSyncTimers.remove(deviceIdToCleanup);
+                            if (syncTimer != null) {
+                                syncTimer.cancel(false);
+                            }
                             
                             // Clean up device resources
                             cleanupDeviceResources(deviceIdToCleanup);
@@ -3867,6 +4007,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     Log.d(TAG, "🔓 [PASSKEY UPDATE] Device passkey has been changed - need to unpair and re-pair...");
                     final String deviceIdToRepair = deviceData.deviceId;
                     
+                    // ✅ SYNC WITH iOS: Store message for SystemCommandResponse event (matching iOS behavior)
+                    // This message will be included in the SystemCommandResponse sent at the end
+                    // JS layer can use this to show appropriate alerts
+                    commandMessage = "Pairing passkey updated successfully - device will disconnect for re-pairing";
+                    
                     // ✅ CRITICAL: Store the new passkey for this device (get it from pendingPasskeyUpdates if available)
                     // The passkey should have been stored when sending the command, but verify it exists
                     String newPasskey = pendingPasskeyUpdates.get(deviceIdToRepair);
@@ -3899,10 +4044,42 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         Log.d(TAG, "   If reconnection fails, user must FORGET device from Android Bluetooth settings:");
                         Log.d(TAG, "   Settings → Bluetooth → DyreID → Forget");
                         Log.d(TAG, "");
-                        return;
-                    }
-                    
+                        // ✅ FIX: Don't return early - allow SystemCommandResponse to be sent (matching iOS behavior)
+                        // SystemCommandResponse will be sent at the end of parseSystemCommandResponse
+                        // This ensures JS layer receives the success response and can show the alert
+                    } else {
                     Log.d(TAG, "🔓 [PASSKEY UPDATE] Device still connected, disconnecting now...");
+                        
+                        // ✅ SYNC WITH iOS: Stop device status polling
+                        stopDeviceStatusPolling(deviceIdToRepair);
+                        
+                        // ✅ SYNC WITH iOS: Disable all notifications before disconnecting
+                        BluetoothGatt gattForPasskey = connectedGatts.get(deviceIdToRepair);
+                        if (gattForPasskey != null) {
+                            List<BluetoothGattService> services = gattForPasskey.getServices();
+                            if (services != null) {
+                                for (BluetoothGattService service : services) {
+                                    List<BluetoothGattCharacteristic> characteristics = service.getCharacteristics();
+                                    if (characteristics != null) {
+                                        for (BluetoothGattCharacteristic characteristic : characteristics) {
+                                            if (characteristic != null) {
+                                                gattForPasskey.setCharacteristicNotification(characteristic, false);
+                                                Log.d(TAG, "🔕 [PASSKEY UPDATE] Disabled notifications for: " + characteristic.getUuid().toString());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // ✅ SYNC WITH iOS: Stop data sync if in progress
+                        dataSyncState.remove(deviceIdToRepair);
+                        dataSyncRetryCount.remove(deviceIdToRepair);
+                        ScheduledFuture<?> syncTimer = dataSyncTimers.remove(deviceIdToRepair);
+                        if (syncTimer != null) {
+                            syncTimer.cancel(false);
+                        }
+                        
                     cleanupDeviceResources(deviceIdToRepair);
                     
                     // ✅ CRITICAL: Remove from bonded list but DON'T add to forgotten list
@@ -3941,6 +4118,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             Log.d(TAG, "   💡 User must manually reconnect and enter NEW passkey to pair");
                         }
                     }, 500);
+                    }
                 } else {
                     Log.w(TAG, "❌ Passkey Update command failed");
                 }
@@ -3959,10 +4137,63 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         // Extract response data if present
         byte[] responseData = null;
+        String firmwareVersion = null;
+        String hardwareVersion = null;
+        Integer batteryLevel = null;
+        
         if (responseLength > 0) {
             responseData = new byte[responseLength];
             buffer.get(responseData);
             Log.d(TAG, "📊 Command response data: " + bytesToHex(responseData));
+            
+            // ✅ SYNC WITH iOS: Parse response data for specific commands
+            switch (commandId) {
+                case CMD_GET_FW_VERSION:
+                    // Parse version string from response data
+                    if (responseData.length > 0) {
+                        try {
+                            firmwareVersion = new String(responseData, "UTF-8");
+                            Log.d(TAG, "✅ Firmware Version: " + firmwareVersion);
+                        } catch (Exception e) {
+                            Log.e(TAG, "❌ Failed to parse firmware version: " + e.getMessage());
+                            firmwareVersion = "Unknown";
+                        }
+                    }
+                    break;
+                    
+                case CMD_GET_HW_VERSION:
+                    // Parse version string from response data
+                    if (responseData.length > 0) {
+                        try {
+                            hardwareVersion = new String(responseData, "UTF-8");
+                            Log.d(TAG, "✅ Hardware Version: " + hardwareVersion);
+                        } catch (Exception e) {
+                            Log.e(TAG, "❌ Failed to parse hardware version: " + e.getMessage());
+                            hardwareVersion = "Unknown";
+                        }
+                    }
+                    break;
+                    
+                case CMD_GET_DIAGNOSTICS:
+                    // Parse battery level from response data (first byte)
+                    if (responseData.length >= 1) {
+                        batteryLevel = responseData[0] & 0xFF;
+                        Log.d(TAG, "✅ Battery Level: " + batteryLevel + "%");
+                        
+                        // ✅ SYNC WITH iOS: Send deviceDataUpdate event if battery level is valid (1-100)
+                        if (batteryLevel > 0 && batteryLevel <= 100) {
+                            WritableMap deviceDataUpdateEvent = Arguments.createMap();
+                            deviceDataUpdateEvent.putString("deviceId", deviceData.deviceId);
+                            deviceDataUpdateEvent.putString("type", "diagnostics");
+                            WritableMap deviceDataMapForEvent = Arguments.createMap();
+                            deviceDataMapForEvent.putInt("batteryLevel", batteryLevel);
+                            deviceDataUpdateEvent.putMap("deviceData", deviceDataMapForEvent);
+                            sendEvent("deviceDataUpdate", deviceDataUpdateEvent);
+                            Log.d(TAG, "📤 [DIAGNOSTICS] Sent deviceDataUpdate event with battery level: " + batteryLevel + "%");
+                        }
+                    }
+                    break;
+            }
         } else {
             responseData = new byte[0]; // Empty array for commands with no data
             Log.d(TAG, "📊 Command response: acknowledgment only (no data)");
@@ -3991,7 +4222,31 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         systemResponseData.putInt("dataLength", responseData.length);
         systemResponseData.putInt("responseStatus", responseStatus);
         systemResponseData.putInt("status", responseStatus);
-        sendEvent("SystemCommandResponse", systemResponseData);
+        
+        // ✅ SYNC WITH iOS: Include command-specific message if available
+        if (commandMessage != null) {
+            systemResponseData.putString("message", commandMessage);
+        }
+        
+        // ✅ SYNC WITH iOS: Include parsed data for version and diagnostics commands
+        if (firmwareVersion != null) {
+            systemResponseData.putString("firmwareVersion", firmwareVersion);
+        }
+        if (hardwareVersion != null) {
+            systemResponseData.putString("hardwareVersion", hardwareVersion);
+        }
+        if (batteryLevel != null) {
+            systemResponseData.putInt("batteryLevel", batteryLevel);
+        }
+        
+        // ✅ SYNC WITH iOS: Send success event to JavaScript on main thread (matching iOS DispatchQueue.main.async)
+        final WritableMap finalResponseData = systemResponseData;
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                sendEvent("SystemCommandResponse", finalResponseData);
+            }
+        });
     }
     
     // ✅ REMOVED: Duplicate buildSystemCommandPacket(int, ReadableArray) 
@@ -7267,6 +7522,14 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             dataSyncTimers.remove(deviceId);
         }
         
+        // ✅ SYNC WITH iOS: Clean up SET TIME timeout timers
+        ScheduledFuture<?> setTimeTimer = setTimeTimeoutTimers.remove(deviceId);
+        if (setTimeTimer != null) {
+            setTimeTimer.cancel(false);
+        }
+        setTimeRetryAttempts.remove(deviceId);
+        setTimeResponseReceived.remove(deviceId);
+        
         // ✅ Clean up health check failures
         healthCheckFailures.remove(deviceId);
         
@@ -8118,8 +8381,15 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
      * Send Set System Time command (Command ID: 0x01)
      */
     private void sendSetSystemTimeCommand(String deviceId) {
+        sendSetSystemTimeCommand(deviceId, 0);
+    }
+    
+    // ✅ SYNC WITH iOS: sendSetSystemTimeCommand with retry support
+    private void sendSetSystemTimeCommand(String deviceId, int retryAttempt) {
         // Update state to time_syncing
         dataSyncState.put(deviceId, "time_syncing");
+        // ✅ SYNC WITH iOS: Mark response as not received yet
+        setTimeResponseReceived.put(deviceId, false);
         
         // Get current Unix timestamp in seconds
         long currentTimestamp = System.currentTimeMillis() / 1000;
@@ -8133,7 +8403,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         // Log the command being sent
         String timestampHex = String.format("%02X%02X%02X%02X", payload[0], payload[1], payload[2], payload[3]);
+        if (retryAttempt > 0) {
+            Log.d(TAG, "📤 [RETRY " + retryAttempt + "] Sending Set System Time command to " + deviceId);
+        } else {
         Log.d(TAG, "📤 Sending Set System Time command to " + deviceId);
+        }
         Log.d(TAG, "   Command: AA 01 04 " + timestampHex);
         Log.d(TAG, "   Timestamp: " + currentTimestamp + " (" + new java.util.Date(currentTimestamp * 1000) + ")");
         
@@ -8193,6 +8467,48 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         if (success) {
             Log.d(TAG, "✅ Set System Time command sent successfully");
+            
+            // ✅ SYNC WITH iOS: TIMEOUT & RETRY: If Set System Time response is not received within 3 seconds,
+            // retry once. Only proceed with other commands after SET TIME succeeds or retry fails.
+            ScheduledFuture<?> timeoutTimer = executorService.schedule(() -> {
+                // Check if response was received
+                Boolean responseReceived = setTimeResponseReceived.get(deviceId);
+                if (responseReceived == null || !responseReceived) {
+                    int currentRetry = setTimeRetryAttempts.getOrDefault(deviceId, 0);
+                    
+                    if (currentRetry < 1) {
+                        // Retry once after 3 seconds
+                        Log.w(TAG, "⚠️ [TIME SYNC TIMEOUT] Set System Time response not received within 3 seconds");
+                        Log.w(TAG, "   Retrying SET TIME command (attempt " + (currentRetry + 1) + "/2)...");
+                        
+                        setTimeRetryAttempts.put(deviceId, currentRetry + 1);
+                        setTimeTimeoutTimers.remove(deviceId);
+                        
+                        // Retry after 3 seconds
+                        mainHandler.postDelayed(() -> {
+                            sendSetSystemTimeCommand(deviceId, currentRetry + 1);
+                        }, 3000);
+                    } else {
+                        // Retry failed - proceed anyway but log warning
+                        Log.e(TAG, "❌ [TIME SYNC FAILED] Set System Time response not received after 2 attempts");
+                        Log.e(TAG, "   Proceeding with other commands, but RTC may remain invalid");
+                        Log.e(TAG, "   Device may not have valid time, but live updates will still work");
+                        
+                        setTimeTimeoutTimers.remove(deviceId);
+                        dataSyncState.put(deviceId, "time_sync_failed");
+                        
+                        // Proceed with other commands even though time sync failed
+                        sendDataAcquisitionAndLiveNotifications(deviceId);
+                    }
+                } else {
+                    // Response was received - timer is no longer needed
+                    setTimeTimeoutTimers.remove(deviceId);
+                }
+            }, 3, java.util.concurrent.TimeUnit.SECONDS);
+            
+            // Store timer so we can cancel it if response arrives
+            setTimeTimeoutTimers.put(deviceId, timeoutTimer);
+            
         } else {
             Log.e(TAG, "❌ Failed to send Set System Time command - writeCharacteristic returned false");
             Log.e(TAG, "   This usually means:");
@@ -8200,6 +8516,14 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Log.e(TAG, "   2. Connection is in an invalid state");
             Log.e(TAG, "   3. Write queue is full");
             dataSyncState.put(deviceId, "idle");
+            setTimeTimeoutTimers.remove(deviceId);
+            
+            // ✅ SYNC WITH iOS: If this was a retry attempt, proceed anyway
+            if (retryAttempt > 0) {
+                Log.w(TAG, "⚠️ [RETRY FAILED] Set System Time command failed on retry attempt");
+                Log.w(TAG, "   Proceeding with other commands, but RTC may remain invalid");
+                sendDataAcquisitionAndLiveNotifications(deviceId);
+            }
         }
     }
     
@@ -8241,6 +8565,28 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         // Update state
         dataSyncState.put(deviceId, "syncing");
+        
+        // ✅ SYNC WITH iOS: Set timeout to clear state if sync doesn't complete (matching iOS dataSyncTimers)
+        // iOS uses timers to handle timeouts, Android should do the same
+        // If no sync_complete notification arrives within 60 seconds, clear the state
+        ScheduledFuture<?> existingTimer = dataSyncTimers.get(deviceId);
+        if (existingTimer != null) {
+            existingTimer.cancel(false);
+        }
+        
+        ScheduledFuture<?> syncTimeoutTimer = executorService.schedule(() -> {
+            String currentState = dataSyncState.getOrDefault(deviceId, "unknown");
+            if ("syncing".equals(currentState)) {
+                Log.w(TAG, "⚠️ [SYNC TIMEOUT] Data sync did not complete within 60 seconds for " + deviceId);
+                Log.w(TAG, "   Clearing sync state to allow new syncs");
+                dataSyncState.put(deviceId, "idle");
+                dataSyncRequested.put(deviceId, false);
+                dataSyncRetryCount.remove(deviceId);
+            }
+            dataSyncTimers.remove(deviceId);
+        }, 60, TimeUnit.SECONDS);
+        
+        dataSyncTimers.put(deviceId, syncTimeoutTimer);
         
         // CRITICAL: Mark that we've requested data sync
         dataSyncRequested.put(deviceId, true);
@@ -8327,6 +8673,54 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         }
         
         return success;
+    }
+    
+    // ✅ SYNC WITH iOS: Retry data sync start with exponential backoff
+    private void retryDataSyncStart(String deviceId) {
+        int currentRetry = dataSyncRetryCount.getOrDefault(deviceId, 0);
+        
+        // Max 3 retries
+        if (currentRetry >= 3) {
+            Log.w(TAG, "❌ Max retry attempts reached for device " + deviceId + ". Giving up on data sync.");
+            Log.w(TAG, "   Device may not have data OR RTC failed to sync properly.");
+            dataSyncState.put(deviceId, "failed");
+            dataSyncRetryCount.remove(deviceId);
+            return;
+        }
+        
+        // ⏰ LONGER EXPONENTIAL BACKOFF: 5s, 10s, 20s (instead of 2s, 4s, 8s)
+        // Device needs substantial time for RTC flash write and internal state update
+        long baseDelayMs = 5000; // 5 seconds
+        long delayMs = baseDelayMs * (1L << currentRetry); // Exponential: 5s, 10s, 20s
+        
+        Log.d(TAG, "🔄 Scheduling data sync retry for device " + deviceId + " in " + (delayMs / 1000) + "s");
+        Log.d(TAG, "   Retry reason: Device RTC may need more time to stabilize");
+        Log.d(TAG, "   Attempt: " + (currentRetry + 2) + "/4");
+        
+        // Cancel any existing timer
+        ScheduledFuture<?> existingTimer = dataSyncTimers.remove(deviceId);
+        if (existingTimer != null) {
+            existingTimer.cancel(false);
+        }
+        
+        // ✅ SYNC WITH iOS: Schedule retry with exponential backoff
+        ScheduledFuture<?> retryTimer = executorService.schedule(() -> {
+            Log.d(TAG, "⏰ Retrying data sync for device " + deviceId + " (attempt " + (currentRetry + 2) + "/4)");
+            Log.d(TAG, "   Total wait time since time sync: " + (10 + (delayMs / 1000)) + "s");
+            
+            // Increment retry count before attempting
+            dataSyncRetryCount.put(deviceId, currentRetry + 1);
+            
+            // Attempt data sync start
+            boolean success = sendDataSyncStartCommand(deviceId, currentRetry + 1);
+            
+            if (!success) {
+                Log.e(TAG, "❌ Retry data sync start failed for device " + deviceId);
+                // Will be retried again if response handler receives failure status
+            }
+        }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        
+        dataSyncTimers.put(deviceId, retryTimer);
     }
     
     /**
@@ -8452,49 +8846,80 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     @ReactMethod
     public void startDataSync(String deviceId, Promise promise) {
         try {
-            Log.d(TAG, "📤 Manual Data Sync Start requested for " + deviceId);
+            Log.d(TAG, "📤 Data Sync Start requested for " + deviceId);
             
-            // ✅ CRITICAL FIX: Always sync time first for manual sync to ensure device RTC is valid
-            // This prevents the "0 records" issue caused by invalid/unset device time
-            // Device cannot properly timestamp or retrieve records without valid RTC
-            Log.d(TAG, "⏰ [MANUAL SYNC] Syncing device time first to ensure valid RTC...");
-            Log.d(TAG, "   This prevents '0 records' error due to invalid device timestamp");
+            // ✅ SYNC WITH iOS: Check RTC validity first (matching iOS behavior)
+            // iOS checks RTC validity and only sends SET_TIME if RTC is invalid (line 924-933 in BridgingCodeModule.swift)
+            // For manual sync, iOS always sends SET_TIME (line 950-961), but for auto-sync it checks first
+            // Since this method is called from both manual and auto-sync, we'll check RTC validity first
+            Boolean rtcValid = deviceRTCValidity.get(deviceId);
             
             // Reset state to ensure clean sync
             dataSyncState.put(deviceId, "idle");
             dataSyncRequested.put(deviceId, false);
             
-            // Send time sync command first
-            sendSetSystemTimeCommand(deviceId);
-            
-            // Wait for device to process time sync and stabilize
-            // Using 6 seconds to give device enough time to write RTC to flash
-            executorService.schedule(() -> {
-                Log.d(TAG, "✅ [MANUAL SYNC] Time sync complete - now starting data sync...");
+            if (rtcValid == null || !rtcValid) {
+                // RTC is invalid or unknown - send SET time command first
+                Log.d(TAG, "⏰ [SYNC] RTC is " + (rtcValid == null ? "unknown" : "invalid") + " - syncing device time first...");
+                Log.d(TAG, "   This prevents '0 records' error due to invalid device timestamp");
                 
-                // ✅ CRITICAL FIX: Set the flag IMMEDIATELY when data sync starts
-                // This ensures data transfers arriving immediately after command is sent won't be rejected
+                // Send time sync command first
+                sendSetSystemTimeCommand(deviceId);
+                
+                // Wait for device to process time sync and stabilize
+                // Using 6 seconds to give device enough time to write RTC to flash
+                executorService.schedule(() -> {
+                    Log.d(TAG, "✅ [SYNC] Time sync complete - now starting data sync...");
+                    
+                    // ✅ CRITICAL FIX: Set the flag IMMEDIATELY when data sync starts
+                    // This ensures data transfers arriving immediately after command is sent won't be rejected
+                    dataSyncRequested.put(deviceId, true);
+                    Log.d(TAG, "🔒 [SYNC] Set data sync requested flag for " + deviceId);
+                    
+                    // Now send data sync command
+                    boolean success = sendDataSyncStartCommand(deviceId, 0);
+                    
+                    if (success) {
+                        WritableMap result = Arguments.createMap();
+                        result.putString("status", "success");
+                        result.putString("message", "Data sync started (time synced first)");
+                        result.putString("deviceId", deviceId);
+                        result.putString("state", dataSyncState.getOrDefault(deviceId, "unknown"));
+                        result.putBoolean("timeSyncRequired", true);
+                        promise.resolve(result);
+                    } else {
+                        // ✅ Clear the flag if sync failed to start
+                        dataSyncRequested.put(deviceId, false);
+                        Log.w(TAG, "⚠️ [SYNC] Cleared data sync requested flag due to sync start failure");
+                        promise.reject("SYNC_START_ERROR", "Failed to send data sync start command after time sync");
+                    }
+                }, 6, TimeUnit.SECONDS);
+            } else {
+                // ✅ SYNC WITH iOS: RTC is valid - skip SET time, start data sync directly
+                Log.d(TAG, "✅ [SYNC] RTC is valid - skipping SET time, starting data sync directly");
+                
+                // Set the flag IMMEDIATELY when data sync starts
                 dataSyncRequested.put(deviceId, true);
-                Log.d(TAG, "🔒 [MANUAL SYNC] Set data sync requested flag for " + deviceId);
+                Log.d(TAG, "🔒 [SYNC] Set data sync requested flag for " + deviceId);
                 
-                // Now send data sync command
+                // Start data sync directly (no time sync needed)
                 boolean success = sendDataSyncStartCommand(deviceId, 0);
                 
                 if (success) {
                     WritableMap result = Arguments.createMap();
                     result.putString("status", "success");
-                    result.putString("message", "Data sync started (time synced first)");
+                    result.putString("message", "Data sync started (RTC already valid)");
                     result.putString("deviceId", deviceId);
                     result.putString("state", dataSyncState.getOrDefault(deviceId, "unknown"));
-                    result.putBoolean("timeSyncRequired", true);
+                    result.putBoolean("timeSyncRequired", false);
                     promise.resolve(result);
                 } else {
                     // ✅ Clear the flag if sync failed to start
                     dataSyncRequested.put(deviceId, false);
-                    Log.w(TAG, "⚠️ [MANUAL SYNC] Cleared data sync requested flag due to sync start failure");
-                    promise.reject("SYNC_START_ERROR", "Failed to send data sync start command after time sync");
+                    Log.w(TAG, "⚠️ [SYNC] Cleared data sync requested flag due to sync start failure");
+                    promise.reject("SYNC_START_ERROR", "Failed to send data sync start command");
                 }
-            }, 6, TimeUnit.SECONDS);
+            }
             
         } catch (Exception e) {
             promise.reject("ERROR", e.getMessage());
@@ -9030,6 +9455,54 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     }
     
     /**
+     * ✅ SDD v1.4: Update Passkey command (matching iOS)
+     * @param deviceId - Device MAC address
+     * @param passkey - 6-digit numeric passkey (0-9)
+     */
+    @ReactMethod
+    public void updatePasskey(String deviceId, String passkey, Promise promise) {
+        try {
+            Log.d(TAG, "🔐 [PASSKEY UPDATE] Updating passkey for device: " + deviceId);
+            
+            // Validate passkey format
+            if (passkey == null || passkey.length() != 6) {
+                promise.reject("INVALID_PASSKEY", "Passkey must be exactly 6 digits (0-9), got " + (passkey != null ? passkey.length() : 0) + " characters");
+                return;
+            }
+            
+            if (!passkey.matches("[0-9]+")) {
+                promise.reject("INVALID_PASSKEY", "Passkey must contain only numeric digits (0-9)");
+                return;
+            }
+            
+            // Check if device is connected
+            BluetoothGatt gatt = connectedGatts.get(deviceId);
+            if (gatt == null) {
+                promise.reject("DEVICE_NOT_CONNECTED", "Device not connected: " + deviceId);
+                return;
+            }
+            
+            // Send passkey update command
+            boolean success = sendPasskeyUpdateCommand(deviceId, passkey);
+            
+            if (success) {
+                WritableMap result = Arguments.createMap();
+                result.putBoolean("success", true);
+                result.putString("deviceId", deviceId);
+                result.putString("message", "Passkey update command sent successfully");
+                result.putString("passkey", passkey);
+                promise.resolve(result);
+            } else {
+                promise.reject("PASSKEY_UPDATE_ERROR", "Failed to send passkey update command");
+            }
+            
+        } catch (Exception e) {
+            Log.e(TAG, "❌ [PASSKEY UPDATE] Error updating passkey: " + e.getMessage());
+            promise.reject("PASSKEY_UPDATE_ERROR", e.getMessage());
+        }
+    }
+    
+    /**
      * ✅ NEW: Debug connection status (matching iOS)
      */
     @ReactMethod
@@ -9259,8 +9732,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             return;
         }
         
-        // ✅ FIX: Check if characteristic supports read operation before attempting read
-        // Some characteristics (like MODEL_NUMBER) may not support reads in all states
+        // ✅ SYNC WITH iOS: Validate operation BEFORE attempting (matching iOS validateOperation)
+        // Check if characteristic supports read operation before attempting read
         int properties = characteristic.getProperties();
         if ((properties & BluetoothGattCharacteristic.PROPERTY_READ) == 0) {
             Log.w(TAG, "⚠️ Characteristic " + characteristicUUID + " does not support read operation (properties: 0x" + 
@@ -9269,17 +9742,118 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             return;
         }
         
-        // Store promise for callback
-        pendingCharacteristicPromises.put(deviceId + "_" + characteristicUUID, promise);
+        // ✅ SYNC WITH iOS: Store promise and attempt read once (iOS doesn't do immediate retries)
+        // iOS validates first, then attempts once. If it fails, it schedules async retry with exponential backoff
+        String promiseKey = deviceId + "_" + characteristicUUID;
+        pendingCharacteristicPromises.put(promiseKey, promise);
         
-        // Read characteristic
+        // Attempt read operation (iOS does this once, then handles errors via async retry)
+        boolean success = gatt.readCharacteristic(characteristic);
+        
+        if (!success) {
+            pendingCharacteristicPromises.remove(promiseKey);
+            // ✅ SYNC WITH iOS: Schedule async retry with exponential backoff (matching iOS handleOperationError)
+            // iOS uses: delay = (attempts + 1) * 2.0 seconds (2s, 4s, 6s)
+            // Android equivalent: delay = (attempts + 1) * 2000ms
+            String errorKey = deviceId + "_" + characteristicUUID + "_read";
+            Integer attempts = readRetryAttempts.getOrDefault(errorKey, 0);
+            int maxRetries = 3; // ✅ SYNC WITH iOS: maxRetryAttempts = 3
+            
+            if (attempts < maxRetries) {
+                readRetryAttempts.put(errorKey, attempts + 1);
+                long delayMs = (attempts + 1) * 2000L; // 2s, 4s, 6s (matching iOS)
+                
+            Log.w(TAG, "⚠️ Failed to initiate read for characteristic " + characteristicUUID + 
+                      " - scheduling retry in " + delayMs + "ms (attempt " + (attempts + 1) + "/" + maxRetries + ")");
+                
+                // ✅ SYNC WITH iOS: Schedule async retry with exponential backoff (matching iOS DispatchQueue.main.asyncAfter)
+                mainHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        retryReadCharacteristic(deviceId, serviceUUID, characteristicUUID);
+                    }
+                }, delayMs);
+            } else {
+                readRetryAttempts.remove(errorKey);
+                Log.w(TAG, "⚠️ Failed to initiate read for characteristic " + characteristicUUID + 
+                      " after " + maxRetries + " attempts - BLE stack may be busy or characteristic is not readable in current state");
+                promise.reject("READ_FAILED", "Failed to initiate read for characteristic " + characteristicUUID + " after " + maxRetries + " attempts");
+            }
+        } else {
+            Log.d(TAG, "✅ Read initiated successfully for characteristic " + characteristicUUID);
+        }
+    }
+    
+    // ✅ SYNC WITH iOS: Retry read operation (matching iOS retryOperation)
+    private void retryReadCharacteristic(String deviceId, String serviceUUID, String characteristicUUID) {
+        BluetoothGatt gatt = connectedGatts.get(deviceId);
+        if (gatt == null) {
+            Log.w(TAG, "⚠️ Cannot retry read - device not connected: " + deviceId);
+            String errorKey = deviceId + "_" + characteristicUUID + "_read";
+            readRetryAttempts.remove(errorKey);
+            return;
+        }
+        
+        BluetoothGattService service = gatt.getService(UUID.fromString(serviceUUID));
+        if (service == null) {
+            Log.w(TAG, "⚠️ Cannot retry read - service not found: " + serviceUUID);
+            String errorKey = deviceId + "_" + characteristicUUID + "_read";
+            readRetryAttempts.remove(errorKey);
+            return;
+        }
+        
+        BluetoothGattCharacteristic characteristic = service.getCharacteristic(UUID.fromString(characteristicUUID));
+        if (characteristic == null) {
+            Log.w(TAG, "⚠️ Cannot retry read - characteristic not found: " + characteristicUUID);
+            String errorKey = deviceId + "_" + characteristicUUID + "_read";
+            readRetryAttempts.remove(errorKey);
+            return;
+        }
+        
+        // ✅ SYNC WITH iOS: Validate operation before retry (matching iOS validateOperation)
+        int properties = characteristic.getProperties();
+        if ((properties & BluetoothGattCharacteristic.PROPERTY_READ) == 0) {
+            Log.w(TAG, "⚠️ Cannot retry read - characteristic does not support read: " + characteristicUUID);
+            String errorKey = deviceId + "_" + characteristicUUID + "_read";
+            readRetryAttempts.remove(errorKey);
+            return;
+        }
+        
+        Log.d(TAG, "🔄 Retrying read for characteristic " + characteristicUUID + " on device " + deviceId);
+        
+        // Attempt read again
         boolean success = gatt.readCharacteristic(characteristic);
         if (!success) {
-            pendingCharacteristicPromises.remove(deviceId + "_" + characteristicUUID);
-            // ✅ FIX: Provide more detailed error message for debugging
-            Log.w(TAG, "⚠️ Failed to initiate read for characteristic " + characteristicUUID + 
-                  " - BLE stack may be busy or characteristic is not readable in current state");
-            promise.reject("READ_FAILED", "Failed to initiate read for characteristic " + characteristicUUID);
+            // If retry also fails, handle it via the same retry mechanism
+            String errorKey = deviceId + "_" + characteristicUUID + "_read";
+            Integer attempts = readRetryAttempts.getOrDefault(errorKey, 0);
+            int maxRetries = 3;
+            
+            if (attempts < maxRetries) {
+                readRetryAttempts.put(errorKey, attempts + 1);
+                long delayMs = (attempts + 1) * 2000L; // 2s, 4s, 6s (matching iOS)
+                Log.w(TAG, "⚠️ Retry read failed - scheduling another retry in " + delayMs + "ms (attempt " + (attempts + 1) + "/" + maxRetries + ")");
+                
+                mainHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        retryReadCharacteristic(deviceId, serviceUUID, characteristicUUID);
+                    }
+                }, delayMs);
+            } else {
+                readRetryAttempts.remove(errorKey);
+                String promiseKey = deviceId + "_" + characteristicUUID;
+                Promise promise = pendingCharacteristicPromises.remove(promiseKey);
+                if (promise != null) {
+                    Log.w(TAG, "❌ Max retry attempts reached for read operation on " + characteristicUUID);
+                    promise.reject("READ_FAILED", "Failed to read characteristic " + characteristicUUID + " after " + maxRetries + " retry attempts");
+                }
+            }
+        } else {
+            // Retry succeeded - clear retry counter
+            String errorKey = deviceId + "_" + characteristicUUID + "_read";
+            readRetryAttempts.remove(errorKey);
+            Log.d(TAG, "✅ Retry read initiated successfully for characteristic " + characteristicUUID);
         }
     }
     
