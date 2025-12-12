@@ -6,6 +6,7 @@ import ModernBLEManager from '../../screens/BLEManager/ModernBLEManager';
 import DeviceDetails from '../../screens/DeviceDetails/DeviceDetails';
 import SyncRecordsScreen from '../../screens/DeviceDetails/SyncRecordsScreen';
 import LiveDataScreen from '../../screens/BLEManager/LiveDataScreen';
+import ConnectionLogScreen from '../../screens/BLEManager/ConnectionLogScreen';
 import HistoricalDataScreen from '../../screens/BLEManager/HistoricalDataScreen';
 import DFUScreen from '../../screens/DFU/DFUScreen';
 
@@ -56,6 +57,14 @@ function HomeStack() {
                 }}
                 name="LiveData"
                 component={LiveDataScreen}
+            />
+            <Stack.Screen
+                options={{ 
+                    headerShown: false,
+                    title: 'Connection Log'
+                }}
+                name="ConnectionLog"
+                component={ConnectionLogScreen}
             />
             <Stack.Screen
                 options={{ 

@@ -80,8 +80,56 @@ class BLEService {
     this.lastTimeSyncAttempt = new Map(); // Track last time sync attempts to prevent spam
     this.deviceRestartTimes = new Map(); // Track when devices were restarted (deviceId -> timestamp)
     this.autoSyncTimers = new Map(); // Debounce timers for auto-sync triggers (deviceId -> timer)
-    this.autoSyncMeta = new Map(); // Track auto-sync metadata (lastRecordCount, lastSyncAt)
+    this.autoSyncMeta = new Map(); // Track auto-sync metadata (lastRecordCount, lastSyncAt, lastSyncCompletedAt)
     this.manualReadTimestamps = new Map(); // Track when we do manual reads (deviceId -> timestamp) to distinguish from live notifications
+    
+    // ✅ FIX: Notification and timer deduplication
+    this.lastNotificationData = new Map(); // Track last notification to prevent duplicates (deviceId -> { recordCount, timestamp })
+    this.lastTimerReset = new Map(); // Track last timer reset time (deviceId -> timestamp)
+    this.timerResetDebounceWindow = 500; // Minimum 500ms between timer resets
+    this.notificationDedupeWindow = 100; // Ignore duplicate notifications within 100ms
+    
+    // ✅ IMPROVEMENTS: Enhanced auto-sync features
+    // 1. Error Handling with Exponential Backoff
+    this.syncRetryAttempts = new Map(); // deviceId -> retry count
+    this.syncRetryTimers = new Map(); // deviceId -> retry timer
+    this.maxSyncRetries = 3; // Maximum retry attempts
+    this.baseRetryDelay = 1000; // Base delay: 1 second
+    
+    // 2. Sync Queue for multiple pending syncs
+    this.syncQueue = new Map(); // deviceId -> array of pending sync requests
+    this.processingSync = new Map(); // deviceId -> boolean (is currently processing sync)
+    
+    // 3. Metrics Tracking
+    this.syncMetrics = new Map(); // deviceId -> { successCount, failureCount, totalLatency, lastSyncTime, ... }
+    
+    // 4. Adaptive Throttle
+    this.recordAccumulationRates = new Map(); // deviceId -> array of record count timestamps
+    this.adaptiveThrottleConfig = {
+      fast: 15000,    // 15s when records accumulating quickly (>2 records/30s)
+      normal: 30000,  // 30s normal mode (1-2 records/30s)
+      slow: 60000     // 60s when records accumulating slowly (<1 record/30s)
+    };
+    
+    // 5. Fallback Polling
+    this.lastNotificationTime = new Map(); // deviceId -> timestamp of last notification
+    this.fallbackPollingTimers = new Map(); // deviceId -> polling timer
+    this.fallbackPollingInterval = 120000; // 2 minutes
+    
+    // 6. Configuration
+    this.autoSyncConfig = {
+      debounceDelay: 0,          // No delay - we have deduplication and throttling already
+      throttleMode: 'adaptive',   // 'adaptive', 'fast', 'normal', 'slow', 'custom'
+      customThrottle: 30000,      // Custom throttle time (ms)
+      enableFallbackPolling: true, // Enable fallback polling
+      maxRetries: 3,               // Max retry attempts
+      enableMetrics: true,         // Enable metrics tracking
+      enableUserFeedback: true    // Enable user feedback events
+    };
+    
+    // 7. State Transition Logging
+    this.stateTransitionHistory = new Map(); // deviceId -> array of state transitions
+    this.maxStateHistory = 20; // Keep last 20 state transitions
 
     // ✅ INDUSTRY STANDARD: Live Data Buffering System (5-minute batching)
     this.liveDataBuffers = new Map();  // deviceId -> array of live records (max 10)
@@ -224,6 +272,21 @@ class BLEService {
       console.error('❌ [DFU] Error:', eventData);
       this.emit('DFUError', eventData);
     });
+
+    // ✅ CRITICAL FIX: Register DeviceDataUpdated listener for iOS
+    // iOS sends DeviceDataUpdated with isFromPolling, recordCount, rtcValid, etc.
+    this.iosEventEmitter.addListener('DeviceDataUpdated', (event) => {
+      console.log(`🔔 [LISTENER] DeviceDataUpdated event received! deviceId: ${event?.deviceId}`, {
+        fullEvent: event,
+        keys: event ? Object.keys(event) : []
+      });
+      try {
+        this.handleDeviceDataUpdated(event);
+      } catch (error) {
+        console.error(`❌ [HANDLER ERROR] Error in handleDeviceDataUpdated:`, error);
+      }
+    });
+    console.log(`✅ [SETUP] DeviceDataUpdated event listener registered for iOS`);
   }
 
   setupAndroidEventListeners() {
@@ -255,9 +318,21 @@ class BLEService {
     });
 
     // Listen for device data updates (steps, temperature, etc.)
+    // ✅ FIX: DeviceDataUpdated event is used by BOTH iOS and Android
+    // iOS sends DeviceDataUpdated with isFromPolling, recordCount, rtcValid, etc.
+    // Android also sends DeviceDataUpdated (legacy format)
     DeviceEventEmitter.addListener('DeviceDataUpdated', (event) => {
-      this.handleAndroidDeviceDataUpdated(event);
+      console.log(`🔔 [LISTENER] DeviceDataUpdated event received! deviceId: ${event?.deviceId}`, {
+        fullEvent: event,
+        keys: event ? Object.keys(event) : []
+      });
+      try {
+        this.handleDeviceDataUpdated(event);
+      } catch (error) {
+        console.error(`❌ [HANDLER ERROR] Error in handleDeviceDataUpdated:`, error);
+      }
     });
+    console.log(`✅ [SETUP] DeviceDataUpdated event listener registered`);
 
     // ✅ CRITICAL FIX: Listen for deviceDataUpdate events from Android (matching iOS format)
     // Android sends both DeviceDataUpdated (legacy) and deviceDataUpdate (new format)
@@ -940,6 +1015,9 @@ class BLEService {
     
     // Emit connection event
     this.emit('deviceConnected', device);
+    
+    // Add connection log
+    this.addConnectionLog(deviceId, 'Connected');
   }
 
   handleIOSDeviceDisconnected(deviceInfo) {
@@ -981,6 +1059,11 @@ class BLEService {
       if (this.onDeviceListUpdated) {
         this.onDeviceListUpdated();
       }
+      
+      // Add disconnection log
+      this.addConnectionLog(deviceId, 'Disconnected', {
+        reason: deviceInfo.reason
+      });
       
       // Emit disconnection event with additional info
       this.emit('deviceDisconnected', {
@@ -1210,7 +1293,32 @@ class BLEService {
     
     // 🔒 MUTEX: Check if already running
     if (this.requestDataMutex.get(deviceId)) {
+      console.log(`⏭️ [SERVICE DISCOVERY] Skipping - command sequence already in progress for ${deviceId}`);
       return;
+    }
+    
+    // ✅ CRITICAL FIX: Check if sync is already in progress or recently completed before starting a new one
+    // This prevents duplicate sync operations when ServiceDiscoveryComplete is received multiple times
+    const syncState = this.dataSyncStates?.get(deviceId);
+    const currentSyncState = syncState?.state;
+    
+    // Check if sync is actively in progress
+    if (currentSyncState === 'syncing' || currentSyncState === 'time_syncing' || currentSyncState === 'ready') {
+      console.log(`⏭️ [SERVICE DISCOVERY] Skipping - sync already in progress for ${deviceId} (state: ${currentSyncState})`);
+      return;
+    }
+    
+    // ✅ CRITICAL FIX: Also check if sync was recently completed (within last 5 seconds)
+    // This prevents starting a new sync immediately after the previous one completes
+    if (this.autoSyncMeta) {
+      const meta = this.autoSyncMeta.get(deviceId);
+      if (meta?.lastSyncCompletedAt) {
+        const timeSinceLastSync = Date.now() - meta.lastSyncCompletedAt;
+        if (timeSinceLastSync < 5000) { // Within 5 seconds
+          console.log(`⏭️ [SERVICE DISCOVERY] Skipping - sync completed ${Math.round(timeSinceLastSync / 1000)}s ago for ${deviceId} (too soon)`);
+          return;
+        }
+      }
     }
     
     // Set mutex
@@ -1231,10 +1339,14 @@ class BLEService {
         }
         
         if (result.status === 'success') {
+          console.log(`✅ [SERVICE DISCOVERY] Command sequence started successfully for ${deviceId}`);
         } else if (result.status === 'already_running') {
+          console.log(`⏭️ [SERVICE DISCOVERY] Command sequence already running for ${deviceId}`);
         } else {
+          console.log(`⚠️ [SERVICE DISCOVERY] Command sequence start returned: ${result.status} for ${deviceId}`);
         }
       } else {
+        console.log(`⏭️ [SERVICE DISCOVERY] Device ${deviceId} does not have System Command characteristic - skipping command sequence`);
       }
       
       // ✅ FIX: Start monitoring to enable notifications (critical for auto-connect)
@@ -1257,14 +1369,11 @@ class BLEService {
       // RTC validation will happen in handleDeviceStatusUpdate when next notification arrives
       console.log(`⏰ [AUTO TIME SYNC] Time sync sent - will verify RTC when next device status notification arrives`);
       
-      // ✅ FIX: Start fallback polling to ensure live notifications work
-      // Native polling should start when SET_DATA_ACQUISITION_INTERVAL response is received,
-      // but we start fallback polling as a safety measure
-      setTimeout(() => {
-        if (this.isDeviceConnected(deviceId)) {
-          this.startDeviceStatusPollingFallback(deviceId, 30);
-        }
-      }, 5000); // Start after 5 seconds to allow native polling to start first
+      // ✅ REMOVED: JavaScript fallback polling - native polling handles this now
+      // Native polling starts automatically after SET_DATA_ACQUISITION_INTERVAL command (0x04)
+      // Android: ScheduledExecutorService in SampleBridgeAndroid.java
+      // iOS: Timer.scheduledTimer in BridgingCodeModule.swift
+      console.log(`✅ [POLLING] Native polling will start after SET_DATA_ACQUISITION_INTERVAL command`);
       
       // Read initial characteristics via JS (battery, device status, etc.)
       setTimeout(() => {
@@ -1539,6 +1648,9 @@ class BLEService {
       // This allows UI components to listen for connection events
       this.emit('deviceConnected', device);
       
+      // Add connection log
+      this.addConnectionLog(deviceId, 'Connected');
+      
       // Trigger device list update callback
       if (this.onDeviceListUpdated) {
         this.onDeviceListUpdated();
@@ -1547,12 +1659,82 @@ class BLEService {
     }
   }
 
-  async handleAndroidDeviceDataUpdated(event) {
-    const { deviceId, batteryLevel, steps, temperature, timestamp } = event;
+  // ✅ FIX: Renamed from handleAndroidDeviceDataUpdated to handleDeviceDataUpdated
+  // This method handles DeviceDataUpdated events from BOTH iOS and Android
+  // iOS sends: deviceId, batteryLevel, steps, temperature, timestamp, isFromPolling, recordCount, rtcValid, etc.
+  // Android sends: deviceId, batteryLevel, steps, temperature, timestamp (legacy format)
+  async handleDeviceDataUpdated(event) {
+    // ✅ CRITICAL: Log IMMEDIATELY to verify handler is called
+    console.log(`🔔 [HANDLER] handleDeviceDataUpdated CALLED with event:`, {
+      deviceId: event?.deviceId,
+      hasEvent: !!event,
+      eventKeys: event ? Object.keys(event) : []
+    });
     
+    // ✅ CRITICAL FIX: Extract deviceId FIRST to enable debug logging even if device not found
+    const deviceId = event?.deviceId;
+    
+    // ✅ DEBUG: Log full event structure BEFORE any early returns to diagnose isFromPolling issue
+    // This will help us see what's actually in the event even if device lookup fails
+    console.log(`📊 [EVENT DEBUG] DeviceDataUpdated event for ${deviceId || 'UNKNOWN'}:`, {
+      hasIsFromPolling: 'isFromPolling' in event,
+      isFromPollingValue: event?.isFromPolling,
+      isFromPollingType: typeof event?.isFromPolling,
+      allEventKeys: Object.keys(event || {}),
+      pollingRelatedKeys: Object.keys(event || {}).filter(k => k.toLowerCase().includes('polling') || k === 'isFromPolling'),
+      fullEvent: JSON.stringify(event, null, 2).substring(0, 500) // First 500 chars for debugging
+    });
+    
+    // ✅ FIX: Extract all fields from event, including isFromPolling from iOS
+    // ✅ CRITICAL: iOS sends recordCount and rtcValid at top level (merged from deviceData)
+    // ✅ ANDROID FIX: Android sends isFromPolling inside deviceData object, not at top level
+    const { 
+      batteryLevel, 
+      steps, 
+      temperature, 
+      timestamp,
+      // ✅ iOS fields (sent at top level after merge in sendDeviceDataUpdateEvent)
+      isFromPolling: isFromPollingTop,
+      recordCount,
+      rtcValid,
+      deviceRTC,
+      batteryVoltage,
+      dataSource,
+      deviceData: eventDeviceData
+    } = event || {};
+    
+    // ✅ CRITICAL FIX: Check BOTH locations for isFromPolling (iOS vs Android)
+    // iOS sends at top level, Android sends inside deviceData
+    const isFromPolling = isFromPollingTop !== undefined 
+      ? isFromPollingTop 
+      : eventDeviceData?.isFromPolling;
+    
+    // ✅ DEBUG: Log extracted values to diagnose auto-sync issue
+    console.log(`🔍 [EXTRACT DEBUG] Extracted from event for ${deviceId}:`, {
+      recordCount,
+      rtcValid,
+      isFromPolling,
+      hasRecordCount: recordCount !== undefined,
+      hasRtcValid: rtcValid !== undefined,
+      recordCountValue: recordCount,
+      rtcValidValue: rtcValid
+    });
+    
+    // ✅ FIX: Log isFromPolling value for debugging (before device lookup)
+    if (isFromPolling !== undefined) {
+      console.log(`📊 [EVENT] Received DeviceDataUpdated with isFromPolling=${isFromPolling} (type: ${typeof isFromPolling}) for ${deviceId}`);
+    } else {
+      console.log(`⚠️ [EVENT] DeviceDataUpdated event missing isFromPolling field for ${deviceId}`);
+    }
+    
+    if (!deviceId) {
+      console.warn(`⚠️ [EVENT] DeviceDataUpdated event missing deviceId`);
+      return;
+    }
     
     const device = this.scannedDevices.get(deviceId);
     if (!device) {
+      console.warn(`⚠️ [EVENT] DeviceDataUpdated event for unknown device: ${deviceId}`);
       return;
     }
 
@@ -1643,7 +1825,7 @@ class BLEService {
     // ✅ INDUSTRY STANDARD: Buffer live data for periodic batch upload
     // Only buffer if historical sync is complete and timestamp is valid
     const isHistoricalSyncComplete = this.historicalSyncComplete.get(deviceId);
-    const timestampValue = timestamp ? new Date(timestamp).getTime() / 1000 : 0;
+    const timestampValue = timestamp ? (typeof timestamp === 'number' ? timestamp : new Date(timestamp).getTime()) / 1000 : 0;
     const isLiveDataForBuffer = timestampValue > 1577836800; // After 2020-01-01
     
     if (dataChanged && isHistoricalSyncComplete && isLiveDataForBuffer) {
@@ -1671,8 +1853,54 @@ class BLEService {
         console.log(`📤 [AUTO UPLOAD] Batch upload triggered for ${deviceId}`);
         await this.uploadLiveBatch(deviceId);
       }
-    } else if (!isLiveData) {
+    } else if (!isLiveDataForBuffer) {
       console.log(`📦 [CACHED DATA] Skipping buffer - timestamp: ${timestampValue}`);
+    }
+    
+    // ✅ CRITICAL FIX: Trigger auto-sync for iOS (matching Android behavior)
+    // iOS sends DeviceDataUpdated event with isFromPolling, recordCount, rtcValid, etc.
+    // ✅ CRITICAL FIX: Check for recordCount at top level OR in deviceData
+    const eventRecordCount = recordCount !== undefined ? recordCount : (event?.deviceData?.recordCount);
+    const eventRtcValid = rtcValid !== undefined ? rtcValid : (event?.deviceData?.rtcValid);
+    
+    // ✅ CRITICAL DEBUG: Always log pre-check to diagnose auto-sync issues
+    console.log(`🔍 [AUTO SYNC PRE-CHECK] Platform: ${Platform.OS}, deviceId: ${deviceId}, eventRecordCount: ${eventRecordCount}, eventRtcValid: ${eventRtcValid}, hasRecordCount: ${eventRecordCount !== undefined}, hasRtcValid: ${eventRtcValid !== undefined}`);
+    
+    // ✅ CRITICAL FIX: Trigger auto-sync for BOTH iOS and Android when recordCount or rtcValid is present
+    // This should trigger even if ServiceDiscoveryComplete wasn't sent (fallback mechanism)
+    if (eventRecordCount !== undefined || eventRtcValid !== undefined) {
+      const parsedData = {
+        recordCount: eventRecordCount !== undefined ? eventRecordCount : device.deviceData?.recordCount,
+        rtcValid: eventRtcValid !== undefined ? eventRtcValid : (device.deviceData?.rtcValid ?? true),
+        deviceRTC: deviceRTC || (timestamp ? Math.floor(timestamp / 1000) : undefined),
+        isFromPolling: isFromPolling !== undefined ? isFromPolling : false, // ✅ Use value from event, default to false
+        dataSource: dataSource || device.deviceData?.dataSource
+      };
+      
+      console.log(`🔍 [AUTO SYNC DEBUG] Triggering auto-sync check for ${deviceId} (${Platform.OS}):`, {
+        recordCount: parsedData.recordCount,
+        rtcValid: parsedData.rtcValid,
+        isFromPolling: parsedData.isFromPolling,
+        hasRecords: parsedData.recordCount > 0
+      });
+      
+      // ✅ CRITICAL FIX: Use await to ensure async execution completes
+      // Pass isFromPolling from event to auto-sync logic
+      try {
+        await this.maybeTriggerAutoSyncFromDeviceStatus(deviceId, device, parsedData);
+      } catch (error) {
+        // Ignore errors - auto-sync is best effort
+        console.error(`❌ [AUTO SYNC] Error in maybeTriggerAutoSyncFromDeviceStatus:`, error);
+      }
+    } else {
+      console.log(`⏭️ [AUTO SYNC] Skipping auto-sync check for ${deviceId}:`, {
+        platform: Platform.OS,
+        hasRecordCount: eventRecordCount !== undefined,
+        hasRtcValid: eventRtcValid !== undefined,
+        recordCount: eventRecordCount,
+        rtcValid: eventRtcValid,
+        reason: (eventRecordCount === undefined && eventRtcValid === undefined) ? 'no recordCount or rtcValid' : 'unknown'
+      });
     }
   }
 
@@ -1680,6 +1908,17 @@ class BLEService {
   // This handles the new event format that includes type, deviceData, etc.
   async handleAndroidDeviceDataUpdateEvent(event) {
     const { deviceId, type, deviceData: eventDeviceData, batteryLevel, batteryVoltage, recordCount, timestamp, rtcValid } = event;
+    // ✅ FIX: Extract isFromPolling from eventDeviceData (where native layer puts it)
+    // ✅ DEBUG: Log event structure to verify isFromPolling is present
+    if (type === 'device_status' && eventDeviceData) {
+      console.log(`🔍 [DEBUG] Event structure for ${deviceId}:`, {
+        hasDeviceData: !!eventDeviceData,
+        isFromPolling: eventDeviceData.isFromPolling,
+        isFromPollingType: typeof eventDeviceData.isFromPolling,
+        deviceDataKeys: Object.keys(eventDeviceData || {})
+      });
+    }
+    const isFromPolling = eventDeviceData?.isFromPolling === true;
     
     const device = this.scannedDevices.get(deviceId);
     if (!device) {
@@ -1728,11 +1967,24 @@ class BLEService {
         }
       }
       
+      // ✅ CRITICAL FIX: Explicitly preserve temperature and steps when device_status event comes
+      // Device Status characteristic (SDD v1.4) does NOT contain temperature or steps
+      // These values come from Data Transfer records during sync, so we MUST preserve them
+      const preservedTemperature = device.deviceData.temperature;
+      const preservedSteps = device.deviceData.steps;
+      
+      // ✅ CRITICAL FIX: Always use recordCount from event data (Device Status read), never fall back to old value
+      // After sync completes, device may immediately have NEW records, we must show the fresh count
+      const freshRecordCount = recordCount !== undefined ? recordCount : (eventDeviceData?.recordCount);
+      
       device.deviceData = {
         ...device.deviceData,
         batteryLevel: batteryLevelToUse, // Use 2A19 battery level (priority) or Device Status as fallback
         batteryVoltage: batteryVoltage !== undefined ? batteryVoltage : (eventDeviceData?.batteryVoltage ?? device.deviceData.batteryVoltage),
-        recordCount: recordCount !== undefined ? recordCount : (eventDeviceData?.recordCount ?? device.deviceData.recordCount),
+        recordCount: freshRecordCount !== undefined ? freshRecordCount : device.deviceData.recordCount, // Use fresh value if available
+        // ✅ CRITICAL FIX: Explicitly preserve temperature and steps (device_status doesn't have these)
+        temperature: preservedTemperature,
+        steps: preservedSteps,
         // Mark as live data if RTC is valid and timestamp is recent
         dataSource: isLiveData ? 'live' : (device.deviceData?.dataSource || 'cached'),
         lastUpdate: timestampMs ? new Date(timestampMs) : (eventDeviceData?.lastUpdate ? new Date(eventDeviceData.lastUpdate) : device.deviceData.lastUpdate || new Date()),
@@ -1746,10 +1998,12 @@ class BLEService {
       }
 
       // ✅ AUTO-SYNC: Align Android with iOS by using the shared helper
+      // ✅ FIX: Pass isFromPolling flag from event data
       this.maybeTriggerAutoSyncFromDeviceStatus(deviceId, device, {
         recordCount: device.deviceData.recordCount,
         rtcValid: device.deviceData.rtcValid ?? rtcValid,
         deviceRTC: timestampMs ? Math.floor(timestampMs / 1000) : undefined,
+        isFromPolling: isFromPolling, // ✅ Pass polling flag extracted from event
       }).catch((error) => {
         // Ignore errors - auto-sync is best effort
       });
@@ -1800,20 +2054,46 @@ class BLEService {
     } else if (type === 'sync_complete') {
       // ✅ SYNC COMPLETE: Sync finished, update record count (matching iOS behavior)
       // Note: event parameter contains the sync_complete data from Android
-      const finalRecordCount = event.recordCount !== undefined ? event.recordCount : (eventDeviceData?.recordCount ?? device.deviceData?.recordCount ?? 0);
+      // ✅ CRITICAL FIX: After successful sync, recordCount should ALWAYS be 0 (all records cleared from device)
+      // Even if Android sends a different value, after successful sync the device has 0 records
+      const syncSuccess = event.success !== false; // Default to true if not specified
+      const finalRecordCount = syncSuccess ? 0 : (event.recordCount !== undefined ? event.recordCount : 0);
       
-      console.log(`📊 [ANDROID] Sync complete via deviceDataUpdate - Final record count: ${finalRecordCount}`);
+      console.log(`📊 [ANDROID] Sync complete via deviceDataUpdate - Success: ${syncSuccess}, Final record count: ${finalRecordCount}`);
+      
+      // ✅ CRITICAL FIX: Mark sync completion time to prevent device_status from overwriting recordCount
+      if (!this.autoSyncMeta) {
+        this.autoSyncMeta = new Map();
+      }
+      const meta = this.autoSyncMeta.get(deviceId) || {};
+      meta.lastSyncCompletedAt = Date.now();
+      meta.syncCompletedRecordCount = finalRecordCount; // Store the recordCount at sync completion (should be 0)
+      this.autoSyncMeta.set(deviceId, meta);
+      
+      // ✅ CRITICAL FIX: Preserve temperature, steps, and totalSteps from synced data
+      // The sync_complete event doesn't contain these values, so we MUST preserve them from the sync
+      const preservedTemperature = device.deviceData.temperature;
+      const preservedSteps = device.deviceData.steps;
+      const preservedTotalSteps = device.deviceData.totalSteps;
+      const preservedBatteryLevel = device.deviceData.batteryLevel;
       
       // Update device data with final record count
       device.deviceData = {
         ...device.deviceData,
-        recordCount: finalRecordCount,
-        ...(eventDeviceData && { ...eventDeviceData })
+        recordCount: finalRecordCount, // Always 0 after successful sync
+        syncedAt: new Date(), // ✅ CRITICAL: Mark when sync completed for grace period check
+        // ✅ CRITICAL: Explicitly preserve synced data (temperature, steps, totalSteps)
+        // sync_complete event only contains recordCount and batteryLevel, not temperature/steps
+        temperature: preservedTemperature,
+        steps: preservedSteps,
+        totalSteps: preservedTotalSteps,
+        // Only update battery if provided in event, otherwise preserve
+        batteryLevel: eventDeviceData?.batteryLevel ?? preservedBatteryLevel,
       };
       
       // Update manufacturerData.recordCount for UI consistency
       if (device.manufacturerData) {
-        device.manufacturerData.recordCount = finalRecordCount;
+        device.manufacturerData.recordCount = finalRecordCount; // Always 0 after successful sync
         device.manufacturerData.hasRecords = finalRecordCount > 0;
       }
       
@@ -1873,6 +2153,19 @@ class BLEService {
         ...(type === 'device_status' && {
           recordCount: device.deviceData.recordCount,
           batteryLevel: device.deviceData.batteryLevel,
+          // ✅ CRITICAL FIX: Include sync completion info to prevent overwriting recordCount
+          syncJustCompleted: (() => {
+            if (!this.autoSyncMeta) return false;
+            const meta = this.autoSyncMeta.get(deviceId);
+            if (!meta || !meta.lastSyncCompletedAt) return false;
+            const timeSinceSync = Date.now() - meta.lastSyncCompletedAt;
+            return timeSinceSync < 15000; // 15 second grace period (device needs time to clear flash and generate new records)
+          })(),
+          syncCompletedRecordCount: (() => {
+            if (!this.autoSyncMeta) return undefined;
+            const meta = this.autoSyncMeta.get(deviceId);
+            return meta?.syncCompletedRecordCount;
+          })()
         }),
         ...(type === 'sync_records' && {
           recordsReceived: event.recordsReceived || 0,
@@ -2973,7 +3266,7 @@ class BLEService {
         
         if (timeSinceCooldown < cooldownDuration) {
           const remainingTime = Math.ceil((cooldownDuration - timeSinceCooldown) / 1000);
-          const errorMessage = `Device is in cooldown after unpair. Please wait ${remainingTime} seconds before reconnecting.`;
+          const errorMessage = `Device is in cooldown after disconnect. Please wait ${remainingTime} seconds before reconnecting.`;
           console.warn(`⏳ [CONNECTION] ${errorMessage}`);
           throw new Error(errorMessage);
         } else {
@@ -3939,9 +4232,320 @@ class BLEService {
     return isActive;
   }
 
+  // ✅ IMPROVEMENT 1: Error Handling with Exponential Backoff
+  async retrySyncWithBackoff(deviceId, attempt = 0) {
+    if (attempt >= this.autoSyncConfig.maxRetries) {
+      console.error(`❌ [AUTO SYNC] Max retries (${this.autoSyncConfig.maxRetries}) reached for ${deviceId}`);
+      this.recordSyncFailure(deviceId, 'max_retries_exceeded');
+      this.emitUserFeedback(deviceId, 'sync_failed', { reason: 'max_retries_exceeded' });
+      return false;
+    }
+    
+    const delay = this.baseRetryDelay * Math.pow(2, attempt); // Exponential backoff
+    console.log(`🔄 [AUTO SYNC] Retry attempt ${attempt + 1}/${this.autoSyncConfig.maxRetries} for ${deviceId} after ${delay}ms`);
+    
+    return new Promise((resolve) => {
+      const retryTimer = setTimeout(async () => {
+        try {
+          const result = await this.startDataSync(deviceId);
+          if (result && result.status === 'success') {
+            this.syncRetryAttempts.delete(deviceId);
+            resolve(true);
+          } else if (result && result.status === 'already_syncing') {
+            // Sync already in progress, not a failure
+            this.syncRetryAttempts.delete(deviceId);
+            resolve(true);
+          } else {
+            // Retry again
+            const success = await this.retrySyncWithBackoff(deviceId, attempt + 1);
+            resolve(success);
+          }
+        } catch (error) {
+          console.error(`❌ [AUTO SYNC] Retry attempt ${attempt + 1} failed:`, error);
+          const success = await this.retrySyncWithBackoff(deviceId, attempt + 1);
+          resolve(success);
+        }
+      }, delay);
+      
+      this.syncRetryTimers.set(deviceId, retryTimer);
+    });
+  }
+  
+  // ✅ IMPROVEMENT 2: State Transition Logging
+  logStateTransition(deviceId, fromState, toState, reason = '') {
+    if (!this.stateTransitionHistory) {
+      this.stateTransitionHistory = new Map();
+    }
+    
+    if (!this.stateTransitionHistory.has(deviceId)) {
+      this.stateTransitionHistory.set(deviceId, []);
+    }
+    
+    const history = this.stateTransitionHistory.get(deviceId);
+    const transition = {
+      timestamp: Date.now(),
+      from: fromState,
+      to: toState,
+      reason: reason
+    };
+    
+    history.push(transition);
+    
+    // Keep only last N transitions
+    if (history.length > this.maxStateHistory) {
+      history.shift();
+    }
+    
+    console.log(`🔄 [STATE TRANSITION] ${deviceId}: ${fromState} → ${toState}${reason ? ` (${reason})` : ''}`);
+    
+    // Emit event for debugging
+    if (this.autoSyncConfig.enableMetrics) {
+      this.emit('stateTransition', { deviceId, ...transition });
+    }
+  }
+  
+    // ✅ IMPROVEMENT 3: Adaptive Throttle Calculation
+  calculateAdaptiveThrottle(deviceId) {
+    if (this.autoSyncConfig.throttleMode !== 'adaptive') {
+      // Use fixed throttle based on mode
+      switch (this.autoSyncConfig.throttleMode) {
+        case 'fast':
+          return this.adaptiveThrottleConfig.fast;
+        case 'slow':
+          return this.adaptiveThrottleConfig.slow;
+        case 'custom':
+          return this.autoSyncConfig.customThrottle;
+        default:
+          return this.adaptiveThrottleConfig.normal;
+      }
+    }
+    
+    // Calculate record accumulation rate
+    const rateHistory = this.recordAccumulationRates.get(deviceId) || [];
+    if (rateHistory.length < 2) {
+      return this.adaptiveThrottleConfig.normal; // Default to normal if not enough data
+    }
+    
+    // Calculate average records per 30 seconds over last 5 notifications
+    const recentHistory = rateHistory.slice(-5);
+    let totalRecords = 0;
+    let timeSpan = 0;
+    
+    if (recentHistory.length >= 2) {
+      const first = recentHistory[0];
+      const last = recentHistory[recentHistory.length - 1];
+      totalRecords = last.count - first.count;
+      timeSpan = (last.timestamp - first.timestamp) / 1000; // Convert to seconds
+    }
+    
+    // ✅ FIX: Clamp to minimum 0 to handle negative rates (shouldn't happen, but protect against it)
+    const recordsPer30s = Math.max(0, timeSpan > 0 ? (totalRecords / timeSpan) * 30 : 0);
+    
+    // ✅ FIX: Validate timeSpan to prevent division issues
+    if (timeSpan <= 0 || !isFinite(recordsPer30s)) {
+      console.warn(`⚠️ [ADAPTIVE THROTTLE] ${deviceId}: Invalid rate calculation, using normal mode`);
+      return this.adaptiveThrottleConfig.normal;
+    }
+    
+    // Determine throttle based on accumulation rate
+    let throttle;
+    if (recordsPer30s > 2) {
+      throttle = this.adaptiveThrottleConfig.fast; // Fast accumulation
+      console.log(`⚡ [ADAPTIVE THROTTLE] ${deviceId}: Fast mode (${recordsPer30s.toFixed(1)} records/30s) → ${throttle}ms`);
+    } else if (recordsPer30s < 1) {
+      throttle = this.adaptiveThrottleConfig.slow; // Slow accumulation
+      console.log(`🐌 [ADAPTIVE THROTTLE] ${deviceId}: Slow mode (${recordsPer30s.toFixed(1)} records/30s) → ${throttle}ms`);
+    } else {
+      throttle = this.adaptiveThrottleConfig.normal; // Normal accumulation
+      console.log(`⚖️ [ADAPTIVE THROTTLE] ${deviceId}: Normal mode (${recordsPer30s.toFixed(1)} records/30s) → ${throttle}ms`);
+    }
+    
+    return throttle;
+  }
+  
+  // ✅ IMPROVEMENT 4: Fallback Polling Setup
+  setupFallbackPolling(deviceId) {
+    // ✅ COMPLETELY DISABLED: All JavaScript fallback polling removed
+    // Native polling handles Device Status reads every 30 seconds:
+    //   - Android: ScheduledExecutorService in SampleBridgeAndroid.java
+    //   - iOS: Timer.scheduledTimer in BridgingCodeModule.swift
+    // Both start automatically after SET_DATA_ACQUISITION_INTERVAL command (0x04)
+    
+    console.log(`ℹ️ [POLLING] setupFallbackPolling disabled - native polling active for ${deviceId}`);
+    return;
+  }
+  
+  // ✅ IMPROVEMENT 5: Sync Queue Management
+  async processSyncQueue(deviceId) {
+    // ✅ FIX: Check if sync is active BEFORE processing queue
+    let isSyncActive = false;
+    if (Platform.OS === 'android' && SampleBridgeAndroid) {
+      try {
+        const nativeState = await SampleBridgeAndroid.getDataSyncState(deviceId);
+        if (nativeState && nativeState.state) {
+          const activeStates = ['syncing', 'time_syncing'];
+          isSyncActive = activeStates.includes(nativeState.state);
+        }
+      } catch (error) {
+        // Ignore error
+      }
+    } else {
+      const syncState = this.dataSyncStates?.get(deviceId);
+      isSyncActive = syncState?.isActive === true;
+    }
+    
+    if (this.processingSync.get(deviceId) || isSyncActive) {
+      console.log(`⏸️ [SYNC QUEUE] Sync active or processing, waiting... (state: ${isSyncActive ? 'active' : 'processing'})`);
+      return; // Already processing or sync is active
+    }
+    
+    const queue = this.syncQueue.get(deviceId) || [];
+    if (queue.length === 0) {
+      return; // No pending syncs
+    }
+    
+    this.processingSync.set(deviceId, true);
+    const syncRequest = queue.shift();
+    
+    console.log(`📋 [SYNC QUEUE] Processing sync for ${deviceId} (${queue.length} remaining in queue)`);
+    
+    try {
+      const result = await this.startDataSync(deviceId);
+      
+      if (result && result.status === 'success') {
+        console.log(`✅ [SYNC QUEUE] Sync completed for ${deviceId}`);
+      } else if (result && result.status === 'already_syncing') {
+        // Re-queue if already syncing
+        queue.unshift(syncRequest);
+        console.log(`⏸️ [SYNC QUEUE] Re-queued sync for ${deviceId} (sync already in progress)`);
+      }
+    } catch (error) {
+      console.error(`❌ [SYNC QUEUE] Sync failed for ${deviceId}:`, error);
+      // Retry with exponential backoff
+      await this.retrySyncWithBackoff(deviceId);
+    } finally {
+      this.processingSync.set(deviceId, false);
+      
+      // Process next item in queue
+      if (queue.length > 0) {
+        setTimeout(() => this.processSyncQueue(deviceId), 1000);
+      }
+    }
+  }
+  
+  addToSyncQueue(deviceId, syncRequest = {}) {
+    if (!this.syncQueue.has(deviceId)) {
+      this.syncQueue.set(deviceId, []);
+    }
+    
+    const queue = this.syncQueue.get(deviceId);
+    queue.push({
+      ...syncRequest,
+      timestamp: Date.now()
+    });
+    
+    console.log(`📋 [SYNC QUEUE] Added sync to queue for ${deviceId} (queue size: ${queue.length})`);
+    
+    // Process queue if not already processing
+    if (!this.processingSync.get(deviceId)) {
+      this.processSyncQueue(deviceId);
+    }
+  }
+  
+  // ✅ IMPROVEMENT 6: User Feedback Events
+  emitUserFeedback(deviceId, eventType, data = {}) {
+    if (!this.autoSyncConfig.enableUserFeedback) {
+      return;
+    }
+    
+    const feedback = {
+      deviceId,
+      type: eventType,
+      timestamp: Date.now(),
+      ...data
+    };
+    
+    this.emit('autoSyncFeedback', feedback);
+    console.log(`📢 [USER FEEDBACK] ${deviceId}: ${eventType}`, data);
+  }
+  
+  // ✅ IMPROVEMENT 7: Metrics Tracking
+  recordSyncStart(deviceId) {
+    if (!this.autoSyncConfig.enableMetrics) {
+      return;
+    }
+    
+    if (!this.syncMetrics.has(deviceId)) {
+      this.syncMetrics.set(deviceId, {
+        successCount: 0,
+        failureCount: 0,
+        totalLatency: 0,
+        lastSyncTime: null,
+        averageLatency: 0,
+        successRate: 0
+      });
+    }
+    
+    const metrics = this.syncMetrics.get(deviceId);
+    metrics.lastSyncStartTime = Date.now();
+  }
+  
+  recordSyncSuccess(deviceId, latency) {
+    if (!this.autoSyncConfig.enableMetrics) {
+      return;
+    }
+    
+    const metrics = this.syncMetrics.get(deviceId) || {};
+    metrics.successCount = (metrics.successCount || 0) + 1;
+    metrics.totalLatency = (metrics.totalLatency || 0) + latency;
+    metrics.lastSyncTime = Date.now();
+    metrics.averageLatency = metrics.totalLatency / metrics.successCount;
+    metrics.successRate = metrics.successCount / (metrics.successCount + (metrics.failureCount || 0));
+    
+    this.syncMetrics.set(deviceId, metrics);
+    
+    console.log(`📊 [METRICS] ${deviceId}: Success (latency: ${latency}ms, avg: ${metrics.averageLatency.toFixed(0)}ms, success rate: ${(metrics.successRate * 100).toFixed(1)}%)`);
+  }
+  
+  recordSyncFailure(deviceId, reason) {
+    if (!this.autoSyncConfig.enableMetrics) {
+      return;
+    }
+    
+    const metrics = this.syncMetrics.get(deviceId) || {};
+    metrics.failureCount = (metrics.failureCount || 0) + 1;
+    metrics.lastFailureTime = Date.now();
+    metrics.lastFailureReason = reason;
+    metrics.successRate = (metrics.successCount || 0) / ((metrics.successCount || 0) + metrics.failureCount);
+    
+    this.syncMetrics.set(deviceId, metrics);
+    
+    console.log(`📊 [METRICS] ${deviceId}: Failure (reason: ${reason}, success rate: ${(metrics.successRate * 100).toFixed(1)}%)`);
+  }
+  
+  getSyncMetrics(deviceId) {
+    return this.syncMetrics.get(deviceId) || null;
+  }
+  
+  // ✅ IMPROVEMENT 8: Configuration Management
+  updateAutoSyncConfig(newConfig) {
+    this.autoSyncConfig = {
+      ...this.autoSyncConfig,
+      ...newConfig
+    };
+    console.log(`⚙️ [CONFIG] Auto-sync configuration updated:`, this.autoSyncConfig);
+    this.emit('autoSyncConfigUpdated', this.autoSyncConfig);
+  }
+  
+  getAutoSyncConfig() {
+    return { ...this.autoSyncConfig };
+  }
+
   // Shared auto-sync decision for device status notifications (parity with iOS)
   async maybeTriggerAutoSyncFromDeviceStatus(deviceId, device, parsedData, options = {}) {
-    const hasRecordsAvailable = parsedData?.recordCount && parsedData?.recordCount > 0;
+    // ✅ CRITICAL FIX: Allow sync even with 1 record (no minimum threshold)
+    // The device generates records continuously, so we should sync whenever records are available
+    const hasRecordsAvailable = parsedData?.recordCount !== undefined && parsedData?.recordCount > 0;
     
     // ✅ SYNC WITH iOS: Use native state directly (iOS uses native state, not JS state)
     // For Android, query native state directly like iOS does
@@ -3952,10 +4556,11 @@ class BLEService {
         // ✅ SYNC WITH iOS: Query native state directly (matching iOS behavior)
         const nativeState = await SampleBridgeAndroid.getDataSyncState(deviceId);
         if (nativeState && nativeState.state) {
-          // ✅ SYNC WITH iOS: Native states that indicate active sync: "syncing", "ready", "time_syncing"
-          // iOS only considers "syncing" and "ready" as active (line 1709 in BridgingCodeModule.swift)
-          // States that are NOT active: "idle", "complete", "failed", "time_sync_failed", "time_synced"
-          const activeStates = ['syncing', 'ready', 'time_syncing'];
+          // ✅ SYNC WITH iOS: Native states that indicate active sync: "syncing", "time_syncing"
+          // "ready" is a transitional state meaning "ready to start sync" - NOT an active sync state
+          // States that are NOT active: "idle", "complete", "ready", "failed", "time_sync_failed", "time_synced"
+          // Note: "ready" should only be set briefly before sync starts, and should transition to "syncing" or "idle"
+          const activeStates = ['syncing', 'time_syncing'];
           isSyncActive = activeStates.includes(nativeState.state);
           
           // Clear JS state if it exists (native state is source of truth)
@@ -3980,90 +4585,377 @@ class BLEService {
 
     // Respect polling guard unless explicitly bypassed
     const nowMs = Date.now();
-    const manualReadTime = this.manualReadTimestamps?.get(deviceId);
-    const isFromPolling = options?.skipPollingCheck
-      ? false
-      : (manualReadTime && (nowMs - manualReadTime) < 2000);
-
+    
     if (!this.autoSyncMeta) {
       this.autoSyncMeta = new Map();
     }
     const meta = this.autoSyncMeta.get(deviceId) || {};
-    const recordCountIncreased = meta.lastRecordCount === undefined || parsedData?.recordCount > meta.lastRecordCount;
-    const throttleExpired = !meta.lastSyncAt || (nowMs - meta.lastSyncAt) > 30000; // 30s guard to stop 3s loops
-
-    // ONLY sync on live notifications (not from polling reads)
-    if (hasRecordsAvailable && !isSyncActive && isConnected && isLiveData && !isFromPolling && (recordCountIncreased || throttleExpired)) {
-      // Clear any existing timer for this device
-      if (this.autoSyncTimers?.has(deviceId)) {
-        clearTimeout(this.autoSyncTimers.get(deviceId));
+    
+    // ✅ FIX: Check if sync just completed - skip auto-sync if sync completed within last 5 seconds
+    // This prevents the read after sync completion from triggering another sync
+    let syncJustCompleted = false;
+    if (Platform.OS === 'android' && SampleBridgeAndroid) {
+      try {
+        const nativeState = await SampleBridgeAndroid.getDataSyncState(deviceId);
+        if (nativeState && nativeState.state === 'complete') {
+          // Use lastSyncCompletedAt if available (more accurate), otherwise fall back to lastSyncAt
+          const lastSyncCompletedAt = meta.lastSyncCompletedAt || meta.lastSyncAt || 0;
+          const timeSinceSync = nowMs - lastSyncCompletedAt;
+          syncJustCompleted = timeSinceSync < 15000; // 15 seconds grace period (prevent duplicate syncs of newly generated records)
+          if (syncJustCompleted) {
+            console.log(`⏭️ [AUTO SYNC] Skipping - sync just completed ${timeSinceSync}ms ago (state: complete)`);
+          }
+        }
+      } catch (error) {
+        // Ignore error, continue with normal flow
       }
+    }
+    
+    // ✅ FIX: Only skip auto-sync for MANUAL reads (user-initiated), not periodic polling reads
+    // Since firmware doesn't send automatic notifications, periodic polling (every 30s) is the workaround
+    // and should be treated as "live updates" for auto-sync purposes
+    const isFromManualRead = options?.skipPollingCheck
+      ? false
+      : (this.manualReadTimestamps?.get(deviceId) && (nowMs - this.manualReadTimestamps.get(deviceId)) < 2000);
+    
+    // ✅ FIX: Use isFromPolling from parsedData (sent by native iOS/Android) if available
+    // This is more accurate than calculating from timestamps
+    // Native code tracks polling reads correctly and sends the flag in the event
+    let isFromPolling = parsedData?.isFromPolling;
+    
+    // ✅ FALLBACK: If isFromPolling not provided by native code, calculate from timestamps
+    // This is a fallback for older code paths or if native code doesn't send the flag
+    if (isFromPolling === undefined || isFromPolling === null) {
+      // Check if this is from periodic polling (workaround for missing notifications)
+      // Periodic polling happens every ~30 seconds, so if time since last read is ~30s, it's periodic polling
+      const lastReadTime = meta.lastDeviceStatusReadTime || 0;
+      const timeSinceLastRead = lastReadTime > 0 ? (nowMs - lastReadTime) : 0;
+      const isFromPeriodicPolling = timeSinceLastRead > 25000 && timeSinceLastRead < 35000; // ~30 seconds ± 5s
+      
+      // Only skip if it's a manual read, not periodic polling
+      isFromPolling = isFromManualRead && !isFromPeriodicPolling;
+      
+      // ✅ DEBUG: Log when using fallback calculation
+      if (isFromPolling) {
+        console.log(`⚠️ [AUTO SYNC] Using fallback isFromPolling calculation (native flag not provided)`);
+      }
+    } else {
+      // ✅ FIX: Ensure isFromPolling is a boolean (convert truthy/falsy to boolean)
+      isFromPolling = isFromPolling === true;
+      // ✅ DEBUG: Log when using native flag
+      console.log(`✅ [AUTO SYNC] Using isFromPolling=${isFromPolling} from native event`);
+    }
+    
+    // ✅ FIX: Ensure isFromPolling is always a boolean (never undefined/null)
+    // This prevents issues in comparisons and logging
+    if (isFromPolling === undefined || isFromPolling === null) {
+      isFromPolling = false;
+    }
+    
+    // Update last read time for next comparison
+    meta.lastDeviceStatusReadTime = nowMs;
+    this.autoSyncMeta.set(deviceId, meta);
 
+    const recordCountIncreased = meta.lastRecordCount === undefined || parsedData?.recordCount > meta.lastRecordCount;
+    
+    // ✅ IMPROVEMENT 3: Use adaptive throttle
+    const throttleTime = this.calculateAdaptiveThrottle(deviceId);
+    const throttleExpired = !meta.lastSyncAt || (nowMs - meta.lastSyncAt) > throttleTime;
+    
+    // ✅ FIX: Allow immediate sync for single records (don't wait for throttle)
+    // Single records are likely new data that should be synced quickly
+    // Multiple records can wait for throttle to expire (they're accumulating anyway)
+    const isSingleRecord = parsedData?.recordCount === 1;
+    const shouldSync = isSingleRecord || recordCountIncreased || throttleExpired;
+    
+    // Track record accumulation for adaptive throttle
+    if (!this.recordAccumulationRates.has(deviceId)) {
+      this.recordAccumulationRates.set(deviceId, []);
+    }
+    const rateHistory = this.recordAccumulationRates.get(deviceId);
+    rateHistory.push({
+      timestamp: nowMs,
+      count: parsedData?.recordCount || 0
+    });
+    // Keep only last 10 entries
+    if (rateHistory.length > 10) {
+      rateHistory.shift();
+    }
+    
+    // ✅ REMOVED: JavaScript fallback polling (native polling handles everything)
+    // Update last notification time for metrics only
+    this.lastNotificationTime.set(deviceId, nowMs);
+
+    // ✅ FIX: Notification deduplication - ignore duplicates within 100ms
+    // This prevents Android's dual event handlers (DeviceDataUpdated + deviceDataUpdate) from triggering twice
+    const lastNotification = this.lastNotificationData?.get(deviceId);
+    if (lastNotification && 
+        lastNotification.recordCount === parsedData?.recordCount &&
+        (nowMs - lastNotification.timestamp) < this.notificationDedupeWindow) {
+      console.log(`⏭️ [AUTO SYNC] Skipping - duplicate notification (${nowMs - lastNotification.timestamp}ms ago, same record count: ${parsedData?.recordCount})`);
+      return;
+    }
+    
+    // Update last notification data
+    if (!this.lastNotificationData) {
+      this.lastNotificationData = new Map();
+    }
+    this.lastNotificationData.set(deviceId, {
+      recordCount: parsedData?.recordCount || 0,
+      timestamp: nowMs
+    });
+    
+    // ✅ CRITICAL FIX (iOS & Android): Polling IS the workaround for live notifications
+    // Firmware doesn't send automatic notifications when records are generated
+    // Instead, native code polls Device Status every 30-120 seconds and sets isFromPolling=true
+    // These polling reads SHOULD trigger auto-sync when records are available
+    // 
+    // Previous bug: Condition was `!isFromPollingValue` which blocked polling reads
+    // Android was working by accident because isFromPolling was extracted wrong (false instead of true)
+    // iOS was blocked completely because isFromPolling was extracted correctly (true)
+    const isFromPollingValue = isFromPolling === true;
+    
+    // ✅ DEBUG: Log auto-sync decision criteria for both platforms
+    console.log(`📊 [AUTO SYNC] Auto-sync conditions (${Platform.OS}):`, {
+      hasRecordsAvailable,
+      isSyncActive,
+      syncJustCompleted,
+      isConnected,
+      isLiveData,
+      isFromPolling: isFromPollingValue,
+      shouldSync,
+      recordCount: parsedData?.recordCount,
+      isSingleRecord,
+      recordCountIncreased,
+      throttleExpired,
+      throttleTime
+    });
+    
+    // ✅ CRITICAL FIX: Trigger auto-sync ONLY for polling reads (isFromPollingValue=true)
+    // Manual reads (isFromPollingValue=false) should NOT trigger auto-sync
+    if (hasRecordsAvailable && !isSyncActive && !syncJustCompleted && isConnected && isLiveData && isFromPollingValue && shouldSync) {
+      console.log(`✅ [AUTO SYNC] All conditions met for ${Platform.OS}, proceeding with auto-sync for ${deviceId}`);
+      
+      // ✅ FIX: Timer reset debounce - only reset if last reset was > 500ms ago
+      const lastTimerResetTime = this.lastTimerReset?.get(deviceId) || 0;
+      const timeSinceLastReset = nowMs - lastTimerResetTime;
+      
+      if (timeSinceLastReset < this.timerResetDebounceWindow) {
+        console.log(`⏭️ [AUTO SYNC] Skipping timer reset - too recent (${timeSinceLastReset}ms ago, min: ${this.timerResetDebounceWindow}ms)`);
+        return;
+      }
+      
+      // ✅ CRITICAL FIX: Clear any existing timer BEFORE creating new one
+      // This prevents multiple timers from being created when multiple notifications arrive quickly
+      if (!this.autoSyncTimers) {
+        this.autoSyncTimers = new Map();
+      }
+      
+      if (this.autoSyncTimers.has(deviceId)) {
+        const existingTimer = this.autoSyncTimers.get(deviceId);
+        clearTimeout(existingTimer);
+        this.autoSyncTimers.delete(deviceId); // Remove from map immediately
+        console.log(`🔄 [AUTO SYNC] Cleared existing timer for ${deviceId} - new notification received`);
+      }
+      
+      // Update last timer reset time
+      if (!this.lastTimerReset) {
+        this.lastTimerReset = new Map();
+      }
+      this.lastTimerReset.set(deviceId, nowMs);
+
+      // ✅ TRACK RECORD COUNT: Store the record count at notification time for comparison
+      const recordCountAtNotification = parsedData.recordCount;
+      const notificationTimestamp = Date.now();
+      
+      // ✅ FIX: Store hasRecordsAvailable in closure since it's checked inside timer
+      const hasRecordsAtNotification = hasRecordsAvailable;
+      
       const syncTimer = setTimeout(async () => {
+        if (this.autoSyncConfig.debounceDelay > 0) {
+          console.log(`⏰ [AUTO SYNC] Timer fired for ${deviceId} after ${this.autoSyncConfig.debounceDelay}ms delay`);
+        } else {
+          console.log(`⏰ [AUTO SYNC] Starting sync immediately for ${deviceId} (no debounce delay)`);
+        }
+        
         const currentDevice = this.scannedDevices.get(deviceId);
         const stillConnected = currentDevice?.connectionState === CONNECTION_STATES.CONNECTED;
+        const currentRecordCount = currentDevice?.deviceData?.recordCount || recordCountAtNotification;
+        const stillHasRecords = currentRecordCount > 0;
         
         // ✅ SYNC WITH iOS: Check native state directly (matching iOS behavior)
         let stillActive = false;
+        let currentState = 'unknown';
         if (Platform.OS === 'android' && SampleBridgeAndroid) {
-          try {
-            const nativeState = await SampleBridgeAndroid.getDataSyncState(deviceId);
-            if (nativeState && nativeState.state) {
-              const activeStates = ['syncing', 'ready', 'time_syncing'];
-              stillActive = activeStates.includes(nativeState.state);
-            }
+            try {
+              const nativeState = await SampleBridgeAndroid.getDataSyncState(deviceId);
+              if (nativeState && nativeState.state) {
+                currentState = nativeState.state;
+                // ✅ FIX: "ready" is NOT an active sync state - it's a transitional state
+                // Only "syncing" and "time_syncing" indicate an active sync
+                const activeStates = ['syncing', 'time_syncing'];
+                stillActive = activeStates.includes(nativeState.state);
+                console.log(`🔍 [AUTO SYNC] Native sync state: ${currentState}, stillActive: ${stillActive}`);
+              }
           } catch (error) {
             // Fallback to JS state if native query fails
             const currentSyncState = this.dataSyncStates?.get(deviceId);
             stillActive = currentSyncState?.isActive === true;
+            currentState = currentSyncState?.state || 'unknown';
+            console.log(`⚠️ [AUTO SYNC] Native state query failed, using JS state: ${stillActive}`);
           }
         } else {
           // iOS: Use JS state (iOS native manages state internally)
           const currentSyncState = this.dataSyncStates?.get(deviceId);
           stillActive = currentSyncState?.isActive === true;
+          currentState = currentSyncState?.state || 'unknown';
         }
 
-        if (!stillActive && stillConnected && hasRecordsAvailable) {
-          console.log(`🔄 [AUTO SYNC] Triggering sync start from live notification - ${parsedData.recordCount} records available`);
-          console.log(`ℹ️ [AUTO SYNC] Note: Device may send more records than shown (new records may be generated between status check and sync start)`);
+        if (!stillActive && stillConnected && stillHasRecords) {
+          const delayMs = Date.now() - notificationTimestamp;
+          const recordCountDelta = currentRecordCount - recordCountAtNotification;
+          
+          console.log(`🔄 [AUTO SYNC] Triggering sync start from live notification`);
+          console.log(`📊 [AUTO SYNC] Record count at notification: ${recordCountAtNotification}, current: ${currentRecordCount}, delta: ${recordCountDelta}`);
+          console.log(`⏱️ [AUTO SYNC] Delay between notification and sync start: ${delayMs}ms`);
+          console.log(`ℹ️ [AUTO SYNC] Note: Device continues generating records during delay - sync will include all available records`);
+          
+          // ✅ IMPROVEMENT 2: Log state transition
+          this.logStateTransition(deviceId, currentState, 'syncing', 'auto-sync triggered');
+          
+          // ✅ IMPROVEMENT 6: Emit user feedback
+          this.emitUserFeedback(deviceId, 'sync_starting', {
+            recordCount: currentRecordCount,
+            reason: 'auto_sync'
+          });
+          
+          // ✅ IMPROVEMENT 7: Record sync start for metrics
+          this.recordSyncStart(deviceId);
+          
           try {
-            await this.startDataSync(deviceId);
+            // ✅ IMPROVEMENT 5: Use sync queue if sync is already in progress
+            if (this.processingSync.get(deviceId)) {
+              console.log(`📋 [SYNC QUEUE] Sync already processing, adding to queue`);
+              this.addToSyncQueue(deviceId, {
+                recordCount: currentRecordCount,
+                reason: 'auto_sync'
+              });
+              return;
+            }
+            
+            const syncStartTime = Date.now();
+            const result = await this.startDataSync(deviceId);
+            
+            // ✅ CHECK FOR DUPLICATE SYNC: If native rejected due to already syncing, log it
+            if (result && result.status === 'already_syncing') {
+              console.warn(`⚠️ [AUTO SYNC] Sync rejected - already in progress (state: ${result.currentState})`);
+              // Add to queue instead
+              this.addToSyncQueue(deviceId, {
+                recordCount: currentRecordCount,
+                reason: 'auto_sync_retry'
+              });
+              return;
+            }
+            
+            // ✅ IMPROVEMENT 1: Handle errors with exponential backoff
+            if (result && result.status === 'error') {
+              console.error(`❌ [AUTO SYNC] Sync failed: ${result.error}`);
+              this.recordSyncFailure(deviceId, result.error || 'unknown_error');
+              this.emitUserFeedback(deviceId, 'sync_failed', { error: result.error });
+              
+              // Retry with exponential backoff
+              await this.retrySyncWithBackoff(deviceId);
+              return;
+            }
+            
+            // ✅ IMPROVEMENT 7: Record success metrics
+            const syncLatency = Date.now() - syncStartTime;
+            this.recordSyncSuccess(deviceId, syncLatency);
+            
             // Update meta on successful kick-off
             this.autoSyncMeta.set(deviceId, {
-              lastRecordCount: parsedData.recordCount,
+              lastRecordCount: recordCountAtNotification,
               lastSyncAt: Date.now(),
+            });
+            
+            // ✅ IMPROVEMENT 6: Emit success feedback
+            this.emitUserFeedback(deviceId, 'sync_started', {
+              recordCount: currentRecordCount
             });
           } catch (error) {
             console.error(`❌ [AUTO SYNC] Failed to start sync:`, error);
+            this.recordSyncFailure(deviceId, error.message || 'exception');
+            this.emitUserFeedback(deviceId, 'sync_failed', { error: error.message });
+            
+            // ✅ IMPROVEMENT 1: Retry with exponential backoff
+            await this.retrySyncWithBackoff(deviceId);
           }
         } else {
-          console.log(`⏭️ [AUTO SYNC] Conditions changed during delay - sync: ${stillActive}, connected: ${stillConnected}`);
+          console.log(`⏭️ [AUTO SYNC] Conditions changed during delay - sync: ${stillActive}, connected: ${stillConnected}, hasRecords: ${stillHasRecords}`);
+          if (stillActive) {
+            console.log(`   → Sync is active, skipping auto-sync`);
+            // ✅ IMPROVEMENT 5: Add to queue instead
+            this.addToSyncQueue(deviceId, {
+              recordCount: currentRecordCount,
+              reason: 'sync_already_active'
+            });
+          }
+          if (!stillConnected) {
+            console.log(`   → Device disconnected, skipping auto-sync`);
+          }
+          if (!stillHasRecords) {
+            console.log(`   → No records available, skipping auto-sync`);
+          }
         }
 
+        // Always clean up timer after it fires
         if (this.autoSyncTimers) {
           this.autoSyncTimers.delete(deviceId);
         }
-      }, 2000); // 2 second delay like native Android
-
-      if (!this.autoSyncTimers) {
-        this.autoSyncTimers = new Map();
-      }
+      }, this.autoSyncConfig.debounceDelay); // Use configurable debounce delay
+      
+      // Set the new timer
       this.autoSyncTimers.set(deviceId, syncTimer);
-
-      console.log(`⏰ [AUTO SYNC] Scheduled sync start in 2 seconds for ${deviceId} (${parsedData.recordCount} records)`);
+      if (this.autoSyncConfig.debounceDelay > 0) {
+        console.log(`⏰ [AUTO SYNC] Scheduled sync start in ${this.autoSyncConfig.debounceDelay}ms for ${deviceId} (${parsedData.recordCount} records at notification time)`);
+        console.log(`ℹ️ [AUTO SYNC] Note: Record count may increase during ${this.autoSyncConfig.debounceDelay}ms delay as tag continues generating records`);
+      } else {
+        console.log(`⏰ [AUTO SYNC] Starting sync immediately for ${deviceId} (${parsedData.recordCount} records available)`);
+      }
+      console.log(`📊 [AUTO SYNC] Auto-sync conditions: isSingleRecord=${isSingleRecord}, recordCountIncreased=${recordCountIncreased}, throttleExpired=${throttleExpired} (throttle: ${throttleTime}ms), lastSyncAt=${meta.lastSyncAt || 'never'}`);
     } else {
+      // ✅ ENHANCED LOGGING: Log why auto-sync is being skipped with detailed conditions
+      const skipReasons = [];
       if (!hasRecordsAvailable) {
-        console.log(`⏭️ [AUTO SYNC] Skipping - no records available (${parsedData?.recordCount || 0})`);
-      } else if (isSyncActive) {
-        console.log(`⏭️ [AUTO SYNC] Skipping - sync already in progress`);
-      } else if (!isConnected) {
-        console.log(`⏭️ [AUTO SYNC] Skipping - device not connected`);
-      } else if (!isLiveData) {
-        console.log(`⏭️ [AUTO SYNC] Skipping - invalid RTC (rtcValid: ${parsedData?.rtcValid}, deviceRTC: ${parsedData?.deviceRTC})`);
-      } else if (isFromPolling) {
-        console.log(`⏭️ [AUTO SYNC] Skipping - status update from polling read (not live notification)`);
-      } else if (!recordCountIncreased && !throttleExpired) {
-        console.log(`⏭️ [AUTO SYNC] Skipping - throttled (lastSyncAt ${meta.lastSyncAt || 'n/a'})`);
+        skipReasons.push(`no records available (${parsedData?.recordCount || 0})`);
+      }
+      if (isSyncActive) {
+        skipReasons.push(`sync already in progress`);
+      }
+      if (!isConnected) {
+        skipReasons.push(`device not connected`);
+      }
+      if (!isLiveData) {
+        skipReasons.push(`invalid RTC (rtcValid: ${parsedData?.rtcValid}, deviceRTC: ${parsedData?.deviceRTC})`);
+      }
+      // ✅ CRITICAL FIX: isFromPolling=true means FROM periodic polling (SHOULD trigger auto-sync)
+      // isFromPolling=false means manual read (SHOULD NOT trigger auto-sync)
+      if (!isFromPollingValue) {
+        skipReasons.push(`not from periodic polling (isFromPolling=${isFromPollingValue}) - only polling reads trigger auto-sync`);
+      }
+      if (syncJustCompleted) {
+        skipReasons.push(`sync just completed (within 5s grace period)`);
+      }
+      if (!isSingleRecord && !recordCountIncreased && !throttleExpired) {
+        const timeSinceLastSync = meta.lastSyncAt ? (nowMs - meta.lastSyncAt) : 'never';
+        skipReasons.push(`throttled (lastSyncAt: ${timeSinceLastSync}ms ago, isSingleRecord: ${isSingleRecord}, recordCountIncreased: ${recordCountIncreased}, throttleExpired: ${throttleExpired})`);
+      }
+      
+      if (skipReasons.length > 0) {
+        console.log(`⏭️ [AUTO SYNC] Skipping - ${skipReasons.join(', ')}`);
+        // ✅ FIX: Ensure isFromPolling is always a boolean for logging
+        const isFromPollingForLog = isFromPolling === true;
+        console.log(`📊 [AUTO SYNC] Conditions check: hasRecords=${hasRecordsAvailable}, isSyncActive=${isSyncActive}, isConnected=${isConnected}, isLiveData=${isLiveData}, isFromPolling=${isFromPollingForLog} (raw: ${isFromPolling}, type: ${typeof isFromPolling}), syncJustCompleted=${syncJustCompleted}, isSingleRecord=${isSingleRecord}, recordCountIncreased=${recordCountIncreased}, throttleExpired=${throttleExpired}`);
       }
     }
   }
@@ -4744,8 +5636,32 @@ class BLEService {
   // Handle sync complete (SDD: 0x02 - Data Sync Complete)
   async handleSyncComplete(deviceId, parsedTransfer) {
     const syncState = this.dataSyncStates?.get(deviceId);
+    const previousState = syncState?.state || 'unknown';
+    
+    // ✅ CRITICAL FIX: Prevent duplicate sync completion handling
+    // Track if we've already processed this sync completion to prevent duplicate log entries
+    if (!this.lastSyncCompleteTime) {
+      this.lastSyncCompleteTime = new Map();
+    }
+    
+    const lastCompleteTime = this.lastSyncCompleteTime.get(deviceId) || 0;
+    const timeSinceLastComplete = Date.now() - lastCompleteTime;
+    const recordsTransmitted = parsedTransfer.recordsTransmitted || 0;
+    
+    // ✅ If sync completion was processed very recently (within 1 second) with same record count, skip duplicate processing
+    // This prevents duplicate log entries when the same sync_complete event is processed multiple times
+    if (timeSinceLastComplete < 1000 && recordsTransmitted > 0) {
+      console.log(`⏭️ [SYNC COMPLETE] Skipping duplicate sync completion - already processed ${timeSinceLastComplete}ms ago (${recordsTransmitted} records)`);
+      return;
+    }
+    
+    // Mark this sync completion as processed
+    this.lastSyncCompleteTime.set(deviceId, Date.now());
     
     if (parsedTransfer.success) {
+      
+      // ✅ IMPROVEMENT 2: Log state transition
+      this.logStateTransition(deviceId, previousState, 'complete', 'sync successful');
       
       // ✅ UPDATE UI WITH LATEST SYNCED DATA
       // This ensures UI shows the most recent data from flash, not stale Device Status notifications
@@ -4755,28 +5671,93 @@ class BLEService {
         const latestRecord = this.getLatestSyncedRecord(deviceId);
         const device = this.scannedDevices.get(deviceId);
         
+        // Add sync log entry - use recordsTransmitted (delta) instead of total count
+        let finalRecordsTransmitted = recordsTransmitted;
+        
+        // Fallback: calculate delta from baseline if recordsTransmitted is not available
+        if (finalRecordsTransmitted === 0 && device) {
+          const recordsBeforeSync = device.syncRecordsBeforeSync !== undefined ? device.syncRecordsBeforeSync : 0;
+          const recordsAfterSync = device?.syncRecords?.length || 0;
+          finalRecordsTransmitted = Math.max(0, recordsAfterSync - recordsBeforeSync);
+        }
+        
+        // ✅ CRITICAL FIX: Only log if recordsTransmitted > 0 to avoid logging "0 Records Synced"
+        if (finalRecordsTransmitted > 0) {
+          this.addConnectionLog(deviceId, `${finalRecordsTransmitted} Record${finalRecordsTransmitted === 1 ? '' : 's'} Synced`);
+        }
+        
         // Emit event for UI refresh with synced data
+        const recordCount = device?.syncRecords?.length || 0;
         this.emit('syncDataUpdated', {
           deviceId,
           latestRecord,
-          totalRecords: device?.syncRecords?.length || 0,
+          totalRecords: recordCount,
           deviceData: device?.deviceData
         });
       }
+      
+      // ✅ FIX: Track sync completion time to prevent post-sync reads from triggering auto-sync
+      if (!this.autoSyncMeta) {
+        this.autoSyncMeta = new Map();
+      }
+      const meta = this.autoSyncMeta.get(deviceId) || {};
+      const syncStartTime = meta.lastSyncStartTime || Date.now();
+      const syncLatency = Date.now() - syncStartTime;
+      meta.lastSyncCompletedAt = Date.now();
+      this.autoSyncMeta.set(deviceId, meta);
+      console.log(`✅ [SYNC COMPLETE] Tracked sync completion time for ${deviceId} - will prevent auto-sync for 5 seconds`);
+      
+      // ✅ IMPROVEMENT 7: Record success metrics
+      this.recordSyncSuccess(deviceId, syncLatency);
+      
+      // ✅ IMPROVEMENT 6: Emit success feedback
+      this.emitUserFeedback(deviceId, 'sync_completed', {
+        recordsTransmitted: parsedTransfer.recordsTransmitted || 0,
+        latency: syncLatency
+      });
       
       // NOTE: Native iOS now automatically sends DATA_SYNC_STOP (0x09) with Clear Flash flag
       // No need to send it from JS - this prevents duplicate commands
       // The native implementation waits 1 second after sync complete, then sends cleanup command
       
     } else {
+      // ✅ IMPROVEMENT 2: Log state transition to failed
+      this.logStateTransition(deviceId, previousState, 'failed', 'sync failed');
+      
+      // ✅ IMPROVEMENT 7: Record failure metrics
+      this.recordSyncFailure(deviceId, parsedTransfer.reason || 'sync_failed');
+      
+      // ✅ IMPROVEMENT 6: Emit failure feedback
+      this.emitUserFeedback(deviceId, 'sync_failed', {
+        reason: parsedTransfer.reason || 'sync_failed'
+      });
       
       // Native will send DATA_SYNC_STOP without clearing flash
       // No action needed from JS side
     }
     
-    // Clean up sync state
-    if (this.dataSyncStates) {
-      this.dataSyncStates.delete(deviceId);
+    // ✅ CRITICAL FIX: Only clean up sync state if sync actually completed
+    // Don't delete state immediately - wait a bit to prevent duplicate sync starts
+    // State will be cleaned up when new sync starts or after a delay
+    if (this.dataSyncStates && parsedTransfer.success) {
+      // Mark sync as complete but don't delete immediately
+      // This prevents rapid re-syncs from ServiceDiscoveryComplete events
+      const syncState = this.dataSyncStates.get(deviceId);
+      if (syncState) {
+        syncState.state = 'complete';
+        syncState.isActive = false;
+      }
+      
+      // Clean up after a delay to prevent immediate duplicate syncs
+      setTimeout(() => {
+        if (this.dataSyncStates) {
+          const currentState = this.dataSyncStates.get(deviceId);
+          // Only delete if state is still 'complete' (not changed by new sync)
+          if (currentState && currentState.state === 'complete') {
+            this.dataSyncStates.delete(deviceId);
+          }
+        }
+      }, 3000); // Wait 3 seconds before allowing new sync
     }
     
     // Clean up auto-sync timer if exists
@@ -4784,6 +5765,10 @@ class BLEService {
       clearTimeout(this.autoSyncTimers.get(deviceId));
       this.autoSyncTimers.delete(deviceId);
     }
+    
+    // ✅ IMPROVEMENT 5: Process next item in sync queue
+    this.processingSync.set(deviceId, false);
+    setTimeout(() => this.processSyncQueue(deviceId), 1000);
   }
 
   // Handle data record (SDD: 0x03 - Record Data)
@@ -4869,6 +5854,10 @@ class BLEService {
             device.deviceData = {};
           }
           device.deviceData.recordCount = device.syncRecords.length;
+          
+          // ✅ FIX: Don't log sync progress incrementally - only log when sync completes
+          // This prevents duplicate log entries (e.g., "2 Records Synced" then "3 Records Synced")
+          // The sync complete handler will log the final count once
           
           // Trigger UI update
           if (this.onDeviceDataUpdated && this.appState === 'active') {
@@ -5002,19 +5991,14 @@ class BLEService {
             case SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS:
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.SET_DATA_INTERVAL:
-              // ✅ FIX: Ensure device status polling is started after data acquisition interval is set
-              // Native code should start polling, but we add this as a safety measure
+              // ✅ CORRECT: Native code handles polling interval update automatically
+              // When this response is received, native code will:
+              //   1. Parse the interval from the response
+              //   2. Stop existing polling timer
+              //   3. Restart polling with new interval (min 30s cap)
+              // JavaScript should NOT interfere with native polling
               console.log(`✅ [DATA INTERVAL] Data acquisition interval set successfully for ${deviceId}`);
-              console.log(`🔄 [POLLING] Native code should start polling - if not, will use fallback`);
-              
-              // Fallback: Start periodic device status reading from JS if native polling doesn't start
-              // Check after 5 seconds if we're receiving notifications
-              setTimeout(() => {
-                if (this.isDeviceConnected(deviceId)) {
-                  // Start periodic reading as fallback (every 30 seconds)
-                  this.startDeviceStatusPollingFallback(deviceId, 30);
-                }
-              }, 5000);
+              console.log(`🔄 [POLLING] Native code will update polling interval automatically`);
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START:
               break;
@@ -5508,6 +6492,62 @@ class BLEService {
     };
   }
 
+  // ✅ Connection Log Management Methods
+  // Add a connection log entry for a device
+  addConnectionLog(deviceId, action, additionalInfo = {}) {
+    const device = this.getDevice(deviceId);
+    if (!device) {
+      console.warn(`[ConnectionLog] Device not found: ${deviceId}`);
+      return;
+    }
+
+    // Initialize connectionLogs array if it doesn't exist
+    if (!device.connectionLogs) {
+      device.connectionLogs = [];
+    }
+
+    const logEntry = {
+      action,
+      timestamp: new Date(),
+      ...additionalInfo
+    };
+
+    device.connectionLogs.push(logEntry);
+
+    // Emit event for UI updates
+    this.emit('connectionLogUpdated', {
+      deviceId,
+      log: logEntry,
+      totalLogs: device.connectionLogs.length
+    });
+
+    console.log(`📋 [ConnectionLog] Added log for ${deviceId}: ${action}`);
+  }
+
+  // Get connection logs for a device
+  getConnectionLogs(deviceId) {
+    const device = this.getDevice(deviceId);
+    if (device && device.connectionLogs) {
+      return device.connectionLogs;
+    }
+    return [];
+  }
+
+  // Clear connection logs for a device
+  clearConnectionLogs(deviceId) {
+    const device = this.getDevice(deviceId);
+    if (device) {
+      device.connectionLogs = [];
+      // Emit event for UI updates
+      this.emit('connectionLogUpdated', {
+        deviceId,
+        log: null,
+        totalLogs: 0
+      });
+      console.log(`📋 [ConnectionLog] Cleared logs for ${deviceId}`);
+    }
+  }
+
   // ✅ REMOVED: Legacy manual sync methods - native code handles everything automatically
   // Removed: triggerManualDataSync(), forceProperDataSync(), 
   //          setupDataTransferMonitoring(), cleanupDataTransferMonitoring()
@@ -5810,16 +6850,16 @@ class BLEService {
 
       // Use native system command methods for better reliability
       if (Platform.OS === 'android') {
-        // According to SDD: Always use write with response for system commands
-        // ✅ SYNC WITH iOS: iOS doesn't retry in sendSystemCommand - it attempts once and handles errors via native layer
-        // Android native layer now handles retries with async exponential backoff (matching iOS)
-        await this.writeCharacteristic(
+        // ✅ FIX: Use native sendSystemCommand method (matching iOS behavior)
+        // This uses the queue system to ensure sequential writes and handles retries
+        const result = await SampleBridgeAndroid.sendSystemCommand(
           deviceId,
-          sysCmdChar.uuid,
-          packet,
-          true, // withResponse = true (required by SDD)
-          BLE_SERVICES.SMART_TAG
+          command,
+          payloadToSend
         );
+        if (!result) {
+          throw new Error('Failed to send system command');
+        }
       } else {
         // Use iOS native system command method
         const result = await BridgingCodeModule.sendSystemCommand(
@@ -6196,6 +7236,16 @@ class BLEService {
     }
   }
 
+  /**
+   * Set Data Acquisition Interval (Command ID: 0x04)
+   * 
+   * ⚠️ CRITICAL: This command MUST ONLY be sent when the user explicitly clicks the 
+   * "Set Data Interval" button. It should NEVER be sent automatically on connection,
+   * after time sync, or in any other automatic flow.
+   * 
+   * This is the ONLY place in the codebase where SET_DATA_ACQUISITION_INTERVAL (0x04) 
+   * should be sent. Any automatic sending of this command is prohibited.
+   */
   async setDataAcquisitionInterval(deviceId, intervalSeconds) {
     try {
       // ✅ SDD v1.4: Data acquisition interval is now in MILLISECONDS (was seconds in v1.3)
@@ -6233,6 +7283,12 @@ class BLEService {
       if (Platform.OS === 'android' && SampleBridgeAndroid) {
         try {
           const result = await SampleBridgeAndroid.startDataSync(deviceId);
+          
+          // ✅ CHECK FOR DUPLICATE SYNC: If native rejected due to already syncing, return early
+          if (result && result.status === 'already_syncing') {
+            console.warn(`⚠️ [SYNC START] Sync rejected - already in progress (state: ${result.currentState})`);
+            return result; // Return the rejection result
+          }
           
           // Initialize sync state if not exists
           if (!this.dataSyncStates) {
@@ -6372,23 +7428,13 @@ class BLEService {
           console.log('✅ [UNPAIR] JavaScript cleanup completed');
         }, 1000); // Wait 1 second for native cleanup
         
-        // ✅ STEP 5: Restart auto-connect after cooldown period
-        setTimeout(async () => {
-          try {
-            console.log('🔄 [UNPAIR] Restarting auto-connect after cooldown...');
-            await AutoConnectService.startAutoConnect();
-          } catch (error) {
-            console.warn('⚠️ [UNPAIR] Failed to restart auto-connect:', error);
-          }
-        }, 10000); // 10 second cooldown
-        
-        // ✅ STEP 6: Clear manual disconnect cooldown after 10 seconds
+        // ✅ STEP 5: Clear manual disconnect cooldown after 10 seconds
         setTimeout(() => {
           this.manualDisconnectCooldown.delete(deviceId);
           console.log('✅ [UNPAIR] Cooldown cleared for device:', deviceId);
         }, 10000);
         
-        console.log('✅ [UNPAIR] Device unpaired successfully - cooldown active for 10 seconds');
+        console.log('✅ [UNPAIR] Device unpaired successfully - auto-connect stays off until user reconnects');
       } else {
         console.error('❌ [UNPAIR] Unpair command failed:', result.error);
         
@@ -6616,54 +7662,38 @@ class BLEService {
     poll();
   }
 
-  // ✅ FIX: Fallback device status polling if native polling doesn't start
-  // This ensures live notifications work even if SET_DATA_ACQUISITION_INTERVAL response doesn't trigger native polling
+  // ✅ REMOVED: JavaScript polling fallback for Android (now uses native polling)
+  // Android now uses native ScheduledExecutorService polling (like iOS) for reliability
+  // iOS continues to use native Timer.scheduledTimer in Swift
+  // This JS fallback is no longer needed and has been removed
   startDeviceStatusPollingFallback(deviceId, intervalSeconds) {
-    // Stop any existing polling
-    this.stopDeviceStatusPollingFallback(deviceId);
-    
-    if (!this.deviceStatusPollingTimers) {
-      this.deviceStatusPollingTimers = new Map();
+    // ✅ Android: Native polling is handled by SampleBridgeAndroid.java
+    // Started automatically after SET_DATA_ACQUISITION_INTERVAL command (0x04)
+    // Runs using ScheduledExecutorService with fixed rate scheduling
+    if (Platform.OS === 'android') {
+      console.log(`✅ [POLLING] Android uses native polling (SampleBridgeAndroid.java) - JS polling not needed`);
+      console.log(`   Native polling started automatically after SET_DATA_ACQUISITION_INTERVAL command`);
+      console.log(`   Polling interval: ${intervalSeconds}s`);
+      console.log(`   Implementation: ScheduledExecutorService.scheduleAtFixedRate()`);
+      return; // No JS polling needed on Android
     }
     
-    console.log(`🔄 [POLLING FALLBACK] Starting periodic Device Status reading every ${intervalSeconds} seconds for ${deviceId}`);
-    
-    // Read device status periodically
-    const timer = setInterval(async () => {
-      if (!this.isDeviceConnected(deviceId)) {
-        console.log(`⚠️ [POLLING FALLBACK] Device disconnected, stopping polling for ${deviceId}`);
-        this.stopDeviceStatusPollingFallback(deviceId);
-        return;
-      }
-      
-      try {
-        // Read device status characteristic to trigger notification
-        // This ensures we get live updates even if notifications aren't auto-sent
-        const { BridgingCodeModule } = NativeModules;
-        if (BridgingCodeModule && BridgingCodeModule.readDeviceStatus) {
-          // Track manual read timestamp to distinguish from live notifications
-          this.manualReadTimestamps.set(deviceId, Date.now());
-          await BridgingCodeModule.readDeviceStatus(deviceId);
-          console.log(`🔄 [POLLING FALLBACK] Read Device Status for ${deviceId}`);
-        } else {
-          // Fallback: Use readCharacteristic if readDeviceStatus not available
-          await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DEVICE_STATUS);
-        }
-      } catch (error) {
-        console.error(`❌ [POLLING FALLBACK] Failed to read device status for ${deviceId}:`, error);
-      }
-    }, intervalSeconds * 1000);
-    
-    this.deviceStatusPollingTimers.set(deviceId, timer);
-    console.log(`✅ [POLLING FALLBACK] Timer started for ${deviceId}`);
+    // ✅ iOS: Native polling is handled by BridgingCodeModule.swift
+    // Started automatically after SET_DATA_ACQUISITION_INTERVAL command (0x04)
+    // Runs using Timer.scheduledTimer in Swift
+    console.log(`✅ [POLLING] iOS uses native polling (BridgingCodeModule.swift) - JS polling not needed`);
+    console.log(`   Native polling started automatically after SET_DATA_ACQUISITION_INTERVAL command`);
+    console.log(`   Polling interval: ${intervalSeconds}s`);
+    console.log(`   Implementation: Timer.scheduledTimer(withTimeInterval:repeats:)`);
+    return; // No JS polling needed on iOS either
   }
   
   stopDeviceStatusPollingFallback(deviceId) {
-    if (this.deviceStatusPollingTimers && this.deviceStatusPollingTimers.has(deviceId)) {
-      clearInterval(this.deviceStatusPollingTimers.get(deviceId));
-      this.deviceStatusPollingTimers.delete(deviceId);
-      console.log(`🛑 [POLLING FALLBACK] Stopped for ${deviceId}`);
-    }
+    // ✅ REMOVED: JavaScript polling fallback is no longer used
+    // Native polling is handled by:
+    //   - Android: SampleBridgeAndroid.stopDeviceStatusPolling() (called in cleanupDeviceResources)
+    //   - iOS: BridgingCodeModule.stopDeviceStatusPolling() (called on disconnect)
+    console.log(`ℹ️ [POLLING] Native polling cleanup handled automatically on disconnect for ${deviceId}`);
   }
 
   stopRSSIPolling(deviceId) {
@@ -6885,6 +7915,12 @@ class BLEService {
       connectionType: 'auto',
       platform: Platform.OS
     });
+
+    // Record the auto-connect event so Connection Log screen shows it
+    this.addConnectionLog(deviceInfo.deviceId, 'Auto-connected', {
+      connectionType: 'auto',
+      platform: Platform.OS
+    });
   }
 
   // Handle device disconnected via auto-connect
@@ -6895,7 +7931,7 @@ class BLEService {
       device.connectionState = CONNECTION_STATES.DISCONNECTED;
       device.disconnectedAt = new Date();
       device.lastSeen = Date.now(); // Set lastSeen so device is preserved in scans
-      device.disconnectReason = 'Physical disconnect'; // Track why it disconnected
+      device.disconnectReason = deviceInfo.error || deviceInfo.reason || 'Physical disconnect'; // Track why it disconnected
       // PRESERVE RSSI so device remains visible and can be found in scans
       // device.rssi is kept intact - don't clear it
       this.scannedDevices.set(deviceInfo.deviceId, device);
@@ -6911,6 +7947,21 @@ class BLEService {
         this.stopConnectionHealthCheck();
       }
 
+      // ✅ CRITICAL FIX: Emit deviceDisconnected event to update UI (matching iOS behavior)
+      // This ensures ModernBLEManager receives the disconnection event and updates the UI
+      this.emit('deviceDisconnected', {
+        ...device,
+        id: device.id || deviceInfo.deviceId, // Ensure id is set
+        deviceId: deviceInfo.deviceId, // Also include deviceId for compatibility
+        reason: deviceInfo.error || deviceInfo.reason || 'disconnected',
+        error: deviceInfo.error
+      });
+
+      // Add disconnection log
+      this.addConnectionLog(deviceInfo.deviceId, 'Disconnected', {
+        reason: deviceInfo.error || deviceInfo.reason || 'Physical disconnect'
+      });
+
     } else {
       // Create entry for device that wasn't in scannedDevices
       const newDevice = {
@@ -6919,11 +7970,24 @@ class BLEService {
         connectionState: CONNECTION_STATES.DISCONNECTED,
         lastSeen: Date.now(),
         disconnectedAt: new Date(),
-        disconnectReason: 'Physical disconnect',
+        disconnectReason: deviceInfo.error || deviceInfo.reason || 'Physical disconnect',
         isSmartTag: deviceInfo.deviceName?.toLowerCase().includes('tag') || false,
         deviceData: {}
       };
       this.scannedDevices.set(deviceInfo.deviceId, newDevice);
+
+      // ✅ CRITICAL FIX: Emit deviceDisconnected event even if device wasn't in scannedDevices
+      this.emit('deviceDisconnected', {
+        ...newDevice,
+        deviceId: deviceInfo.deviceId,
+        reason: deviceInfo.error || deviceInfo.reason || 'disconnected',
+        error: deviceInfo.error
+      });
+
+      // Also log disconnection for devices that were not tracked previously
+      this.addConnectionLog(deviceInfo.deviceId, 'Disconnected', {
+        reason: deviceInfo.error || deviceInfo.reason || 'Physical disconnect'
+      });
     }
 
     // Force UI refresh immediately
@@ -7926,14 +8990,38 @@ class BLEService {
         // ✅ NATIVE DATA TRANSFER: Sync complete from native side
         console.log(`📊 [SYNC COMPLETE] Received for ${deviceId}: ${recordsTransmitted} records`);
         
-        // Update UI with latest synced data
+        // ✅ FIX: Route to handleSyncComplete to ensure consistent logging (single log entry)
+        // This prevents duplicate log entries and ensures all sync completion logic runs in one place
+        const parsedTransfer = {
+          type: 'sync_complete',
+          typeString: 'sync_complete',
+          success: success,
+          recordsTransmitted: recordsTransmitted || 0,
+          timestamp: new Date()
+        };
+        
+        // Handle sync complete through the main handler (will log once)
+        this.handleSyncComplete(deviceId, parsedTransfer);
+        
+        // ✅ FIX: Track sync completion time to prevent post-sync reads from triggering auto-sync
+        if (success) {
+          if (!this.autoSyncMeta) {
+            this.autoSyncMeta = new Map();
+          }
+          const meta = this.autoSyncMeta.get(deviceId) || {};
+          meta.lastSyncCompletedAt = Date.now();
+          this.autoSyncMeta.set(deviceId, meta);
+          console.log(`✅ [SYNC COMPLETE] Tracked sync completion time for ${deviceId} - will prevent auto-sync for 5 seconds`);
+        }
+        
+        // Update UI with latest synced data (handleSyncComplete already emits events, but keep for compatibility)
         if (success) {
           const updated = this.updateDeviceDataFromSyncedRecords(deviceId);
           
           if (updated) {
             const latestRecord = this.getLatestSyncedRecord(deviceId);
             
-            // Emit comprehensive sync completion event
+            // Emit comprehensive sync completion event (handleSyncComplete already emits, but keep for backward compatibility)
             this.emit('syncDataUpdated', {
               deviceId,
               latestRecord,
@@ -8868,6 +9956,9 @@ class BLEService {
       // 7. Stop any ongoing operations for this device
       this.stopDeviceOperations(deviceId);
       
+      // Add disconnection log
+      this.addConnectionLog(deviceId, 'Disconnected', { reason: 'forgotten' });
+      
       // 8. Emit deviceDisconnected event for UI update (matching iOS behavior)
       // This ensures UI properly updates when device is forgotten
       this.emit('deviceDisconnected', {
@@ -8975,6 +10066,105 @@ class BLEService {
   }
 
   // Cleanup
+  // ==================== PUBLIC API FOR AUTO-SYNC IMPROVEMENTS ====================
+  
+  /**
+   * Get auto-sync configuration
+   * @returns {Object} Current auto-sync configuration
+   */
+  getAutoSyncConfiguration() {
+    return this.getAutoSyncConfig();
+  }
+  
+  /**
+   * Update auto-sync configuration
+   * @param {Object} newConfig - Configuration object with any of: debounceDelay, throttleMode, customThrottle, enableFallbackPolling, maxRetries, enableMetrics, enableUserFeedback
+   */
+  updateAutoSyncConfiguration(newConfig) {
+    this.updateAutoSyncConfig(newConfig);
+  }
+  
+  /**
+   * Get sync metrics for a device
+   * @param {string} deviceId - Device ID
+   * @returns {Object|null} Metrics object with successCount, failureCount, averageLatency, successRate, etc.
+   */
+  getSyncMetricsForDevice(deviceId) {
+    return this.getSyncMetrics(deviceId);
+  }
+  
+  /**
+   * Get state transition history for a device
+   * @param {string} deviceId - Device ID
+   * @returns {Array} Array of state transitions with timestamp, from, to, reason
+   */
+  getStateTransitionHistory(deviceId) {
+    return this.stateTransitionHistory?.get(deviceId) || [];
+  }
+  
+  /**
+   * Get sync queue status for a device
+   * @param {string} deviceId - Device ID
+   * @returns {Object} Queue status with queueSize, isProcessing
+   */
+  getSyncQueueStatus(deviceId) {
+    const queue = this.syncQueue?.get(deviceId) || [];
+    return {
+      queueSize: queue.length,
+      isProcessing: this.processingSync?.get(deviceId) || false,
+      pendingSyncs: queue.map(s => ({
+        timestamp: s.timestamp,
+        reason: s.reason
+      }))
+    };
+  }
+  
+  /**
+   * Clear sync queue for a device
+   * @param {string} deviceId - Device ID
+   */
+  clearSyncQueue(deviceId) {
+    if (this.syncQueue?.has(deviceId)) {
+      this.syncQueue.set(deviceId, []);
+      console.log(`🗑️ [SYNC QUEUE] Cleared queue for ${deviceId}`);
+    }
+  }
+  
+  /**
+   * Reset metrics for a device
+   * @param {string} deviceId - Device ID
+   */
+  resetSyncMetrics(deviceId) {
+    if (this.syncMetrics?.has(deviceId)) {
+      this.syncMetrics.delete(deviceId);
+      console.log(`🔄 [METRICS] Reset metrics for ${deviceId}`);
+    }
+  }
+  
+  /**
+   * Listen to auto-sync feedback events
+   * @param {Function} callback - Callback function that receives { deviceId, type, timestamp, ...data }
+   */
+  onAutoSyncFeedback(callback) {
+    this.on('autoSyncFeedback', callback);
+  }
+  
+  /**
+   * Listen to state transition events
+   * @param {Function} callback - Callback function that receives { deviceId, timestamp, from, to, reason }
+   */
+  onStateTransition(callback) {
+    this.on('stateTransition', callback);
+  }
+  
+  /**
+   * Listen to config update events
+   * @param {Function} callback - Callback function that receives updated config
+   */
+  onAutoSyncConfigUpdated(callback) {
+    this.on('autoSyncConfigUpdated', callback);
+  }
+
   destroy() {
     try {
       this.stopScanning();

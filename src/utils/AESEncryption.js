@@ -190,9 +190,15 @@ class AESEncryption {
         reserved: (deviceStatusRaw & 0xF8) >> 3               // bits 3-7: Reserved
       };
 
-      // MAC ID (6 bytes, Big Endian as hex string)
-      const macId = decryptedPayload.length >= 13 ?
-        decryptedPayload.slice(7, 13).toString('hex').toUpperCase() : '000000000000';
+      // MAC ID (6 bytes, stored in reverse order - little-endian)
+      // ✅ FIXED: MAC address bytes are in reverse order, so we reverse them for display
+      let macId = '000000000000';
+      if (decryptedPayload.length >= 13) {
+        const macBytes = decryptedPayload.slice(7, 13);
+        // Reverse the bytes (they come in little-endian order)
+        const reversedMac = Buffer.from([macBytes[5], macBytes[4], macBytes[3], macBytes[2], macBytes[1], macBytes[0]]);
+        macId = reversedMac.toString('hex').toUpperCase();
+      }
 
       const recordCount = decryptedPayload.length >= 15 ? decryptedPayload.readUInt16LE(13) : 0;
 

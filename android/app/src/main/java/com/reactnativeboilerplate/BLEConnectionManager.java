@@ -152,6 +152,8 @@ public class BLEConnectionManager {
         // Create intent for background scan results
         scanIntent = new Intent(context, BLEBackgroundReceiver.class);
         scanIntent.setAction("com.reactnativeboilerplate.BLE_SCAN_RESULT");
+        // Explicitly scope to our package to satisfy ContextMap lookups
+        scanIntent.setPackage(context.getPackageName());
         
         // Create PendingIntent for background scanning
         int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? 
@@ -173,6 +175,24 @@ public class BLEConnectionManager {
     
     public void startBackgroundScan() {
         Log.d(TAG, "🔍 Starting background scan");
+        
+        if (bluetoothAdapter == null) {
+            Log.e(TAG, "❌ BluetoothAdapter not available - cannot start background scan");
+            return;
+        }
+
+        // Avoid starting a background scan while we already have an active or pending connection.
+        if (hasActiveOrConnectingGatt()) {
+            Log.d(TAG, "⏸️ Skipping background scan - connection in progress/active");
+            return;
+        }
+        
+        // Skip background scan if we have no bonded devices to target
+        Set<BluetoothDevice> bondedDevices = bluetoothAdapter.getBondedDevices();
+        if (bondedDevices == null || bondedDevices.isEmpty()) {
+            Log.d(TAG, "⏸️ Skipping background scan - no bonded devices available");
+            return;
+        }
         
         if (!hasBluetoothPermissions()) {
             Log.e(TAG, "❌ Missing Bluetooth permissions for background scan");
@@ -213,6 +233,15 @@ public class BLEConnectionManager {
         } catch (Exception e) {
             Log.e(TAG, "❌ Failed to start background scan", e);
         }
+    }
+
+    private boolean hasActiveOrConnectingGatt() {
+        for (DeviceConnectionState state : deviceStates.values()) {
+            if (state.state == ConnectionState.CONNECTED || state.state == ConnectionState.CONNECTING) {
+                return true;
+            }
+        }
+        return false;
     }
     
     public void stopBackgroundScan() {

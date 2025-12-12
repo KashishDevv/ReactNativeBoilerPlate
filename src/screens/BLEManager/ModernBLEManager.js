@@ -171,7 +171,13 @@ const ModernBLEManager = ({ navigation }) => {
     
     // ✅ Register device disconnection listener to clear stale data
     BLEService.on('deviceDisconnected', (device) => {
-      console.log('🧹 [Modern] Device disconnected, clearing stale data:', device.id);
+      // ✅ CRITICAL FIX: Handle both id and deviceId for compatibility
+      const deviceId = device.id || device.deviceId;
+      console.log('🧹 [Modern] Device disconnected, clearing stale data:', deviceId, {
+        hasId: !!device.id,
+        hasDeviceId: !!device.deviceId,
+        connectionState: device.connectionState
+      });
       
       // ✅ Show iOS Settings alert if passkey was changed (iOS only - Android handles it differently)
       if ((device.passkeyChanged || device.needsSystemForget) && Platform.OS === 'ios') {
@@ -195,26 +201,67 @@ const ModernBLEManager = ({ navigation }) => {
         );
       }
       
+      // ✅ CRITICAL FIX: Get fresh device data from BLEService to ensure accurate state
+      const allKnownDevices = BLEService.getScannedDevices();
+      const freshDevice = allKnownDevices.find(d => d.id === deviceId);
+      
+      // ✅ CRITICAL FIX: Remove device from connectedDevices state immediately
+      // This prevents allDevices useMemo from overriding disconnected state with stale connectedDevices
+      setConnectedDevices(prevConnected => 
+        prevConnected.filter(d => d.id !== deviceId && d.id !== device.deviceId)
+      );
+      
       setDevices(prevDevices => 
         prevDevices.map(d => {
-          if (d.id === device.id) {
+          // ✅ CRITICAL FIX: Match by both id and deviceId
+          if (d.id === deviceId || d.id === device.deviceId || deviceId === d.id) {
+            // Use fresh device data from BLEService if available, otherwise use event data
+            const deviceToUse = freshDevice || device;
+            
+            console.log('🔄 [Modern] Updating device state to disconnected:', deviceId, {
+              freshDeviceState: freshDevice?.connectionState,
+              eventDeviceState: device.connectionState
+            });
+            
             // Clear stale characteristic data on disconnect
             return {
               ...d,
+              ...deviceToUse, // Spread fresh device data to ensure all fields are updated
+              id: deviceId, // Ensure id is set correctly
+              connectionState: CONNECTION_STATES.DISCONNECTED, // Force disconnected state
               batteryLevel: null,
-              temperature: 0,
-              steps: 0,
+              temperature: null,
+              steps: null,
               timestamp: null,
               services: [],
               characteristics: [],
-              deviceData: null, // Clear deviceData object
-              connectionState: CONNECTION_STATES.DISCONNECTED,
+              deviceData: d.deviceData ? {
+                ...d.deviceData,
+                // Preserve recordCount if available (might be useful for reconnection)
+                recordCount: d.deviceData.recordCount
+              } : null,
               disconnectedAt: new Date(),
+              disconnectReason: device.reason || device.error || 'disconnected'
             };
           }
           return d;
         })
       );
+      
+      // ✅ CRITICAL FIX: Also trigger refresh to ensure allDevices useMemo recalculates
+      setRefreshTrigger(prev => prev + 1);
+      
+      // ✅ CRITICAL FIX: Also refresh connectedDevices from BLEService to ensure consistency
+      // This ensures the connectedDevices state is in sync with BLEService
+      setTimeout(async () => {
+        try {
+          const connected = await BLEService.getConnectedDevices();
+          setConnectedDevices(connected);
+          console.log('🔄 [Modern] Refreshed connectedDevices after disconnection:', connected.length);
+        } catch (error) {
+          console.warn('⚠️ [Modern] Failed to refresh connectedDevices after disconnection:', error);
+        }
+      }, 100);
     });
     console.log('📞 [Modern] Device disconnection listener registered');
     
@@ -265,17 +312,74 @@ const ModernBLEManager = ({ navigation }) => {
         // Use device info from BLEService if available (more complete), otherwise use event data
         const deviceData = knownDevice || device;
         
+        // ✅ CRITICAL FIX: Ensure RSSI is properly set - read it if not available
+        // For auto-connected devices, RSSI might not be available immediately
+        // We'll try to get it from knownDevice first, then from device, then trigger a read
+        let rssiValue = deviceData.rssi || device.rssi || null;
+        
+        // If RSSI is not available, schedule an RSSI read after a short delay
+        if (!rssiValue && deviceId) {
+          setTimeout(async () => {
+            try {
+              // Try to read RSSI from the device
+              const freshDevices = BLEService.getScannedDevices();
+              const freshDevice = freshDevices.find(d => d.id === deviceId);
+              if (freshDevice?.rssi) {
+                setDevices(prevDevices => {
+                  return prevDevices.map(d => {
+                    if (d.id === deviceId && !d.rssi) {
+                      return { ...d, rssi: freshDevice.rssi };
+                    }
+                    return d;
+                  });
+                });
+                setRefreshTrigger(prev => prev + 1);
+              }
+            } catch (error) {
+              console.log('⚠️ [Modern] Could not read RSSI for auto-connected device:', error);
+            }
+          }, 2000); // Wait 2 seconds for connection to stabilize
+        }
+        
         if (existingIndex >= 0) {
           // Update existing device
           const updatedDevices = [...prevDevices];
+          const existingDevice = updatedDevices[existingIndex];
+          const existingDeviceData = existingDevice.deviceData || {};
+          const newDeviceData = deviceData.deviceData || {};
+          
+          // ✅ CRITICAL FIX: Don't overwrite deviceData with 0 values after auto-connect
+          // Preserve existing values if they're not null/undefined, and don't overwrite with 0
+          const mergedDeviceData = {
+            ...existingDeviceData,
+            // Only update steps if new value is meaningful (not 0) or if existing is null/undefined
+            steps: (existingDeviceData.steps !== null && existingDeviceData.steps !== undefined)
+              ? existingDeviceData.steps  // Preserve existing non-null value
+              : ((newDeviceData.steps !== undefined && newDeviceData.steps !== 0) ? newDeviceData.steps : null),
+            // Only update temperature if new value is meaningful (not 0) or if existing is null/undefined
+            temperature: (existingDeviceData.temperature !== null && existingDeviceData.temperature !== undefined)
+              ? existingDeviceData.temperature  // Preserve existing non-null value
+              : ((newDeviceData.temperature !== undefined && newDeviceData.temperature !== 0) ? newDeviceData.temperature : null),
+            // Update other fields normally
+            totalSteps: newDeviceData.totalSteps !== undefined ? newDeviceData.totalSteps : existingDeviceData.totalSteps,
+            batteryLevel: newDeviceData.batteryLevel !== undefined ? newDeviceData.batteryLevel : existingDeviceData.batteryLevel,
+            recordCount: newDeviceData.recordCount !== undefined ? newDeviceData.recordCount : existingDeviceData.recordCount,
+            dataSource: newDeviceData.dataSource || existingDeviceData.dataSource,
+            lastUpdate: newDeviceData.lastUpdate || existingDeviceData.lastUpdate
+          };
+          
           updatedDevices[existingIndex] = {
-            ...updatedDevices[existingIndex],
+            ...existingDevice,
             ...deviceData,
             id: deviceId,
-            name: deviceData.name || device.deviceName || device.name || updatedDevices[existingIndex].name,
+            name: deviceData.name || device.deviceName || device.name || existingDevice.name,
             connectionState: CONNECTION_STATES.CONNECTED,
             connectedAt: new Date(),
-            lastSeen: Date.now()
+            lastSeen: Date.now(),
+            // ✅ CRITICAL FIX: Preserve existing RSSI if new one is not available
+            rssi: rssiValue !== null ? rssiValue : existingDevice.rssi,
+            // ✅ CRITICAL FIX: Use merged deviceData instead of spreading deviceData.deviceData
+            deviceData: mergedDeviceData
           };
           return updatedDevices;
         } else {
@@ -289,10 +393,18 @@ const ModernBLEManager = ({ navigation }) => {
             connectionType: device.connectionType || deviceData.connectionType || 'auto',
             connectedAt: new Date(),
             lastSeen: Date.now(),
-            rssi: deviceData.rssi || device.rssi || null,
-            isSmartTag: deviceData.isSmartTag || device.isSmartTag || false
+            rssi: rssiValue,
+            isSmartTag: deviceData.isSmartTag || device.isSmartTag || false,
+            // ✅ CRITICAL FIX: Initialize deviceData to prevent showing 0, 0
+            deviceData: deviceData.deviceData || {
+              batteryLevel: null,
+              temperature: null,
+              steps: null,
+              totalSteps: null,
+              recordCount: null
+            }
           };
-          console.log('➕ [Modern] Adding new auto-connected device to list:', newDevice.name, newDevice.id);
+          console.log('➕ [Modern] Adding new auto-connected device to list:', newDevice.name, newDevice.id, 'RSSI:', newDevice.rssi);
           return [...prevDevices, newDevice];
         }
       });
@@ -311,8 +423,9 @@ const ModernBLEManager = ({ navigation }) => {
       }
       
       // Handle sync_complete events
-      if (eventData.type === 'sync_complete' && eventData.recordCount !== undefined) {
-        console.log('📊 [Modern] Sync complete - recordCount updated:', eventData.deviceId, 'records:', eventData.recordCount);
+      if (eventData.type === 'sync_complete') {
+        console.log('📊 [Modern] Sync complete - updating device data:', eventData.deviceId);
+        
         setDevices(prevDevices => {
           return prevDevices.map(d => {
             if (d.id === eventData.deviceId) {
@@ -321,27 +434,19 @@ const ModernBLEManager = ({ navigation }) => {
                 deviceData: {
                   ...d.deviceData,
                   ...eventData.deviceData,
-                  recordCount: eventData.recordCount
+                  recordCount: 0, // Set to 0 after sync
                 },
-                // Also update manufacturerData for consistency
                 manufacturerData: d.manufacturerData ? {
                   ...d.manufacturerData,
-                  recordCount: eventData.recordCount,
-                  hasRecords: eventData.recordCount > 0
+                  recordCount: 0,
+                  hasRecords: false
                 } : d.manufacturerData
               };
             }
             return d;
           });
         });
-        // Trigger refresh to ensure allDevices useMemo recalculates
         setRefreshTrigger(prev => prev + 1);
-        // Remove device from syncing set
-        setSyncingDevices(prev => {
-          const next = new Set(prev);
-          next.delete(eventData.deviceId);
-          return next;
-        });
       }
       
       // ✅ Handle live_data events (live steps/temperature updates)
@@ -373,30 +478,56 @@ const ModernBLEManager = ({ navigation }) => {
         setRefreshTrigger(prev => prev + 1);
       }
       
-      // ✅ Handle device_status events (recordCount updates)
+      // Handle device_status events (recordCount updates)
       if (eventData.type === 'device_status' && eventData.deviceData?.recordCount !== undefined) {
         console.log('📊 [Modern] Device status - recordCount updated:', eventData.deviceId, 'records:', eventData.deviceData.recordCount);
+        
         setDevices(prevDevices => {
           return prevDevices.map(d => {
             if (d.id === eventData.deviceId) {
+              // ✅ CRITICAL FIX: If sync just completed, only preserve 0 if device_status shows same/lower count
+              // If device_status shows HIGHER count, those are NEW records generated after sync and should be shown
+              const syncJustCompleted = eventData.syncJustCompleted === true;
+              const syncCompletedRecordCount = eventData.syncCompletedRecordCount !== undefined 
+                ? eventData.syncCompletedRecordCount 
+                : (syncJustCompleted ? 0 : undefined);
+              
+              const deviceStatusRecordCount = eventData.deviceData.recordCount;
+              
+              // Only preserve 0 if:
+              // 1. Sync just completed AND
+              // 2. Device status shows same or lower count (old value before flash clear)
+              // If device status shows HIGHER count, those are new records - show them!
+              let finalRecordCount = deviceStatusRecordCount;
+              if (syncJustCompleted && syncCompletedRecordCount !== undefined) {
+                if (deviceStatusRecordCount <= syncCompletedRecordCount) {
+                  // Same or lower - this is the old value before flash clear, preserve 0
+                  finalRecordCount = syncCompletedRecordCount;
+                  console.log(`🛡️ [Modern] Sync just completed - preserving recordCount: ${finalRecordCount} (device_status shows old value: ${deviceStatusRecordCount})`);
+                } else {
+                  // Higher - these are NEW records generated after sync, show them!
+                  finalRecordCount = deviceStatusRecordCount;
+                  console.log(`✅ [Modern] Sync just completed but device has ${deviceStatusRecordCount} NEW records (generated after sync) - showing new count`);
+                }
+              }
+              
               return {
                 ...d,
                 deviceData: {
                   ...d.deviceData,
-                  ...eventData.deviceData
+                  ...eventData.deviceData,
+                  recordCount: finalRecordCount, // Use preserved value if sync just completed
                 },
-                // Also update manufacturerData for consistency
                 manufacturerData: d.manufacturerData ? {
                   ...d.manufacturerData,
-                  recordCount: eventData.deviceData.recordCount,
-                  hasRecords: eventData.deviceData.recordCount > 0
+                  recordCount: finalRecordCount, // Use preserved value if sync just completed
+                  hasRecords: finalRecordCount > 0
                 } : d.manufacturerData
               };
             }
             return d;
           });
         });
-        // Trigger refresh to ensure allDevices useMemo recalculates
         setRefreshTrigger(prev => prev + 1);
       }
       
@@ -1172,7 +1303,7 @@ const ModernBLEManager = ({ navigation }) => {
             {/* ✅ Manufacturer Data Display (SDD v1.4) */}
             {item.manufacturerData && (
               <View style={styles.manufacturerDataContainer}>
-                {/* Record count (available in both v1.2 and v1.3) */}
+                {/* Record count from advertisement packet - show for all devices */}
                 {item.manufacturerData.recordCount !== undefined && item.manufacturerData.recordCount > 0 && (
                   <Text style={styles.manufacturerDataText}>
                     📊 {String(item.manufacturerData.recordCount)} records
@@ -1252,7 +1383,7 @@ const ModernBLEManager = ({ navigation }) => {
             {item.deviceData?.dataSource && (
               <View style={styles.dataSourceBadge}>
                 <Text style={styles.dataSourceText}>
-                  {item.deviceData.dataSource === 'live' ? '🔴 LIVE' : 
+                  {item.deviceData.dataSource === 'live' ? '🟢 LIVE' : 
                    item.deviceData.dataSource === 'synced' ? '💾 SYNCED' : '📦 CACHED'}
                 </Text>
               </View>
@@ -1289,7 +1420,8 @@ const ModernBLEManager = ({ navigation }) => {
 
           {/* Second Row: Total Steps, Records */}
           {(item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined ||
-            item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined ) && (
+            (item.connectionState === CONNECTION_STATES.CONNECTED && 
+             item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined)) && (
             <View style={styles.dataRow}>
               {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
                 <View style={styles.dataItem}>
@@ -1300,7 +1432,9 @@ const ModernBLEManager = ({ navigation }) => {
                 </View>
               )}
 
-              {item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
+              {/* Only show record count for connected devices */}
+              {item.connectionState === CONNECTION_STATES.CONNECTED && 
+               item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
                 <View style={styles.dataItem}>
                   <Text style={styles.dataLabel}>📊 Records</Text>
                   <Text style={[styles.dataValue, { color: item.deviceData.recordCount > 0 ? Colors.primary : Colors.lightText }]}>
@@ -1392,37 +1526,52 @@ const ModernBLEManager = ({ navigation }) => {
         )}
       </View>
 
-      {/* Live Data & Historical Data Buttons - Only for connected devices */}
+      {/* Live Data, Connection Log & Historical Data Buttons */}
+      {/* Only show data buttons when device is connected */}
       {item.connectionState === CONNECTION_STATES.CONNECTED && (
-        <View style={styles.dataButtonsContainer}>
-          <TouchableOpacity
-            style={styles.liveDataButton}
-            onPress={() => {
-              console.log('📊 [Modern] Navigating to Live Data screen for device:', item.id);
-              navigation.navigate('LiveData', {
-                deviceId: item.id,
-                deviceName: item.name || 'Device'
-              });
-            }}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.dataButtonText}>Live Data</Text>
-          </TouchableOpacity>
+      <View style={styles.dataButtonsContainer}>
+        <TouchableOpacity
+          style={styles.liveDataButton}
+          onPress={() => {
+            console.log('📊 [Modern] Navigating to Live Data screen for device:', item.id);
+            navigation.navigate('LiveData', {
+              deviceId: item.id,
+              deviceName: item.name || 'Device'
+            });
+          }}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.dataButtonText}>Live Data</Text>
+        </TouchableOpacity>
 
           <TouchableOpacity
-            style={styles.historicalDataButton}
+            style={styles.connectionLogButton}
             onPress={() => {
-              console.log('📋 [Modern] Navigating to Historical Data screen for device:', item.id);
-              navigation.navigate('HistoricalData', {
+              console.log('📋 [Modern] Navigating to Connection Log screen for device:', item.id);
+              navigation.navigate('ConnectionLog', {
                 deviceId: item.id,
                 deviceName: item.name || 'Device'
               });
             }}
             activeOpacity={0.8}
           >
-            <Text style={styles.dataButtonText}>Historical Data</Text>
+            <Text style={styles.connectionLogButtonText}>Connec. logs</Text>
           </TouchableOpacity>
-        </View>
+
+        <TouchableOpacity
+          style={styles.historicalDataButton}
+          onPress={() => {
+            console.log('📋 [Modern] Navigating to Historical Data screen for device:', item.id);
+            navigation.navigate('HistoricalData', {
+              deviceId: item.id,
+              deviceName: item.name || 'Device'
+            });
+          }}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.dataButtonText}>Historical Data</Text>
+        </TouchableOpacity>
+      </View>
       )}
     </Animated.View>
   );
@@ -1971,7 +2120,21 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 3,
-    minWidth: '48%',
+    minWidth: '31%',
+  },
+  connectionLogButton: {
+    backgroundColor: '#FFE5D9', // Peach color matching Connection Log screen
+    paddingHorizontal: Metrics.baseMargin,
+    paddingVertical: 12,
+    borderRadius: 12,
+    flex: 1,
+    alignItems: 'center',
+    shadowColor: '#FFE5D9',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+    minWidth: '31%',
   },
   historicalDataButton: {
     backgroundColor: Colors.secondary,
@@ -1985,10 +2148,15 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 3,
-    minWidth: '48%',
+    minWidth: '31%',
   },
   dataButtonText: {
     color: Colors.white,
+    fontSize: Fonts.size.medium,
+    fontFamily: Fonts.type.bold,
+  },
+  connectionLogButtonText: {
+    color: Colors.text,
     fontSize: Fonts.size.medium,
     fontFamily: Fonts.type.bold,
   },

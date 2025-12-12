@@ -431,8 +431,15 @@ class BLEDataParser {
         reserved: (deviceStatusRaw & 0xF8) >> 3               // bits 3-7: Reserved for future use
       };
 
-      // MAC ID (6 bytes)
-      const macId = buffer.slice(7, 13).toString('hex').toUpperCase(); // Bytes 7-12: MAC ID
+      // MAC ID (6 bytes, stored in reverse order - little-endian)
+      // ✅ FIXED: MAC address bytes are in reverse order, so we reverse them for display
+      let macId = '000000000000';
+      if (buffer.length >= 13) {
+        const macBytes = buffer.slice(7, 13);
+        // Reverse the bytes (they come in little-endian order)
+        const reversedMac = Buffer.from([macBytes[5], macBytes[4], macBytes[3], macBytes[2], macBytes[1], macBytes[0]]);
+        macId = reversedMac.toString('hex').toUpperCase();
+      }
       const recordCount = buffer.readUInt16LE(13);   // Bytes 13-14: Number of records available (Little Endian)
 
       // Validate against SDD v1.4 requirements

@@ -148,25 +148,21 @@ const LiveDataScreen = ({ route, navigation }) => {
       return;
     }
 
-    // Format data as CSV-like text
-    let dataText = 'STEPS | TIME RECORDED | TEMPERATURE | TIME RECEIVED\n';
-    dataText += '---------------------------------------------------\n';
+    // Format data as CSV-like text: STEPS,TIME RECORDED,TEMPERATURE,TIME RECEIVED
+    let dataText = 'STEPS,TIME RECORDED,TEMPERATURE,TIME RECEIVED\n';
 
     records.forEach((record) => {
       const timestamp = getTimestampDate(record);
-      const dateRecorded = formatDate(timestamp);
-      const timeRecorded = formatTime(timestamp);
-      const dateReceived = record.receivedAt 
-        ? formatDate(new Date(record.receivedAt))
-        : dateRecorded;
+      const timeRecorded = formatDateTimeRecorded(timestamp);
       const timeReceived = record.receivedAt 
-        ? formatTime(new Date(record.receivedAt))
+        ? formatDateTimeReceived(new Date(record.receivedAt))
         : timeRecorded;
       const temperature = record.temperature !== null && record.temperature !== undefined
-        ? record.temperature
+        ? `${record.temperature}°C`
         : 'N/A';
+      const steps = record.steps || 0;
 
-      dataText += `${dateRecorded}\n${record.steps || 0} Steps Time ${timeRecorded} Temperature ${temperature}°C Time ${timeReceived}\n`;
+      dataText += `${steps}, ${timeRecorded}, ${temperature}, ${timeReceived}\n`;
     });
 
     // Copy to clipboard
@@ -232,7 +228,7 @@ const LiveDataScreen = ({ route, navigation }) => {
   };
 
   const formatTime = (date) => {
-    // Format: "15:20:30" (HH:MM:SS)
+    // Format: "13:50:20" (HH:MM:SS)
     const hours = date.getHours().toString().padStart(2, '0');
     const minutes = date.getMinutes().toString().padStart(2, '0');
     const seconds = date.getSeconds().toString().padStart(2, '0');
@@ -240,7 +236,7 @@ const LiveDataScreen = ({ route, navigation }) => {
   };
 
   const formatDate = (date) => {
-    // Format: "8th Dec 2025"
+    // Format: "10th Dec 2025"
     const day = date.getDate();
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const month = monthNames[date.getMonth()];
@@ -260,49 +256,58 @@ const LiveDataScreen = ({ route, navigation }) => {
     return `${day}${getOrdinalSuffix(day)} ${month} ${year}`;
   };
 
-  const renderRecord = ({ item, index }) => {
+  const formatDateTimeRecorded = (date) => {
+    // Format: "10th Dec 2025 Time 09:30:57" (for copy function)
+    const dateStr = formatDate(date);
+    const timeStr = formatTime(date);
+    return `${dateStr} Time ${timeStr}`;
+  };
+
+  const formatDateTimeReceived = (date) => {
+    // Format: "10th Dec 2025 Time 09:30:57" (for copy function)
+    const dateStr = formatDate(date);
+    const timeStr = formatTime(date);
+    return `${dateStr} Time ${timeStr}`;
+  };
+
+  const renderRecord = ({ item }) => {
     const timestamp = getTimestampDate(item);
-    const dateRecorded = formatDate(timestamp);
+    const dateStr = formatDate(timestamp);
     const timeRecorded = formatTime(timestamp);
-    const dateReceived = item.receivedAt 
-      ? formatDate(new Date(item.receivedAt))
-      : dateRecorded;
     const timeReceived = item.receivedAt 
       ? formatTime(new Date(item.receivedAt))
       : timeRecorded;
     const steps = item.steps || 0;
     const temperature = item.temperature !== null && item.temperature !== undefined 
-      ? item.temperature 
+      ? `${item.temperature}°C`
       : 'N/A';
 
     return (
-      <View style={styles.recordContainer}>
-        {/* Date Heading */}
-        <View style={styles.dateHeading}>
-          <Text style={styles.dateHeadingText}>{dateRecorded}</Text>
+      <View style={styles.recordWrapper}>
+        <View style={styles.recordDateBar}>
+          <Text style={styles.recordDateText}>{dateStr}</Text>
         </View>
-        
-        {/* Record Content */}
-        <View style={styles.recordRow}>
-          <View style={styles.recordContent}>
-            <View style={styles.dataField}>
-              <Text style={styles.dataFieldLabel}>Steps</Text>
-              <Text style={styles.dataFieldValue}>{steps}</Text>
+
+        <View style={styles.recordCard}>
+          <View style={styles.tableRow}>
+            <View style={styles.tableColumn}>
+              <Text style={styles.tableLabel}>Steps</Text>
+              <Text style={styles.tableValue}>{steps}</Text>
             </View>
-            <Text style={styles.separator}>|</Text>
-            <View style={styles.dataField}>
-              <Text style={styles.dataFieldLabel}>Time Recorded</Text>
-              <Text style={styles.dataFieldValue}>{timeRecorded}</Text>
+            <View style={styles.tableDivider} />
+            <View style={styles.tableColumn}>
+              <Text style={styles.tableLabel}>Recorded</Text>
+              <Text style={styles.tableValue}>{timeRecorded}</Text>
             </View>
-            <Text style={styles.separator}>|</Text>
-            <View style={styles.dataField}>
-              <Text style={styles.dataFieldLabel}>Temp.</Text>
-              <Text style={styles.dataFieldValue}>{temperature}°C</Text>
+            <View style={styles.tableDivider} />
+            <View style={styles.tableColumn}>
+              <Text style={styles.tableLabel}>Temp.</Text>
+              <Text style={styles.tableValue}>{temperature}</Text>
             </View>
-            <Text style={styles.separator}>|</Text>
-            <View style={styles.dataField}>
-              <Text style={styles.dataFieldLabel}>Time Received</Text>
-              <Text style={styles.dataFieldValue}>{timeReceived}</Text>
+            <View style={styles.tableDivider} />
+            <View style={styles.tableColumn}>
+              <Text style={styles.tableLabel}>Received</Text>
+              <Text style={styles.tableValue}>{timeReceived}</Text>
             </View>
           </View>
         </View>
@@ -348,9 +353,7 @@ const LiveDataScreen = ({ route, navigation }) => {
       {/* Data Header */}
       {records.length > 0 && (
         <View style={styles.dataHeader}>
-          <Text style={styles.dataHeaderText}>
-            STEPS | TIME RECORDED | TEMP. | TIME RECEIVED
-          </Text>
+          <Text style={styles.dataHeaderText}>STEPS | TIME RECORDED | TEMP. | TIME RECEIVED</Text>
         </View>
       )}
 
@@ -408,7 +411,7 @@ const LiveDataScreen = ({ route, navigation }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#E8F5E9', // Light green background as per image
+    backgroundColor: '#e1f2de', // Softer green background to match reference
   },
   loadingContainer: {
     flex: 1,
@@ -471,85 +474,77 @@ const styles = StyleSheet.create({
   dataHeader: {
     paddingHorizontal: Metrics.baseMargin,
     paddingVertical: Metrics.baseMargin,
-    backgroundColor: '#E8F5E9',
-    borderBottomWidth: 2,
-    borderBottomColor: Colors.border,
+    backgroundColor: '#e1f2de',
+    borderBottomWidth: 1.5,
+    borderBottomColor: '#c5d9c3',
   },
   dataHeaderText: {
-    fontSize: Fonts.size.medium,
-    fontFamily: Fonts.type.bold,
-    color: Colors.text,
+    fontSize: Fonts.size.medium + 1,
+    fontFamily: Fonts.type.semibold || Fonts.type.bold,
+    color: '#3a4550',
     textAlign: 'center',
   },
   listContent: {
-    padding: Metrics.baseMargin,
+    paddingHorizontal: Metrics.baseMargin * 0.45,
+    paddingTop: Metrics.baseMargin * 0.45,
     paddingBottom: 120, // Space for bottom buttons
   },
-  recordContainer: {
-    marginBottom: Metrics.baseMargin,
-  },
-  dateHeading: {
-    paddingHorizontal: Metrics.baseMargin,
-    paddingVertical: Metrics.smallMargin,
-    backgroundColor: '#C8E6C9',
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
-  },
-  dateHeadingText: {
-    fontSize: Fonts.size.medium,
-    fontFamily: Fonts.type.bold,
-    color: Colors.text,
-  },
-  recordRow: {
-    backgroundColor: Colors.white,
-    padding: Metrics.baseMargin,
-    borderBottomLeftRadius: 12,
-    borderBottomRightRadius: 12,
+  recordWrapper: {
+    marginHorizontal: Metrics.baseMargin * 0.45,
+    marginBottom: Metrics.baseMargin * 0.45,
+    borderRadius: 16,
+    overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
     elevation: 3,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderTopWidth: 0,
   },
-  recordContent: {
+  recordDateBar: {
+    backgroundColor: '#c2e1b8',
+    paddingVertical: Metrics.smallMargin,
+    paddingHorizontal: Metrics.baseMargin,
+  },
+  recordDateText: {
+    fontSize: Fonts.size.medium,
+    fontFamily: Fonts.type.semibold || Fonts.type.bold,
+    color: '#2f3b45',
+  },
+  recordCard: {
+    backgroundColor: Colors.white,
+    paddingVertical: Metrics.baseMargin * 0.45,
+    paddingHorizontal: Metrics.baseMargin * 0.45,
+    borderWidth: 1,
+    borderColor: '#d8e3d6',
+  },
+  tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-around',
-    flexWrap: 'wrap',
+    minHeight: 56,
   },
-  dataField: {
+  tableColumn: {
     flex: 1,
-    minWidth: '20%',
     alignItems: 'center',
-    paddingVertical: Metrics.smallMargin,
-    paddingHorizontal: Metrics.smallMargin / 2,
+    justifyContent: 'center',
   },
-  dataFieldLabel: {
+  tableDivider: {
+    width: 1,
+    height: '70%',
+    backgroundColor: '#c7d4c6',
+    marginHorizontal: Metrics.smallMargin / 2,
+  },
+  tableLabel: {
     fontSize: Fonts.size.small,
     fontFamily: Fonts.type.medium,
-    color: Colors.lightText,
-    marginBottom: 6,
+    color: '#6d7580',
+    marginBottom: 4,
     textAlign: 'center',
   },
-  dataFieldValue: {
+  tableValue: {
     fontSize: Fonts.size.medium,
     fontFamily: Fonts.type.bold,
-    color: Colors.text,
+    color: '#2f3b45',
     textAlign: 'center',
-  },
-  separator: {
-    fontSize: 20,
-    fontFamily: Fonts.type.regular,
-    color: Colors.lightText,
-    marginHorizontal: 4,
-    opacity: 0.4,
-    fontWeight: '300',
   },
   emptyContainer: {
     flex: 1,
@@ -613,4 +608,5 @@ const styles = StyleSheet.create({
 });
 
 export default LiveDataScreen;
+
 

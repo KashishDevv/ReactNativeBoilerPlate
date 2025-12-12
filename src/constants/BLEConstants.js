@@ -191,7 +191,8 @@ export const POWER_PROFILE = {
     connectionIntervalMs: 50,
     connectionLatency: 0,
     supervisionTimeoutMs: 4000,
-    mtuSize: 512
+    mtuSize: 512,
+    periodicReconnectIntervalMs: 4 * 60 * 60 * 1000  // 4 hours - periodic full reconnect to prevent stack instability
   },
   lowPower: {
     healthCheckMs: 60000,        // 60s health checks (2x slower as per your requirements)
@@ -205,7 +206,8 @@ export const POWER_PROFILE = {
     connectionIntervalMs: 100,
     connectionLatency: 2,
     supervisionTimeoutMs: 6000,
-    mtuSize: 256
+    mtuSize: 256,
+    periodicReconnectIntervalMs: 6 * 60 * 60 * 1000  // 6 hours - longer interval for low power mode
   },
   ultraLowPower: {
     healthCheckMs: 60000,        // 60s health checks (same as low power as per your requirements)
@@ -219,7 +221,8 @@ export const POWER_PROFILE = {
     connectionIntervalMs: 200,
     connectionLatency: 4,
     supervisionTimeoutMs: 8000,
-    mtuSize: 128
+    mtuSize: 128,
+    periodicReconnectIntervalMs: 12 * 60 * 60 * 1000  // 12 hours - longest interval for ultra low power mode
   }
 };
 

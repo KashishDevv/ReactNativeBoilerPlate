@@ -185,6 +185,10 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   // Data Sync State Management
   private var dataSyncState: [String: String] = [:] // Track sync state per device: "idle", "time_syncing", "ready", "syncing", "complete"
   private var dataSyncRetryCount: [String: Int] = [:] // Track retry attempts
+  
+  // ✅ CRITICAL FIX: Store requested data acquisition intervals to use in response handler
+  // The response doesn't contain the interval value, so we need to store it when sending the command
+  private var requestedDataAcquisitionIntervals: [String: Int] = [:]
   private var dataSyncTimers: [String: Timer] = [:] // Track delayed sync operations
   private var deviceRecordCounts: [String: Int] = [:] // Store record counts from manufacturer data
   private var dataSyncRequested: [String: Bool] = [:] // Track if we actually requested data sync (ignore unsolicited data)
@@ -192,6 +196,10 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   private var deviceRTCValidity: [String: Bool] = [:] // ✅ Track RTC validity per device (from device status notifications)
   private var setTimeRetryAttempts: [String: Int] = [:] // Track SET TIME retry attempts per device
   private var setTimeTimeoutTimers: [String: Timer] = [:] // Track SET TIME timeout timers
+  // ✅ SDD v1.4: Track if we're waiting for RTC check before enabling notifications
+  private var rtcCheckPendingBeforeNotifications: [String: Bool] = [:] // deviceId -> true if waiting for RTC check
+  // ✅ SDD v1.4: Track if we need to enable notifications after SET_TIME response
+  private var enableNotificationsAfterSetTime: [String: Bool] = [:] // deviceId -> true if should enable notifications after SET_TIME
   private var setTimeResponseReceived: [String: Bool] = [:] // Track if SET TIME response was received
   
   // ✅ NEW in v1.4: File-based data sync chunking (500 records per file)
@@ -204,6 +212,16 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   // Periodic Device Status polling timers (workaround for firmware that doesn't auto-notify)
   private var deviceStatusPollingTimers: [String: Timer] = [:]
+  // ✅ FIX: Track if native polling is active to prevent duplicate polling
+  private var nativePollingActive: [String: Bool] = [:]
+  
+  // ✅ SYNC WITH ANDROID: Polling read tracking (for auto-sync detection)
+  private var pollingReadTimestamps: [String: Date] = [:]
+  private static let POLLING_READ_WINDOW_MS: TimeInterval = 2.0 // 2 seconds window
+  
+  // ✅ SYNC WITH ANDROID: Scan throttling to prevent "scanning too frequently" warnings
+  private static let MIN_SCAN_INTERVAL_MS: TimeInterval = 1000.0 / 1000.0 // 1 second minimum interval between scans
+  private var lastScanStopTime: Date? = nil
   
   override init() {
     super.init()
@@ -589,6 +607,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     
     manager.stopScan()
     isScanning = false
+    // ✅ FIXED: Track when scanning stopped for throttling
+    lastScanStopTime = Date()
     resolve(["status": "scanning_stopped"])
   }
   
@@ -906,12 +926,22 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   func startCommandSequence(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     NSLog("🚀 [NATIVE SEQUENCE] Starting full command sequence for \(deviceId)")
     
-    // Step 1: Check if already running
-    if systemCommandsSent[deviceId] == true {
+    // ✅ CRITICAL FIX: Stronger guard to prevent duplicate command sequences
+    // Check multiple conditions to ensure we're not already running
+    let isAlreadyRunning = systemCommandsSent[deviceId] == true
+    let currentState = dataSyncState[deviceId] ?? "idle"
+    let isSyncing = currentState == "syncing" || currentState == "time_syncing" || currentState == "ready"
+    
+    if isAlreadyRunning || isSyncing {
       NSLog("⚠️ [NATIVE SEQUENCE] Command sequence already running for \(deviceId)")
+      NSLog("   - systemCommandsSent: \(isAlreadyRunning)")
+      NSLog("   - Current state: \(currentState)")
+      NSLog("   - Is syncing: \(isSyncing)")
       resolve([
         "status": "already_running",
-        "message": "Command sequence already running for this device"
+        "message": "Command sequence already running for this device",
+        "currentState": currentState,
+        "systemCommandsSent": isAlreadyRunning
       ])
       return
     }
@@ -919,7 +949,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     // Mark as running
     systemCommandsSent[deviceId] = true
     dataSyncState[deviceId] = "idle"
-    dataSyncRequested[deviceId] = false
+    // ✅ FIX: Don't reset dataSyncRequested if it's already true (sync may have been requested via startDataSync)
+    // Only reset if it's not already set, to preserve sync requests from JavaScript
+    if dataSyncRequested[deviceId] != true {
+      dataSyncRequested[deviceId] = false
+      NSLog("✅ [NATIVE SEQUENCE] Command sequence started - reset dataSyncRequested to false")
+    } else {
+      NSLog("✅ [NATIVE SEQUENCE] Command sequence started - preserving dataSyncRequested=true (sync already requested)")
+    }
     
     // Step 2: Check RTC validity and conditionally send SET time command
     let rtcValid = deviceRTCValidity[deviceId]
@@ -947,42 +984,92 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   func startDataSync(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     NSLog("📤 Manual Data Sync Start requested for \(deviceId)")
     
-    // ✅ CRITICAL FIX: Always sync time first for manual sync to ensure device RTC is valid
-    // This prevents the "0 records" issue caused by invalid/unset device time
-    // Device cannot properly timestamp or retrieve records without valid RTC
-    NSLog("⏰ [MANUAL SYNC] Syncing device time first to ensure valid RTC...")
-    NSLog("   This prevents '0 records' error due to invalid device timestamp")
+    // ✅ CRITICAL FIX: Check if sync is already in progress before starting new sync
+    // This prevents multiple sync commands from being sent simultaneously
+    let currentState = dataSyncState[deviceId] ?? "idle"
+    if currentState == "syncing" || currentState == "time_syncing" {
+      NSLog("⚠️ [SYNC GUARD] Sync already in progress (state: \(currentState)) for \(deviceId) - rejecting duplicate sync request")
+      let result: [String: Any] = [
+        "status": "already_syncing",
+        "message": "Data sync already in progress for this device",
+        "deviceId": deviceId,
+        "currentState": currentState
+      ]
+      resolve(result)
+      return
+    }
     
-    // Reset state to ensure clean sync
+    // Reset state to ensure clean sync (only if not already syncing)
     dataSyncState[deviceId] = "idle"
-    dataSyncRequested[deviceId] = false
     
-    // Send time sync command first
-    sendSetSystemTimeCommand(deviceId: deviceId)
+    // ✅ CRITICAL FIX: Set dataSyncRequested to true IMMEDIATELY when sync is requested
+    // This ensures the flag is set before any notifications can arrive
+    // The flag will be used to accept data transfer notifications during the sync process
+    dataSyncRequested[deviceId] = true
+    NSLog("🔒 [MANUAL SYNC] Pre-set dataSyncRequested to true immediately")
     
-    // Wait for device to process time sync and stabilize
-    // Using 6 seconds to give device enough time to write RTC to flash
-    DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
-      guard let self = self else { 
-        reject("SYNC_ERROR", "Service deallocated during time sync", nil)
-        return
+    // ✅ FIX: Check RTC validity and conditionally sync time (matching startCommandSequence behavior)
+    // This prevents unnecessary 6-second delay when RTC is already valid
+    // Single record syncs should be fast when RTC is valid
+    let rtcValid = deviceRTCValidity[deviceId]
+    if rtcValid == nil || rtcValid == false {
+      // RTC is invalid or unknown - sync time first
+      NSLog("⏰ [MANUAL SYNC] RTC is \(rtcValid == nil ? "unknown" : "invalid") - syncing device time first...")
+      NSLog("   This prevents '0 records' error due to invalid device timestamp")
+      
+      // Send time sync command first
+      sendSetSystemTimeCommand(deviceId: deviceId)
+      
+      // Wait for device to process time sync and stabilize
+      // Using 6 seconds to give device enough time to write RTC to flash
+      DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
+        guard let self = self else { 
+          reject("SYNC_ERROR", "Service deallocated during time sync", nil)
+          return
+        }
+        
+        NSLog("✅ [MANUAL SYNC] Time sync complete - now starting data sync...")
+        
+        // ✅ CRITICAL FIX: Ensure flag is still true before sending command
+        // (It should already be true, but double-check to be safe)
+        if self.dataSyncRequested[deviceId] != true {
+          self.dataSyncRequested[deviceId] = true
+          NSLog("🔒 [MANUAL SYNC] Re-set dataSyncRequested to true before sending command")
+        }
+        
+        // Now send data sync command
+        let success = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+        
+        if success {
+          resolve([
+            "status": "success",
+            "message": "Data sync started (time synced first)",
+            "deviceId": deviceId,
+            "state": self.dataSyncState[deviceId] ?? "unknown",
+            "timeSyncRequired": true
+          ])
+        } else {
+          reject("SYNC_START_ERROR", "Failed to send data sync start command after time sync", nil)
+        }
       }
+    } else {
+      // ✅ FIX: RTC is valid - skip time sync and start data sync immediately
+      // This makes single record syncs much faster (no 6-second delay)
+      NSLog("✅ [MANUAL SYNC] RTC is valid - skipping time sync, starting data sync immediately")
       
-      NSLog("✅ [MANUAL SYNC] Time sync complete - now starting data sync...")
-      
-      // Now send data sync command
-      let success = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+      // Send data sync command immediately (no delay needed)
+      let success = sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
       
       if success {
         resolve([
           "status": "success",
-          "message": "Data sync started (time synced first)",
+          "message": "Data sync started immediately (RTC already valid)",
           "deviceId": deviceId,
-          "state": self.dataSyncState[deviceId] ?? "unknown",
-          "timeSyncRequired": true
+          "state": dataSyncState[deviceId] ?? "unknown",
+          "timeSyncRequired": false
         ])
       } else {
-        reject("SYNC_START_ERROR", "Failed to send data sync start command after time sync", nil)
+        reject("SYNC_START_ERROR", "Failed to send data sync start command", nil)
       }
     }
   }
@@ -1014,8 +1101,17 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   // ✅ WORKAROUND: Start periodic polling of Device Status characteristic
   // This is needed because firmware doesn't auto-send notifications after SET_DATA_ACQUISITION_INTERVAL
   private func startDeviceStatusPolling(deviceId: String, intervalSeconds: TimeInterval) {
+    // ✅ FIX: Check if polling is already active to prevent duplicates
+    if nativePollingActive[deviceId] == true {
+      NSLog("⚠️ [POLLING] Native polling already active for \(deviceId) - skipping duplicate start")
+      return
+    }
+    
     // Stop any existing timer
     stopDeviceStatusPolling(deviceId: deviceId)
+    
+    // Mark as active
+    nativePollingActive[deviceId] = true
     
     NSLog("🔄 [POLLING WORKAROUND] Starting periodic Device Status polling every \(intervalSeconds) seconds")
     
@@ -1036,6 +1132,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       }
       
       NSLog("🔄 [POLLING] Reading Device Status from \(deviceId)")
+      // ✅ FIX: Mark that a polling read is being initiated
+      self.pollingReadTimestamps[deviceId] = Date()
       peripheral.readValue(for: deviceStatusChar)
     }
     
@@ -1048,8 +1146,19 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     if let timer = deviceStatusPollingTimers[deviceId] {
       timer.invalidate()
       deviceStatusPollingTimers.removeValue(forKey: deviceId)
+      nativePollingActive[deviceId] = false
       NSLog("🛑 [POLLING] Stopped for \(deviceId)")
+    } else {
+      // Ensure flag is cleared even if timer doesn't exist
+      nativePollingActive[deviceId] = false
     }
+  }
+  
+  // ✅ FIX: Check if native polling is active (for JavaScript coordination)
+  @objc(isNativePollingActive:resolver:rejecter:)
+  func isNativePollingActive(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    let isActive = nativePollingActive[deviceId] == true
+    resolve(["isActive": isActive, "deviceId": deviceId])
   }
   
   // Get current data sync state
@@ -1258,10 +1367,48 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     // Check if device RTC is synchronized
     let isRTCValid = timestamp > 1577836800 // After 2020-01-01
     
-    // ✅ Store RTC validity for command sequence to check
-    deviceRTCValidity[deviceId] = isRTCValid
-    
-    let syncState = dataSyncState[deviceId] ?? "unknown"
+      // ✅ Store RTC validity for command sequence to check
+      deviceRTCValidity[deviceId] = isRTCValid
+      
+      // ✅ SDD v1.4 COMPLIANCE: If this is the initial RTC check (before enabling notifications), handle time sync first
+      let isPending = rtcCheckPendingBeforeNotifications[deviceId] == true
+      NSLog("🔍 [RTC CHECK DEBUG] Flag check: rtcCheckPendingBeforeNotifications[\(deviceId)] = \(rtcCheckPendingBeforeNotifications[deviceId] ?? false)")
+      NSLog("🔍 [RTC CHECK DEBUG] isPending = \(isPending)")
+      
+      if isPending {
+        NSLog("⏰ [RTC CHECK] Initial Device Status read complete - RTC is \(isRTCValid ? "valid" : "invalid")")
+        rtcCheckPendingBeforeNotifications.removeValue(forKey: deviceId)
+        
+        guard let peripheral = connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) else {
+          NSLog("⚠️ [RTC CHECK] Peripheral not found - cannot proceed")
+          return
+        }
+        
+        if !isRTCValid {
+          // RTC is invalid - send SET_TIME command FIRST, then enable notifications after response
+          NSLog("⏰ [RTC CHECK] RTC is invalid - sending SET_TIME command BEFORE enabling notifications (SDD v1.4)")
+          // Store flag to enable notifications after SET_TIME response
+          enableNotificationsAfterSetTime[deviceId] = true
+          // ✅ If pairing verification was pending, also store flag to confirm connection after SET_TIME
+          if devicesPendingPairingVerification[deviceId] != nil {
+            NSLog("⏰ [RTC CHECK] Pairing verification pending - will confirm connection after SET_TIME")
+          }
+          sendSetSystemTimeCommand(deviceId: deviceId)
+        } else {
+          // RTC is valid - enable notifications immediately
+          NSLog("✅ [RTC CHECK] RTC is valid - enabling notifications immediately (SDD v1.4)")
+          enableNotificationsAfterRTCCheck(peripheral: peripheral, deviceId: deviceId)
+          
+          // ✅ If pairing verification was pending, confirm connection now that RTC check is done
+          if devicesPendingPairingVerification[deviceId] != nil {
+            NSLog("✅ [RTC CHECK] Pairing verified and RTC valid - confirming connection")
+            devicesPendingPairingVerification.removeValue(forKey: deviceId)
+            confirmConnection(peripheral: peripheral, deviceId: deviceId)
+          }
+        }
+      }
+      
+      let syncState = dataSyncState[deviceId] ?? "unknown"
     
     // Count notifications for debugging (safe unwrapping)
     let currentCount = deviceStatusNotificationCount[deviceId] ?? 0
@@ -1293,6 +1440,25 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     // Convert timestamp to milliseconds for JavaScript (matching Android behavior)
     let timestampMs = UInt64(timestamp) * 1000
     
+    // ✅ FIX: Mark if this is from polling read (for auto-sync detection)
+    // Check if a polling read was initiated recently (within 2 seconds)
+    var isFromPolling = false
+    if let pollingReadTime = pollingReadTimestamps[deviceId] {
+      let timeSincePollingRead = Date().timeIntervalSince(pollingReadTime)
+      isFromPolling = timeSincePollingRead < Self.POLLING_READ_WINDOW_MS
+      if isFromPolling {
+        // Clear the timestamp after use
+        pollingReadTimestamps.removeValue(forKey: deviceId)
+        NSLog("📊 [POLLING] Marking device status as from polling read (read initiated \(String(format: "%.0f", timeSincePollingRead * 1000))ms ago)")
+      } else {
+        // Timestamp exists but outside window - clear it
+        pollingReadTimestamps.removeValue(forKey: deviceId)
+      }
+    }
+    
+    // ✅ FIX: Always log the isFromPolling value for debugging
+    NSLog("📊 [POLLING FLAG] isFromPolling=\(isFromPolling) for device status update")
+    
     // ✅ SDD v1.3: Send device status with battery voltage (but NOT battery percentage)
     // Battery percentage should come from Battery Service (2A19) characteristic, not Device Status
     // Steps/Temperature will come from Data Transfer (sync) records
@@ -1308,7 +1474,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       "sddCompliant": data.count == 8,
       "sddVersion": "1.3",                   // ✅ UPDATED: Track SDD version
       "rtcValid": isRTCValid,
-      "dataSource": isRTCValid ? "live" : "cached"
+      "dataSource": isRTCValid ? "live" : "cached",
+      "isFromPolling": isFromPolling  // ✅ FIX: Mark if this is from polling read
       // Note: steps and temperature are NOT in Device Status (SDD v1.3)
       // They will come from Data Transfer characteristic during sync
       // Note: Battery percentage should come from Battery Service (2A19), not Device Status
@@ -1344,6 +1511,16 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   // ✅ BEST PRACTICE: Send system command with comprehensive error handling
   private func sendSystemCommand(deviceId: String, commandId: UInt8, payload: [UInt8] = []) -> Bool {
+    // ✅ CRITICAL FIX: Store requested interval for SET_DATA_ACQUISITION_INTERVAL command
+    // The response doesn't contain the interval, so we extract it from payload now
+    if commandId == 0x04 && payload.count >= 4 {
+      // Payload format: [interval(4 bytes little-endian)] in milliseconds
+      let intervalMs = UInt32(payload[0]) | (UInt32(payload[1]) << 8) | (UInt32(payload[2]) << 16) | (UInt32(payload[3]) << 24)
+      let intervalSeconds = Int(intervalMs / 1000) // Convert ms to seconds
+      requestedDataAcquisitionIntervals[deviceId] = intervalSeconds
+      NSLog("📝 [POLLING] Stored requested interval: \(intervalSeconds)s for \(deviceId)")
+    }
+    
     guard let peripheral = connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) else {
       NSLog("❌ [COMMAND ERROR] Device not connected: \(deviceId)")
       return false
@@ -1375,6 +1552,49 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     peripheral.writeValue(packet, for: systemCommandChar, type: .withResponse)
     
     return true
+  }
+  
+  /**
+   * ✅ SDD v1.4 COMPLIANCE: Enable notifications after RTC check is complete
+   * This is called after Device Status is read and RTC validity is confirmed
+   */
+  private func enableNotificationsAfterRTCCheck(peripheral: CBPeripheral, deviceId: String) {
+    NSLog("🔔 [NOTIFICATIONS] Enabling notifications after RTC check (SDD v1.4 compliance)")
+    
+    guard let allCharacteristics = deviceCharacteristics[deviceId] else {
+      NSLog("⚠️ [NOTIFICATIONS] Characteristics not found for \(deviceId)")
+      return
+    }
+    
+    // Enable notifications for all Smart Tag characteristics
+    for characteristic in allCharacteristics {
+      let charUuid = characteristic.uuid.uuidString
+      
+      if charUuid == SYSTEM_COMMAND_CHAR_UUID.uuidString ||
+         charUuid == DEVICE_STATUS_CHAR_UUID.uuidString ||
+         charUuid == DATA_TRANSFER_CHAR_UUID.uuidString ||
+         charUuid == BATTERY_LEVEL_CHAR_UUID.uuidString {
+        peripheral.setNotifyValue(true, for: characteristic)
+        NSLog("🔔 Enabled notifications for characteristic: \(charUuid)")
+        
+        // ✅ Read battery level immediately when characteristic is discovered (if readable)
+        if charUuid == BATTERY_LEVEL_CHAR_UUID.uuidString && characteristic.properties.contains(.read) {
+          peripheral.readValue(for: characteristic)
+          NSLog("🔋 [BATTERY READ] Initiated explicit battery level read from 2A19 characteristic")
+        }
+      }
+    }
+    
+    // After notifications are enabled, trigger command sequence via startCommandSequence
+    NSLog("✅ [NOTIFICATIONS] All notifications enabled - ready for command sequence")
+    
+    // ✅ CRITICAL: Start polling immediately with default 120s interval
+    // This matches firmware default timing and works without SET_DATA_ACQUISITION_INTERVAL command
+    // Interval will be adjusted dynamically if SET_DATA_ACQUISITION_INTERVAL is sent later
+    NSLog("🔄 [POLLING] Starting default polling (120s interval) - will adjust if SET_DATA_ACQUISITION_INTERVAL received")
+    startDeviceStatusPolling(deviceId: deviceId, intervalSeconds: 120.0)
+    
+    // Command sequence will be triggered via ServiceDiscoveryComplete event or startCommandSequence call
   }
   
   // Send Set System Time command (Command ID: 0x01)
@@ -1467,64 +1687,60 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     }
   }
   
-  // ✅ Send Data Acquisition Command and enable live notifications
+  // ✅ Send Data Sync Start command (no longer sends SET_DATA_ACQUISITION_INTERVAL automatically)
   // This is called after SET time (if RTC was invalid) or directly if RTC is already valid
+  // Polling is already running with default 120s interval (started after notifications enabled)
   private func sendDataAcquisitionAndLiveNotifications(deviceId: String) {
-    NSLog("📤 [DATA ACQUISITION] Sending Data Acquisition Command and enabling live notifications for \(deviceId)")
+    NSLog("📤 [DATA ACQUISITION] Sending Data Sync Start command for \(deviceId)")
+    NSLog("   Note: Polling already active with default 120s interval (started after notifications enabled)")
     
-    // Step 1: Send Data Sync Start command
+    // Step 1: Send Data Sync Start command (0x08)
     dataSyncState[deviceId] = "ready"
+    dataSyncRetryCount[deviceId] = 0
     
-    NSLog("⏰ [DATA ACQUISITION] Waiting 10 seconds for device to be ready...")
+    let isAlreadyConnected = connectedPeripherals.contains { $0.identifier.uuidString == deviceId }
     
-    // Wait 10 seconds for device to be ready (same as after time sync)
-    DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
-      guard let self = self else { return }
-      NSLog("🔄 [DATA ACQUISITION] Device ready, initiating data sync...")
+    if isAlreadyConnected {
+      // Device is already connected - start sync immediately
+      NSLog("✅ [DATA ACQUISITION] Device already connected - starting sync immediately")
       
-      // Reset retry counter
-      self.dataSyncRetryCount[deviceId] = 0
+      dataSyncRequested[deviceId] = true
+      NSLog("🔒 [DATA ACQUISITION] Pre-set dataSyncRequested to true before sending command")
       
       // Attempt data sync
-      let success = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+      let success = sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
       
       if success {
         NSLog("✅ [DATA ACQUISITION] Data sync command sent successfully")
       } else {
         NSLog("❌ [DATA ACQUISITION] Data sync command failed")
       }
-    }
-    
-    // Step 2: Send SET_DATA_ACQUISITION_INTERVAL to enable live updates
-    let dataIntervalKey = "\(deviceId)_DATA_INTERVAL"
-    if systemCommandsSent[dataIntervalKey] != true {
-      NSLog("⏱️ [LIVE UPDATES] Sending SET_DATA_ACQUISITION_INTERVAL to enable live updates...")
+    } else {
+      // Device not yet connected - wait for device to be ready
+      NSLog("⏰ [DATA ACQUISITION] Device not yet fully ready - waiting 10 seconds")
       
-      // Wait a bit before sending
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+      DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
         guard let self = self else { return }
-        NSLog("⏱️ [LIVE UPDATES] Setting Data Acquisition Interval to 30 seconds (30000ms)...")
-        // ✅ CHANGED in v1.4: Now sending milliseconds (30000ms = 30s) instead of seconds
-        let intervalMs: UInt32 = 30000  // 30 seconds = 30000 milliseconds (SDD v1.4)
-        var intervalPayload: [UInt8] = []
-        intervalPayload.append(UInt8(intervalMs & 0xFF))
-        intervalPayload.append(UInt8((intervalMs >> 8) & 0xFF))
-        intervalPayload.append(UInt8((intervalMs >> 16) & 0xFF))
-        intervalPayload.append(UInt8((intervalMs >> 24) & 0xFF))
+        NSLog("🔄 [DATA ACQUISITION] Device ready, initiating data sync...")
         
-        let intervalSuccess = self.sendSystemCommand(deviceId: deviceId, commandId: 0x04, payload: intervalPayload)
+        self.dataSyncState[deviceId] = "ready"
+        self.dataSyncRetryCount[deviceId] = 0
+        self.dataSyncRequested[deviceId] = true
+        NSLog("🔒 [DATA ACQUISITION] Pre-set dataSyncRequested to true before sending command")
         
-        if intervalSuccess {
-          self.systemCommandsSent[dataIntervalKey] = true
-          NSLog("✅ [LIVE UPDATES] Data Acquisition Interval command sent successfully")
-          NSLog("🔴 [LIVE UPDATES] Device should now send periodic Device Status notifications")
+        let success = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+        
+        if success {
+          NSLog("✅ [DATA ACQUISITION] Data sync command sent successfully")
         } else {
-          NSLog("❌ [LIVE UPDATES] Failed to send Data Acquisition Interval command")
+          NSLog("❌ [DATA ACQUISITION] Data sync command failed")
         }
       }
-    } else {
-      NSLog("⏭️ [LIVE UPDATES] SET_DATA_ACQUISITION_INTERVAL already sent, skipping")
     }
+    
+    // Note: SET_DATA_ACQUISITION_INTERVAL is NOT sent automatically
+    // Polling uses default 120s interval (firmware default, started after notifications enabled)
+    // User can send SET_DATA_ACQUISITION_INTERVAL command explicitly to adjust interval dynamically
   }
   
   // ✅ SDD v1.4: Send Data Sync Start command (Command ID: 0x08) with file-based chunking support
@@ -1537,6 +1753,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   // This function handles the first Start command. Subsequent chunks are triggered
   // automatically when SYNC_COMPLETE is received with a record count that's a multiple of 500.
   private func sendDataSyncStartCommand(deviceId: String, retryAttempt: Int = 0) -> Bool {
+    // ✅ CRITICAL FIX: Check if sync is already in progress before starting new sync
+    // This prevents multiple sync commands from being sent simultaneously
+    let currentState = dataSyncState[deviceId] ?? "idle"
+    if currentState == "syncing" && retryAttempt == 0 {
+      NSLog("⚠️ [SYNC GUARD] Sync already in progress (state: %@) for %@ - skipping duplicate sync command", currentState, deviceId)
+      return false
+    }
+    
     // Check if device has records to sync (from manufacturer data)
     let recordCount = deviceRecordCounts[deviceId] ?? 0
     
@@ -1565,11 +1789,16 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     // Update state
     dataSyncState[deviceId] = "syncing"
     
-    // CRITICAL: Mark that we've requested data sync
+    // ✅ CRITICAL FIX: Mark that we've requested data sync (only if not already set)
     // This allows us to filter out unsolicited/cached data
-    dataSyncRequested[deviceId] = true
-    NSLog("🔒 Marked data sync as REQUESTED - will now accept data transfer notifications")
-    NSLog("   ⚠️ [FIRMWARE DEBUG] dataSyncRequested[\(deviceId)] = true")
+    // Note: Flag may already be set to true by caller to prevent race conditions
+    if dataSyncRequested[deviceId] != true {
+      dataSyncRequested[deviceId] = true
+      NSLog("🔒 Marked data sync as REQUESTED - will now accept data transfer notifications")
+    } else {
+      NSLog("🔒 dataSyncRequested already set to true (pre-set by caller)")
+    }
+    NSLog("   ⚠️ [FIRMWARE DEBUG] dataSyncRequested[\(deviceId)] = \(dataSyncRequested[deviceId] ?? false)")
     NSLog("   ⚠️ [FIRMWARE DEBUG] Current state BEFORE command: \(dataSyncState[deviceId] ?? "unknown")")
     
     NSLog("📤 Sending Data Sync Start command to \(deviceId) (attempt \(retryAttempt + 1)/3)")
@@ -1832,6 +2061,24 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
             "rawPayload": self.dataToHexString(payload)
           ])
         }
+        
+        // ✅ SDD v1.4: Device-reported total records is authoritative (from Data Sync Start notification)
+        // Always update syncTotalRecords with device-reported value, even if initialized from manufacturer data
+        // This ensures accurate chunk detection when device has more/fewer records than expected
+        let previousTotal = self.syncTotalRecords[deviceId] ?? 0
+        self.syncTotalRecords[deviceId] = Int(totalRecords)
+        
+        if previousTotal != Int(totalRecords) && previousTotal > 0 {
+          NSLog("📊 [v1.4 CHUNKING] Device reported \(totalRecords) records (expected \(previousTotal)) - using device value")
+        }
+        
+        // Initialize chunking variables if not already set
+        if self.syncRecordsReceived[deviceId] == nil {
+          self.syncRecordsReceived[deviceId] = 0
+          self.syncCurrentFileNumber[deviceId] = 1
+          self.syncGrandTotalReceived[deviceId] = 0
+          NSLog("📦 [v1.4 CHUNKING] Initialized sync state - Total: \(totalRecords) records")
+        }
       } else {
         NSLog("❌ Data Sync Start payload too short: \(payload.count) bytes")
       }
@@ -1842,6 +2089,15 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       
       // Update state to complete
       dataSyncState[deviceId] = "complete"
+      
+      // ✅ CRITICAL FIX: Reset systemCommandsSent flag when sync completes
+      // This allows new command sequences to be started
+      systemCommandsSent[deviceId] = false
+      NSLog("✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences")
+      
+      // ✅ FIXED: Reset dataSyncRequested flag when sync completes (matching Android behavior)
+      dataSyncRequested[deviceId] = false
+      NSLog("✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: \(deviceId)")
       
       // Clear retry counter and timers
       dataSyncRetryCount.removeValue(forKey: deviceId)
@@ -1864,8 +2120,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           NSLog("📊 File #\(currentFileNum) complete: \(count) records")
           NSLog("📊 Grand total received: \(grandTotal) / \(totalRecords) records")
           
-          // ✅ NEW in v1.4: Check if there are more chunks to process
-          let hasMoreChunks = (count == self.RECORDS_PER_FILE) && (grandTotal < totalRecords)
+          // ✅ SDD v1.4: Check if there are more chunks to process
+          // Logic: If grandTotal < totalRecords, there are more records to sync
+          // According to SDD: "Data Sync Start and Stop commands must be triggered for every 500th record"
+          // This means we need to continue syncing until all records are received
+          let hasMoreChunks = (grandTotal < totalRecords)
           
           if hasMoreChunks {
             NSLog("📦 [v1.4 CHUNKING] More files to sync - will trigger next chunk")
@@ -1927,40 +2186,29 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
                 NSLog("💾 [SYNC COMPLETE] All files synced - Updated UI with latest synced data")
                 NSLog("🔴 [LIVE READY] Device now ready for live notifications")
                 
+                // ✅ CRITICAL FIX: Reset systemCommandsSent flag to allow new command sequences
+                // This allows the device to start new syncs after completing the current one
+                self.systemCommandsSent[deviceId] = false
+                NSLog("✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences")
+                
+                // ✅ FIXED: Reset dataSyncRequested flag when sync completes (matching Android behavior)
+                self.dataSyncRequested[deviceId] = false
+                NSLog("✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: \(deviceId)")
+                
                 // Clear chunking state
                 self.syncTotalRecords.removeValue(forKey: deviceId)
                 self.syncRecordsReceived.removeValue(forKey: deviceId)
                 self.syncCurrentFileNumber.removeValue(forKey: deviceId)
                 self.syncGrandTotalReceived.removeValue(forKey: deviceId)
                 
-                // ✅ Read device status to get updated record count (should be 0 after flash clear)
-                NSLog("📊 Reading device status to refresh record count...")
-                if let peripheral = self.connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }),
-                   let service = peripheral.services?.first(where: { $0.uuid == self.SMART_TAG_SERVICE_UUID }),
-                   let characteristic = service.characteristics?.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) {
-                  peripheral.readValue(for: characteristic)
-                  NSLog("✅ Device status read requested - will update record count when received")
-                }
-                
-                NSLog("⏱️ Setting Data Acquisition Interval to 30 seconds (30000ms)")
-                
-                // ✅ CHANGED in v1.4: Send SET_DATA_ACQUISITION_INTERVAL command (0x04) with 30000 milliseconds (was seconds in v1.3)
-                // SDD v1.4: Command 0x04 now accepts milliseconds instead of seconds
-                let intervalMs: UInt32 = 30000  // 30 seconds = 30000 milliseconds
-                let intervalPayload: [UInt8] = [
-                  UInt8(intervalMs & 0xFF),
-                  UInt8((intervalMs >> 8) & 0xFF),
-                  UInt8((intervalMs >> 16) & 0xFF),
-                  UInt8((intervalMs >> 24) & 0xFF)
-                ]
-                
-                let intervalSuccess = self.sendSystemCommand(deviceId: deviceId, commandId: 0x04, payload: intervalPayload)
-                
-                if intervalSuccess {
-                  NSLog("✅ Data Acquisition Interval command sent successfully")
-                } else {
-                  NSLog("❌ Failed to send Data Acquisition Interval command")
-                }
+                // ✅ CRITICAL FIX: DON'T read Device Status immediately after sync!
+                // Why: 1) Firmware needs time to clear flash (can take several seconds)
+                //      2) Device generates new records during/after flash clear
+                //      3) Reading too early shows NEW records instead of confirming 0
+                // Solution: Let next polling cycle (30s/60s/120s) naturally check Device Status
+                // This gives firmware adequate time and provides accurate record count
+                NSLog("✅ [SYNC COMPLETE] Relying on next polling cycle to check Device Status")
+                NSLog("   Next poll will verify flash cleared and show any new records generated")
               }  // End of else (all chunks complete)
             }
           }
@@ -2175,10 +2423,29 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       // ✅ Reset retry counter on success
       setTimeRetryAttempts.removeValue(forKey: deviceId)
       
-      // ✅ After SET time success, send Data Acquisition Command and enable live notifications
-      // This ensures we always send data acquisition and enable live notifications after time sync
-      NSLog("⏰ [TIME SYNC] SET time successful - now sending Data Acquisition Command and enabling live notifications...")
-      sendDataAcquisitionAndLiveNotifications(deviceId: deviceId)
+      // ✅ SDD v1.4 COMPLIANCE: Enable notifications AFTER SET_TIME response (if pending)
+      if enableNotificationsAfterSetTime[deviceId] == true {
+        NSLog("⏰ [TIME SYNC] SET time successful - now enabling notifications (SDD v1.4 compliance)")
+        enableNotificationsAfterSetTime.removeValue(forKey: deviceId)
+        
+        guard let peripheral = connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) else {
+          NSLog("⚠️ [TIME SYNC] Peripheral not found - cannot enable notifications")
+          return
+        }
+        
+        enableNotificationsAfterRTCCheck(peripheral: peripheral, deviceId: deviceId)
+        
+        // ✅ If pairing verification was pending, confirm connection now that RTC sync and notifications are done
+        if devicesPendingPairingVerification[deviceId] != nil {
+          NSLog("✅ [TIME SYNC] Pairing verified, RTC synced, and notifications enabled - confirming connection")
+          devicesPendingPairingVerification.removeValue(forKey: deviceId)
+          confirmConnection(peripheral: peripheral, deviceId: deviceId)
+        }
+      } else {
+        // Notifications already enabled - proceed with data acquisition
+        NSLog("⏰ [TIME SYNC] SET time successful - notifications already enabled, sending Data Acquisition Command...")
+        sendDataAcquisitionAndLiveNotifications(deviceId: deviceId)
+      }
       
     case 0x02: // SET_ADVERTISING_INTERVAL
       NSLog("✅ Set Advertising Interval command successful")
@@ -2190,16 +2457,27 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       
     case 0x04: // SET_DATA_ACQUISITION_INTERVAL
       NSLog("✅ Set Data Acquisition Interval command successful")
-      NSLog("✅ Live updates enabled!")
-      NSLog("⏳ Wait 30 seconds...")
-      NSLog("🔴 [LIVE UPDATES] Device will now send Device Status notifications periodically")
-      NSLog("   Expected frequency: Based on configured interval")
-      NSLog("   Watch for: 📊 [DEVICE STATUS #2+] with valid 2025 timestamps")
-      responseData["message"] = "Data acquisition interval updated - live updates enabled"
+      responseData["message"] = "Data acquisition interval updated"
       
-      // ✅ WORKAROUND: Start periodic polling since firmware doesn't auto-notify
-      // Use 30 seconds as the interval (matching what we sent to the device)
-      startDeviceStatusPolling(deviceId: deviceId, intervalSeconds: 30.0)
+      // ✅ CRITICAL FIX: Use stored interval value (set when command was sent)
+      // Response typically has length=0 (BB 01 00 00), so interval isn't in response
+      if let requestedInterval = requestedDataAcquisitionIntervals[deviceId] {
+        let intervalSeconds = TimeInterval(requestedInterval)
+        
+        // ✅ Cap at minimum 30 seconds (prevent excessive BLE traffic)
+        let actualInterval = max(30.0, intervalSeconds)
+        
+        NSLog("🔄 [POLLING] User requested \(intervalSeconds)s interval, using \(actualInterval)s (min 30s)")
+        
+        // ✅ RESTART polling with new interval
+        stopDeviceStatusPolling(deviceId: deviceId)
+        startDeviceStatusPolling(deviceId: deviceId, intervalSeconds: actualInterval)
+        
+        // Clean up stored value
+        requestedDataAcquisitionIntervals.removeValue(forKey: deviceId)
+      } else {
+        NSLog("⚠️ [POLLING] No stored interval found, keeping current polling interval")
+      }
       
     case 0x05: // GET_FIRMWARE_VERSION
       if responseLength > 0 && data.count >= 4 + Int(responseLength) {
@@ -2329,6 +2607,47 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         self.saveForgottenDevices()
         
         NSLog("🚫 [UNPAIR] Device \(deviceId) removed from bonded list and added to forgotten list")
+        
+        // ✅ CRITICAL FIX: Check if device is already disconnected (matching Android)
+        let isAlreadyDisconnected = (peripheral.state != .connected)
+        
+        if isAlreadyDisconnected {
+          // Device already disconnected - clean up immediately
+          NSLog("🔓 [UNPAIR] Device already disconnected - cleaning up immediately")
+          
+          // Remove from connected list
+          self.connectedPeripherals.removeAll { $0.identifier.uuidString == deviceId }
+          
+          // Clean up connecting state
+          self.connectingPeripherals.removeValue(forKey: deviceId)
+          
+          // Clean up reconnect timers
+          self.reconnectTimers[deviceId]?.invalidate()
+          self.reconnectTimers.removeValue(forKey: deviceId)
+          self.reconnectBackoff.removeValue(forKey: deviceId)
+          self.reconnectAttempts.removeValue(forKey: deviceId)
+          
+          // Clean up pairing verification timers
+          self.pairingVerificationTimers[deviceId]?.invalidate()
+          self.pairingVerificationTimers.removeValue(forKey: deviceId)
+          self.devicesPendingPairingVerification.removeValue(forKey: deviceId)
+          
+          // Send disconnection event
+          let deviceName = peripheral.name ?? "Unknown"
+          let disconnectInfo: [String: Any] = [
+            "deviceId": deviceId,
+            "deviceName": deviceName,
+            "reason": "unpaired",
+            "unpaired": true
+          ]
+          
+          DispatchQueue.main.async {
+            self.sendEvent(withName: "DeviceDisconnected", body: disconnectInfo)
+          }
+          
+          NSLog("✅ [UNPAIR] Device already disconnected - cleaned up successfully")
+          return
+        }
         
         // Wait a moment for notifications to be disabled, then disconnect
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -2614,6 +2933,16 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       eventData["batteryLevel"] = batteryLevel
     }
     
+    // ✅ FIX: Ensure isFromPolling is always included (default to false if not set)
+    if eventData["isFromPolling"] == nil {
+      eventData["isFromPolling"] = false
+    }
+    
+    // ✅ FIX: Log the isFromPolling value being sent to JavaScript
+    if let isFromPolling = eventData["isFromPolling"] as? Bool {
+      NSLog("📊 [EVENT] Sending DeviceDataUpdated with isFromPolling=\(isFromPolling)")
+    }
+    
     DispatchQueue.main.async {
       self.sendEvent(withName: "DeviceDataUpdated", body: eventData)
     }
@@ -2810,19 +3139,50 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let reservedBits = (deviceStatusRaw & 0xF8) >> 3         // bits 3-7: Reserved
 
     // Byte 5-10: MAC ID (6 bytes, as hex string with colons)
-    // ✅ FIXED: Handle truncated data gracefully
+    // ✅ FIXED: MAC address bytes are in reverse order (little-endian), so we reverse them for display
+    // ✅ FIXED: Handle truncated data gracefully - always try to extract MAC even with partial data
     var macId = "00:00:00:00:00:00" // Default if not enough bytes
+    var macIdValid = false
+    
     if bytes.count > 10 {
+      // Full MAC ID available - reverse the MAC address bytes (they come in little-endian order)
       macId = String(format: "%02X:%02X:%02X:%02X:%02X:%02X",
-                    bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10])
+                    bytes[10], bytes[9], bytes[8], bytes[7], bytes[6], bytes[5])
+      // ✅ VALIDATION: Check if MAC is valid (not all zeros or all 0xFF)
+      let macBytes = [bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10]]
+      let allZero = macBytes.allSatisfy { $0 == 0x00 }
+      let allFF = macBytes.allSatisfy { $0 == 0xFF }
+      macIdValid = !allZero && !allFF
+      
+      if !macIdValid {
+        NSLog("⚠️ [VALIDATION] MAC ID is all zeros or all 0xFF: \(macId)")
+      }
     } else if bytes.count > 5 {
-      // Partial MAC ID
+      // Partial MAC ID - reverse what we have and pad the rest
       var macBytes: [String] = []
-      for i in 5..<min(11, bytes.count) {
+      let macStartIdx = 5
+      let macEndIdx = min(10, bytes.count - 1)
+      
+      // Extract available bytes in reverse order
+      for i in stride(from: macEndIdx, through: macStartIdx, by: -1) {
         macBytes.append(String(format: "%02X", bytes[i]))
       }
-      macId = macBytes.joined(separator: ":") + String(repeating: ":00", count: 6 - macBytes.count)
-      NSLog("⚠️ [VALIDATION] Partial MAC ID (truncated data): \(macId)")
+      
+      // Pad with zeros if needed
+      while macBytes.count < 6 {
+        macBytes.insert("00", at: 0)
+      }
+      
+      macId = macBytes.joined(separator: ":")
+      
+      // ✅ VALIDATION: Check if partial MAC has any non-zero/non-FF bytes
+      let hasValidBytes = bytes[macStartIdx...macEndIdx].contains { $0 != 0x00 && $0 != 0xFF }
+      macIdValid = hasValidBytes
+      
+      NSLog("⚠️ [VALIDATION] Partial MAC ID extracted from truncated data: \(macId) (valid: \(macIdValid))")
+    } else {
+      NSLog("⚠️ [VALIDATION] Not enough bytes for MAC ID (have \(bytes.count), need at least 6)")
+      macIdValid = false
     }
 
     // Byte 11-12: Number of records available (Little-Endian)
@@ -2840,8 +3200,12 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
 
     // Check 1: Data length should be 13 bytes (CoreBluetooth strips Length+Type header)
     // 2 bytes Company ID + 1 byte version + 1 byte device status + 1 byte status flags + 6 bytes MAC + 2 bytes record count = 13
-    if bytes.count != minLength {
-      NSLog("⚠️ [VALIDATION] Unexpected length: \(bytes.count) bytes (expected \(minLength) for SDD v1.3)")
+    if bytes.count < minLength {
+      NSLog("⚠️ [VALIDATION] Data shorter than expected: \(bytes.count) bytes (expected \(minLength)+ for SDD v1.3)")
+      NSLog("   📍 MAC ID valid: \(macIdValid), MAC: \(macId)")
+      // Don't mark as corrupted - still usable with partial data
+    } else if bytes.count != minLength && bytes.count != preferredLength {
+      NSLog("⚠️ [VALIDATION] Unexpected length: \(bytes.count) bytes (expected \(minLength) or \(preferredLength) for SDD v1.3)")
       // Don't mark as corrupted - still usable
     }
 
@@ -2899,6 +3263,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       "timeSet": timeSet,
       "factoryDefaults": factoryDefaults,
       "macId": macId,
+      "macIdValid": macIdValid, // ✅ NEW: Flag indicating if MAC ID is valid
       "recordCount": Int(safeRecordCount),
       "rawRecordCount": Int(recordCount),
       "batteryMillivolts": 0, // Not included in SDD v1.3 advertisement
@@ -2914,6 +3279,12 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   @objc(startAutoConnect:rejecter:)
   func startAutoConnect(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    // ✅ SYNC WITH ANDROID: Guard - no bonded devices means nothing to auto-connect to
+    if bondedDeviceIDs.isEmpty {
+      NSLog("⏸️ [AUTO-CONNECT] Skipping auto-connect start - no bonded devices available")
+      resolve(true)
+      return
+    }
     
     // Ensure we have notification permission so we can surface background connects
     requestNotificationPermissionsIfNeeded()
@@ -3397,11 +3768,13 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     reconnectBackoff.removeValue(forKey: deviceId)
     reconnectAttempts.removeValue(forKey: deviceId) // ✅ SYNC WITH ANDROID: Clean up attempt counter
     
+    // ✅ FIX: Clean up polling timers and flags (stopDeviceStatusPolling handles timer cleanup)
+    stopDeviceStatusPolling(deviceId: deviceId)
+    nativePollingActive.removeValue(forKey: deviceId)
+    pollingReadTimestamps.removeValue(forKey: deviceId)
+    
     dataSyncTimers[deviceId]?.invalidate()
     dataSyncTimers.removeValue(forKey: deviceId)
-    
-    deviceStatusPollingTimers[deviceId]?.invalidate()
-    deviceStatusPollingTimers.removeValue(forKey: deviceId)
     
     // ✅ Clean up SET TIME timeout timers
     setTimeTimeoutTimers[deviceId]?.invalidate()
@@ -3455,6 +3828,16 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     }
   }
   
+  // ✅ SYNC WITH ANDROID: Get saved device name from storage
+  private func getDeviceName(deviceId: String) -> String? {
+    return UserDefaults.standard.string(forKey: "device_name_\(deviceId)")
+  }
+  
+  // ✅ SYNC WITH ANDROID: Save device name to storage
+  private func saveDeviceName(deviceId: String, deviceName: String) {
+    UserDefaults.standard.set(deviceName, forKey: "device_name_\(deviceId)")
+  }
+  
   private func saveForgottenDevices() {
     let devices = Array(forgottenDeviceIDs)
     UserDefaults.standard.set(devices, forKey: "ForgottenSmartTagDevices")
@@ -3481,6 +3864,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       for (resolve, _) in resolvers {
         resolve(["status": "granted", "state": "poweredOn"])
       }
+      
+      // ✅ INDUSTRY STANDARD: Check for already-connected peripherals on app launch
+      // This prevents "phone connected but app unaware" issue
+      // retrieveConnectedPeripherals gets ALL connected peripherals without needing UUIDs
+      querySystemConnectedPeripherals()
       
       // If we have bonded devices, automatically enable auto-connect and start scanning
       if bondedDeviceIDs.count > 0 && !autoConnectEnabled {
@@ -3567,11 +3955,20 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       
       for peripheral in peripherals {
         peripheral.delegate = self
+        let deviceId = peripheral.identifier.uuidString
+        
+        // ✅ FIXED: Remove from connectingPeripherals if restoration fails (matching Android)
+        // Check if peripheral is actually connected, if not, remove from connecting list
+        if peripheral.state != .connected {
+          connectingPeripherals.removeValue(forKey: deviceId)
+          NSLog("❌ [RESTORE] State restoration failed: \(deviceId) - not connected (state: \(peripheral.state.rawValue))")
+          continue
+        }
         
         // Notify JavaScript side about restored connection
-        if bondedDeviceIDs.contains(peripheral.identifier.uuidString) {
+        if bondedDeviceIDs.contains(deviceId) {
           let deviceInfo: [String: Any] = [
-            "deviceId": peripheral.identifier.uuidString,
+            "deviceId": deviceId,
             "deviceName": peripheral.name ?? "Unknown",
             "connectionType": "restored"
           ]
@@ -3667,23 +4064,60 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     deviceRSSI[deviceId] = RSSI.intValue
     
     // Parse manufacturer data to get device information
+    // ✅ CRITICAL FIX: Always create manufacturerInfo structure, even if parsing fails
     var manufacturerInfo: [String: Any] = [:]
-    if let manufacturerData = advertisementData["kCBAdvDataManufacturerData"] as? Data,
-       let parsedData = parseManufacturerData(manufacturerData) {
-      manufacturerInfo = parsedData
-      
-      // ✅ DEBUG: Log MAC address if present
-      if let macId = parsedData["macId"] as? String {
-        NSLog("📍 [DISCOVERY] Device \(deviceName) MAC Address: \(macId)")
-      }
-      
-      // ✅ SAFETY FIX: Cast to Int (not UInt16) since we return Int from parser
-      if let recordCount = parsedData["recordCount"] as? Int {
-        deviceRecordCounts[deviceId] = recordCount
-        NSLog("📊 Device \(deviceName) has \(recordCount) records available")
+    if let manufacturerData = advertisementData["kCBAdvDataManufacturerData"] as? Data {
+      if let parsedData = parseManufacturerData(manufacturerData) {
+        manufacturerInfo = parsedData
+        
+        // ✅ DEBUG: Log MAC address if present with validation status
+        if let macId = parsedData["macId"] as? String {
+          let macValid = parsedData["macIdValid"] as? Bool ?? false
+          if macValid {
+            NSLog("📍 [DISCOVERY] Device \(deviceName) MAC Address: \(macId)")
+          } else {
+            NSLog("⚠️ [DISCOVERY] Device \(deviceName) MAC Address: \(macId) (INVALID - all zeros/FF or truncated)")
+          }
+        } else {
+          NSLog("⚠️ [DISCOVERY] Device \(deviceName) - MAC ID missing from parsed data")
+        }
+        
+        // ✅ SAFETY FIX: Cast to Int (not UInt16) since we return Int from parser
+        if let recordCount = parsedData["recordCount"] as? Int {
+          deviceRecordCounts[deviceId] = recordCount
+          NSLog("📊 Device \(deviceName) has \(recordCount) records available")
+        } else {
+          NSLog("⚠️ [DISCOVERY] Device \(deviceName) - Record count missing from parsed data")
+        }
+      } else {
+        // ✅ FIX: Even if parsing fails, log what we have for debugging and create minimal structure
+        NSLog("⚠️ [DISCOVERY] Device \(deviceName) - Manufacturer data parsing failed")
+        NSLog("   📊 Raw manufacturer data: \(manufacturerData.map { String(format: "%02X", $0) }.joined(separator: " "))")
+        NSLog("   📊 Data length: \(manufacturerData.count) bytes")
+        
+        // ✅ CRITICAL FIX: Create minimal manufacturerInfo even if parsing fails
+        // This ensures MAC ID and other fields are always present (even if empty/invalid)
+        manufacturerInfo = [
+          "macId": "00:00:00:00:00:00",
+          "macIdValid": false,
+          "recordCount": 0,
+          "rawRecordCount": 0,
+          "parsingError": true,
+          "dataLength": manufacturerData.count
+        ]
       }
     } else {
-      NSLog("⚠️ [DISCOVERY] Device \(deviceName) - No manufacturer data or parsing failed")
+      NSLog("⚠️ [DISCOVERY] Device \(deviceName) - No manufacturer data in advertisement")
+      
+      // ✅ CRITICAL FIX: Create minimal manufacturerInfo even if no manufacturer data
+      // This ensures the structure is always present for JavaScript
+      manufacturerInfo = [
+        "macId": "00:00:00:00:00:00",
+        "macIdValid": false,
+        "recordCount": 0,
+        "rawRecordCount": 0,
+        "noManufacturerData": true
+      ]
     }
     
     // Send device found event with manufacturer data
@@ -4015,9 +4449,20 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   // ✅ NEW: Confirm connection after pairing verification
   private func confirmConnection(peripheral: CBPeripheral, deviceId: String) {
-    let deviceName = peripheral.name ?? "Unknown"
+    // ✅ CRITICAL FIX: Create device name immediately on connection if it doesn't exist (matching Android)
+    var deviceName = peripheral.name
+    if deviceName == nil || deviceName!.isEmpty {
+      deviceName = getDeviceName(deviceId: deviceId) // Try to get saved name
+      if deviceName == nil || deviceName!.isEmpty {
+        deviceName = "Unknown Device"
+      }
+      NSLog("✅ [CONNECTION] Created device name for reconnected device: \(deviceId) (\(deviceName!))")
+    } else {
+      // Save device name for future use
+      saveDeviceName(deviceId: deviceId, deviceName: deviceName!)
+    }
     
-    NSLog("✅ [CONNECTION CONFIRMED] Pairing verified - confirming connection for \(deviceName)")
+    NSLog("✅ [CONNECTION CONFIRMED] Pairing verified - confirming connection for \(deviceName!)")
     
     // Remove from pending verification
     devicesPendingPairingVerification.removeValue(forKey: deviceId)
@@ -4075,7 +4520,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     
     // ✅ FIXED: Send ServiceDiscoveryComplete event if services were already discovered
     // This ensures JS layer can proceed with command sequence after pairing verification
-    // Only send if discoveryCompleteEventSent flag is not set (prevents duplicate events)
+    // ✅ CRITICAL FIX: Send ServiceDiscoveryComplete if it hasn't been sent yet
+    // This ensures the event is sent AFTER pairing verification completes, triggering command sequence
     if let services = peripheral.services, !services.isEmpty {
       // Check if we already sent the event in the normal discovery flow
       let alreadySent = discoveryCompleteEventSent[deviceId] == true
@@ -4103,17 +4549,18 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       } else {
         NSLog("⏭️ [DISCOVERY COMPLETE] Event already sent - skipping duplicate")
       }
+    } else {
+      NSLog("⚠️ [DISCOVERY COMPLETE] Cannot send event - no services available for \(deviceId)")
     }
     
     // Surface notification
     // COMMENTED OUT: Local notifications for connection/disconnection/restore/auto-connect
     // sendLocalNotificationIfBackground(title: "Device Connected", body: "Connected to \(deviceName)")
     
-    // ✅ CRITICAL: Ensure live notifications are enabled after pairing verification
-    // This is critical - if pairing verification happened after command sequence started,
-    // live notifications might not have been enabled
-    NSLog("🔴 [LIVE UPDATES] Ensuring live notifications are enabled after pairing verification...")
-    enableLiveNotificationsIfNeeded(deviceId: deviceId, peripheral: peripheral)
+    // ✅ SDD v1.4 COMPLIANCE: Notifications should already be enabled via RTC check flow
+    // Don't enable notifications here - they're handled by enableNotificationsAfterRTCCheck
+    // Only enable if RTC check flow didn't run (shouldn't happen, but safety fallback)
+    NSLog("ℹ️ [CONNECTION CONFIRMED] Connection confirmed - notifications should already be enabled via RTC check flow")
   }
   
   // Track which devices have had live updates enabled to prevent duplicates
@@ -4142,30 +4589,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       NSLog("✅ [LIVE UPDATES] Enabled notifications for Device Status characteristic")
     }
     
-    // Also send SET_DATA_ACQUISITION_INTERVAL command if not already sent
-    // This ensures device sends periodic updates
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-      guard let self = self else { return }
-      
-      NSLog("⏱️ [LIVE UPDATES] Setting Data Acquisition Interval to 30 seconds (30000ms)...")
-      // ✅ CHANGED in v1.4: Now sending milliseconds (30000ms = 30s) instead of seconds
-      let intervalMs: UInt32 = 30000  // 30 seconds = 30000 milliseconds (SDD v1.4)
-      let intervalPayload: [UInt8] = [
-        UInt8(intervalMs & 0xFF),
-        UInt8((intervalMs >> 8) & 0xFF),
-        UInt8((intervalMs >> 16) & 0xFF),
-        UInt8((intervalMs >> 24) & 0xFF)
-      ]
-      
-      let intervalSuccess = self.sendSystemCommand(deviceId: deviceId, commandId: 0x04, payload: intervalPayload)
-      
-      if intervalSuccess {
-        NSLog("✅ [LIVE UPDATES] Data Acquisition Interval command sent successfully")
-        NSLog("🔴 [LIVE UPDATES] Device should now send periodic Device Status notifications")
-      } else {
-        NSLog("❌ [LIVE UPDATES] Failed to send Data Acquisition Interval command")
-      }
-    }
+    // Note: Data Acquisition Interval is no longer sent automatically - device will use default timing
   }
   
   // ✅ NEW: Handle pairing failure
@@ -4329,6 +4753,43 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       return
     }
     
+    // ✅ FIXED: Avoid starting a scan while we already have an active or pending connection
+    if hasActiveOrConnectingPeripheral() {
+      NSLog("⏸️ [SCAN] Skipping scan - connection in progress/active")
+      return
+    }
+    
+    // ✅ FIXED: Skip scan if we have no bonded devices to target
+    if bondedDeviceIDs.isEmpty {
+      NSLog("⏸️ [SCAN] Skipping scan - no bonded devices available")
+      return
+    }
+    
+    // ✅ FIXED: Throttle scanning to prevent "scanning too frequently" warnings
+    if let lastStopTime = lastScanStopTime {
+      let timeSinceLastScan = Date().timeIntervalSince(lastStopTime)
+      if timeSinceLastScan < Self.MIN_SCAN_INTERVAL_MS {
+        let delayMs = Self.MIN_SCAN_INTERVAL_MS - timeSinceLastScan
+        NSLog("⏱️ [SCAN THROTTLE] Throttling scan start - waiting \(String(format: "%.0f", delayMs * 1000))ms (last scan stopped \(String(format: "%.0f", timeSinceLastScan * 1000))ms ago)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delayMs) { [weak self] in
+          guard let self = self, !self.isScanning else { return }
+          self.startScanningInternal()
+        }
+        return
+      }
+    }
+    
+    startScanningInternal()
+  }
+  
+  private func startScanningInternal() {
+    guard let manager = centralManager else {
+      return
+    }
+    
+    guard manager.state == .poweredOn else {
+      return
+    }
     
     // Stop any existing scan first
     if manager.isScanning {
@@ -4342,7 +4803,105 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       withServices: nil, // Scan all devices for broader discovery
       options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
     )
+  }
+  
+  // ✅ SYNC WITH ANDROID: Check if we have active or connecting peripherals
+  private func hasActiveOrConnectingPeripheral() -> Bool {
+    // Check for connected peripherals
+    if !connectedPeripherals.isEmpty {
+      return true
+    }
     
+    // Check for connecting peripherals
+    if !connectingPeripherals.isEmpty {
+      return true
+    }
+    
+    return false
+  }
+
+  /**
+   * ✅ INDUSTRY STANDARD: Query system for all currently connected peripherals
+   * This detects devices that are already connected at the system level but app doesn't know about
+   * Pattern: retrieveConnectedPeripherals (iOS equivalent of Android's getConnectedDevices)
+   * Note: iOS requires service UUIDs, so we use our known service UUIDs
+   */
+  private func querySystemConnectedPeripherals() {
+    guard let manager = centralManager else { return }
+    guard manager.state == .poweredOn else { return }
+    
+    // ✅ INDUSTRY STANDARD: Get connected peripherals with our service UUIDs
+    // retrieveConnectedPeripherals requires service UUIDs - we'll use our known services
+    let serviceUUIDs: [CBUUID] = [
+      SMART_TAG_SERVICE_UUID,
+      BATTERY_SERVICE_UUID,  // Also check battery service (standard BLE service)
+      DEVICE_INFO_SERVICE_UUID  // Also check device info service (standard BLE service)
+    ]
+    
+    let connectedPeripherals = manager.retrieveConnectedPeripherals(withServices: serviceUUIDs)
+    
+    NSLog("🔍 [SYSTEM-QUERY] iOS reports \(connectedPeripherals.count) connected peripheral(s)")
+    
+    if connectedPeripherals.isEmpty {
+      NSLog("ℹ️ [SYSTEM-QUERY] No system-connected peripherals found")
+      return
+    }
+    
+    // Check each system-connected peripheral
+    for peripheral in connectedPeripherals {
+      let deviceId = peripheral.identifier.uuidString
+      let deviceName = peripheral.name ?? "Unknown"
+      
+      NSLog("🔍 [SYSTEM-QUERY] Found system-connected peripheral: \(deviceId) (\(deviceName))")
+      
+      // Check if this device is in our bonded list
+      if bondedDeviceIDs.contains(deviceId) {
+        NSLog("✅ [SYSTEM-QUERY] System-connected peripheral is bonded: \(deviceId)")
+        
+        // Check if we already have it tracked
+        let isAlreadyTracked = self.connectedPeripherals.contains { $0.identifier == peripheral.identifier }
+        if isAlreadyTracked {
+          NSLog("✅ [SYSTEM-QUERY] Peripheral already tracked in app: \(deviceId)")
+          continue
+        }
+        
+        // ✅ CRITICAL: Peripheral is connected at system level but not in our app
+        // Attach to existing connection without disconnect/reconnect
+        NSLog("🔄 [SYSTEM-QUERY] Attaching to system-connected peripheral in app: \(deviceId)")
+        attachToSystemConnectedPeripheral(peripheral)
+      } else {
+        NSLog("ℹ️ [SYSTEM-QUERY] System-connected peripheral is not bonded: \(deviceId) - ignoring")
+      }
+    }
+  }
+  
+  /**
+   * ✅ INDUSTRY STANDARD: Attach to a peripheral that's already connected at system level
+   * Pattern: Attach without disconnect/reconnect, then re-enable notifications
+   */
+  private func attachToSystemConnectedPeripheral(_ peripheral: CBPeripheral) {
+    let deviceId = peripheral.identifier.uuidString
+    
+    // ✅ CRITICAL: Attach to existing connection (no disconnect/reconnect)
+    peripheral.delegate = self
+    connectedPeripherals.append(peripheral)
+    
+    // ✅ CRITICAL: Re-enable notifications (they don't auto-restore)
+    // Discover services first, then enable notifications in didDiscoverServices
+    peripheral.discoverServices(nil)
+    
+    // Send DeviceConnected event with system_restored type
+    let deviceInfo: [String: Any] = [
+      "deviceId": deviceId,
+      "deviceName": peripheral.name ?? "Unknown",
+      "connectionType": "system_restored"
+    ]
+    
+    DispatchQueue.main.async {
+      self.sendEvent(withName: "DeviceConnected", body: deviceInfo)
+    }
+    
+    NSLog("✅ [SYSTEM-QUERY] Attached to system-connected peripheral: \(deviceId)")
   }
 
   // Attempt direct connections to previously bonded peripherals without scanning (works in background)
@@ -4360,6 +4919,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let knownPeripherals = manager.retrievePeripherals(withIdentifiers: uuids)
 
     var attempted = 0
+    var restored = 0
+    
     for peripheral in knownPeripherals {
       let deviceId = peripheral.identifier.uuidString
       
@@ -4369,7 +4930,41 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         continue
       }
       
-      if peripheral.state != .connected && connectingPeripherals[deviceId] == nil {
+      // ✅ NEW: Check if peripheral is already connected at system level but not tracked in app
+      if peripheral.state == .connected {
+        // Check if we already have it tracked
+        let isAlreadyTracked = connectedPeripherals.contains { $0.identifier == peripheral.identifier }
+        if isAlreadyTracked {
+          NSLog("✅ [SYSTEM-QUERY] Device already tracked in app: \(deviceId)")
+          continue
+        }
+        
+        // ✅ CRITICAL: Device is connected at system level but not in our app
+        // Restore it by adding to connectedPeripherals and discovering services
+        NSLog("🔄 [SYSTEM-QUERY] Restoring system-connected device in app: \(deviceId)")
+        peripheral.delegate = self
+        connectedPeripherals.append(peripheral)
+        
+        // Discover services to complete restoration
+        peripheral.discoverServices(nil)
+        
+        // Send DeviceConnected event with system_restored type
+        let deviceInfo: [String: Any] = [
+          "deviceId": deviceId,
+          "deviceName": peripheral.name ?? "Unknown",
+          "connectionType": "system_restored"
+        ]
+        
+        DispatchQueue.main.async {
+          self.sendEvent(withName: "DeviceConnected", body: deviceInfo)
+        }
+        
+        restored += 1
+        continue
+      }
+      
+      // If not connected, attempt connection
+      if connectingPeripherals[deviceId] == nil {
         let name = peripheral.name ?? deviceId
         connectingPeripherals[deviceId] = peripheral
         peripheral.delegate = self
@@ -4383,6 +4978,10 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       }
     }
 
+    if restored > 0 {
+      NSLog("✅ [SYSTEM-QUERY] Restored \(restored) system-connected device(s)")
+    }
+    
     if attempted > 0 {
       sendLocalNotificationIfBackground(title: "Connecting", body: "Attempting to connect to \(attempted) known device(s)")
     }
@@ -4503,25 +5102,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     }
     deviceCharacteristics[deviceId]?.append(contentsOf: characteristics)
     
-    // Enable notifications for important characteristics (Android-style approach)
-    for characteristic in characteristics {
-      let charUuid = characteristic.uuid.uuidString
-      
-      // Enable notifications for important characteristics
-      if charUuid == DEVICE_STATUS_CHAR_UUID.uuidString ||
-         charUuid == BATTERY_LEVEL_CHAR_UUID.uuidString ||
-         charUuid == DATA_TRANSFER_CHAR_UUID.uuidString ||
-         charUuid == SYSTEM_COMMAND_CHAR_UUID.uuidString {
-        peripheral.setNotifyValue(true, for: characteristic)
-        NSLog("🔔 Enabled notifications for characteristic: \(charUuid)")
-        
-        // ✅ Read battery level immediately when characteristic is discovered (if readable)
-        if charUuid == BATTERY_LEVEL_CHAR_UUID.uuidString && characteristic.properties.contains(.read) {
-          peripheral.readValue(for: characteristic)
-          NSLog("🔋 [BATTERY READ] Initiated explicit battery level read from 2A19 characteristic")
-        }
-      }
-    }
+    // ✅ SDD v1.4 COMPLIANCE: Do NOT enable notifications immediately
+    // Flow: Check RTC validity FIRST → Sync time if needed → THEN enable notifications
+    // Notifications will be enabled after RTC check completes (see startCommandSequence flow)
     
     // Send characteristic discovered event with individual property flags
     let characteristicInfo = characteristics.map { characteristic in
@@ -4564,11 +5147,10 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       
       NSLog("📋 [CHAR DISCOVERY] Service \(service.uuid.uuidString) complete. \(pendingServices.count) services remaining")
       
-      // ✅ ONLY send ServiceDiscoveryComplete when ALL services are done AND we haven't sent it yet
+      // ✅ CRITICAL FIX: Only send ServiceDiscoveryComplete when ALL services are done AND we haven't sent it yet
+      // ✅ IMPORTANT: Don't set flag until event is actually sent (fixes pairing verification flow)
       if pendingServices.isEmpty && self.discoveryCompleteEventSent[deviceId] != true {
-        self.discoveryCompleteEventSent[deviceId] = true
-        
-        NSLog("✅ [DISCOVERY COMPLETE] ALL services discovered! Sending event to JS...")
+        NSLog("✅ [DISCOVERY COMPLETE] ALL services discovered! Checking if ready to send event...")
         
         // Collect all characteristics to check what we have
         let allCharacteristics = self.deviceCharacteristics[deviceId] ?? []
@@ -4581,66 +5163,67 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         NSLog("   - Device Status: \(hasDeviceStatus ? "✅" : "❌")")
         NSLog("   - Data Transfer: \(hasDataTransfer ? "✅" : "❌")")
         
-        // ✅ FIXED: Verify pairing by attempting to read Device Status characteristic
-        // This characteristic requires encryption, so if pairing failed, this read will fail
-        if devicesPendingPairingVerification[deviceId] != nil {
-          let isAlreadyBonded = bondedDeviceIDs.contains(deviceId)
+        // ✅ CRITICAL FIX: Check if pairing verification is pending
+        // If pending, DON'T send event yet - wait for confirmConnection to send it
+        // This ensures ServiceDiscoveryComplete is sent AFTER pairing verification completes
+        let isPairingVerificationPending = devicesPendingPairingVerification[deviceId] != nil
+        
+        if isPairingVerificationPending {
+          NSLog("⏳ [DISCOVERY COMPLETE] Pairing verification pending - event will be sent in confirmConnection")
           
-          NSLog("🔐 [PAIRING VERIFICATION] Attempting to read Device Status to verify pairing...")
-          NSLog("   📋 Device Bond Status: \(isAlreadyBonded ? "✅ ALREADY BONDED" : "🆕 NOT BONDED (Fresh Pairing)")")
-          
-          if isAlreadyBonded {
-            NSLog("   ⚠️ IMPORTANT: Device is already bonded from previous pairing")
-            NSLog("   ⚠️ iOS will REUSE existing bond WITHOUT asking for passkey again")
-            NSLog("   ⚠️ This means:")
-            NSLog("      • Passkey dialog was NOT shown (iOS skipped it)")
-            NSLog("      • Connection uses PREVIOUS bond (may have correct OR wrong passkey)")
-            NSLog("      • App CANNOT verify if current bond used correct passkey")
-            NSLog("   💡 To force fresh pairing with passkey: Forget device in iOS Settings first")
-          } else {
-            NSLog("   ✅ Device is NOT bonded - this is a FRESH pairing")
-            NSLog("   ✅ iOS SHOULD have shown passkey dialog")
-            NSLog("   ✅ If passkey was WRONG, pairing should have FAILED")
-            NSLog("   ✅ We can verify pairing succeeded by reading encrypted characteristic")
-          }
-          
-          NSLog("   🔍 PURPOSE OF PASSKEY:")
-          NSLog("      • Passkey IS verified by iOS during INITIAL pairing")
-          NSLog("      • If wrong passkey entered → Pairing FAILS → Connection REFUSED")
-          NSLog("      • Once bonded, iOS REUSES bond WITHOUT asking passkey again")
-          NSLog("      • Limitation: App can't detect if device is already bonded (iOS doesn't expose this)")
-          
-          if let deviceStatusChar = allCharacteristics.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) {
-            // Attempt to read the characteristic - if pairing failed, this will error
+          // ✅ SDD v1.4 COMPLIANCE: Check RTC validity BEFORE enabling notifications
+          // Read Device Status characteristic ONCE to check RTC validity (will be used for both pairing verification and RTC check)
+          if hasDeviceStatus, let deviceStatusChar = allCharacteristics.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) {
+            NSLog("⏰ [RTC CHECK] Will use pairing verification Device Status read for RTC check (SDD v1.4)")
+            // Store flag to indicate we're waiting for RTC check before enabling notifications
+            rtcCheckPendingBeforeNotifications[deviceId] = true
+            
+            let isAlreadyBonded = bondedDeviceIDs.contains(deviceId)
+            NSLog("🔐 [PAIRING VERIFICATION] Attempting to read Device Status to verify pairing...")
+            NSLog("   📋 Device Bond Status: \(isAlreadyBonded ? "✅ ALREADY BONDED" : "🆕 NOT BONDED (Fresh Pairing)")")
+            
+            if isAlreadyBonded {
+              NSLog("   ⚠️ IMPORTANT: Device is already bonded from previous pairing")
+              NSLog("   ⚠️ iOS will REUSE existing bond WITHOUT asking for passkey again")
+            } else {
+              NSLog("   ✅ Device is NOT bonded - this is a FRESH pairing")
+              NSLog("   ✅ iOS SHOULD have shown passkey dialog")
+            }
+            
             NSLog("   🔍 Attempting to read encrypted characteristic to verify pairing...")
             peripheral.readValue(for: deviceStatusChar)
             // The result will be handled in didUpdateValueFor:error which checks for pairing errors
+            // ServiceDiscoveryComplete will be sent in confirmConnection after pairing verification
           } else {
             // No Device Status characteristic - assume pairing succeeded if we got this far
-            // This should be rare, but handle gracefully
             NSLog("⚠️ [PAIRING VERIFICATION] No Device Status char found - confirming connection anyway")
-            NSLog("   Note: Device may already be bonded, or characteristic discovery incomplete")
             confirmConnection(peripheral: peripheral, deviceId: deviceId)
           }
         } else {
           // Not pending pairing verification - normal flow (already verified or auto-connect)
-          // ✅ FIXED: Don't send event here if pairing verification is pending
-          // The event will be sent in confirmConnection after pairing verification
-          if devicesPendingPairingVerification[deviceId] == nil {
-            // Only send if not pending pairing verification (already verified device)
-            DispatchQueue.main.async {
-              self.sendEvent(withName: "ServiceDiscoveryComplete", body: [
-                "deviceId": deviceId,
-                "totalServices": self.deviceServices[deviceId]?.count ?? 0,
-                "totalCharacteristics": allCharacteristics.count,
-                "hasSystemCommand": hasSystemCommand,
-                "hasDeviceStatus": hasDeviceStatus,
-                "hasDataTransfer": hasDataTransfer
-              ])
-            }
-            NSLog("✅ [DISCOVERY COMPLETE] Event sent to JS - ready for command sequence")
+          // Send event immediately and set flag
+          self.discoveryCompleteEventSent[deviceId] = true
+          
+          DispatchQueue.main.async {
+            self.sendEvent(withName: "ServiceDiscoveryComplete", body: [
+              "deviceId": deviceId,
+              "totalServices": self.deviceServices[deviceId]?.count ?? 0,
+              "totalCharacteristics": allCharacteristics.count,
+              "hasSystemCommand": hasSystemCommand,
+              "hasDeviceStatus": hasDeviceStatus,
+              "hasDataTransfer": hasDataTransfer
+            ])
+          }
+          NSLog("✅ [DISCOVERY COMPLETE] Event sent to JS - ready for command sequence")
+          
+          // ✅ SDD v1.4 COMPLIANCE: Check RTC validity BEFORE enabling notifications
+          if hasDeviceStatus, let deviceStatusChar = allCharacteristics.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) {
+            NSLog("⏰ [RTC CHECK] Reading Device Status to check RTC validity BEFORE enabling notifications (SDD v1.4 compliance)")
+            rtcCheckPendingBeforeNotifications[deviceId] = true
+            peripheral.readValue(for: deviceStatusChar)
           } else {
-            NSLog("⏳ [DISCOVERY COMPLETE] Waiting for pairing verification before sending event")
+            NSLog("ℹ️ [RTC CHECK] Device Status not available - enabling notifications directly")
+            enableNotificationsAfterRTCCheck(peripheral: peripheral, deviceId: deviceId)
           }
         }
         
@@ -4694,6 +5277,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     }
     
     // ✅ FIXED: If we successfully read a characteristic during pairing verification, pairing succeeded
+    // ✅ SDD v1.4: Also use this read for RTC check if characteristic is Device Status
     if devicesPendingPairingVerification[deviceId] != nil {
       // Check if device is already bonded (iOS might have bonded it previously)
       let isAlreadyBonded = bondedDeviceIDs.contains(deviceId)
@@ -4721,7 +5305,26 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       
       pairingVerificationTimers[deviceId]?.invalidate()
       pairingVerificationTimers.removeValue(forKey: deviceId)
-      confirmConnection(peripheral: peripheral, deviceId: deviceId)
+      
+      // ✅ SDD v1.4: If this is a Device Status read, use it for RTC check before confirming connection
+      if characteristicUuid == DEVICE_STATUS_CHAR_UUID.uuidString, let data = characteristic.value {
+        NSLog("⏰ [RTC CHECK] Using pairing verification Device Status read for RTC check (SDD v1.4)")
+        // ✅ CRITICAL: Ensure flag is set before parsing (defensive check)
+        if rtcCheckPendingBeforeNotifications[deviceId] != true {
+          NSLog("⚠️ [RTC CHECK] Flag not set - setting it now before parsing")
+          rtcCheckPendingBeforeNotifications[deviceId] = true
+        }
+        // Parse Device Status data to check RTC - this will trigger RTC check flow
+        parseDeviceStatusData(deviceId: deviceId, data: data)
+        // Note: confirmConnection will be called from parseDeviceStatusData if RTC is valid
+        // OR after SET_TIME response if RTC is invalid
+        // Don't call confirmConnection here - let RTC check flow handle it
+        return // ✅ IMPORTANT: Return early to prevent duplicate parsing in the normal flow below
+      } else {
+        // Not Device Status read - confirm connection immediately
+        confirmConnection(peripheral: peripheral, deviceId: deviceId)
+        return // Return early
+      }
     }
     
     guard let data = characteristic.value else {

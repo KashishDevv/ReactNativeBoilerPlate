@@ -58,8 +58,17 @@ class AutoConnectService {
   async startAutoConnect() {
     try {
       console.log('🚀 Starting auto-connect...');
+
+      // Refresh bonded devices before starting to avoid empty scans
+      const bondedResult = await this.getBondedDevices();
+      const bondedCount = bondedResult.success ? bondedResult.devices.length : 0;
+
+      if (bondedCount === 0) {
+        console.log('⏸️ Skipping auto-connect start: no bonded devices available');
+        return { success: true, skipped: true, reason: 'no_bonded_devices' };
+      }
+
       let result;
-      
       if (Platform.OS === 'ios') {
         result = await BridgingCodeModule.startAutoConnect();
       } else {

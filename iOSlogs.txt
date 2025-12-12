@@ -1,0 +1,3488 @@
+   🔍 Attempting to read encrypted characteristic to verify pairing...
+✅ [PAIRING VERIFICATION] Successfully read characteristic - encryption verified!
+   ⚠️ Device was ALREADY BONDED (in app list or iOS system)
+   ⚠️ iOS reused existing bond - passkey was NOT verified
+   ⚠️ If wrong PIN was entered previously, iOS may still allow connection
+   💡 To verify passkey: Forget device in iOS Settings, then reconnect
+⏰ [RTC CHECK] Using pairing verification Device Status read for RTC check (SDD v1.4)
+🔍 [RTC CHECK DEBUG] Flag check: rtcCheckPendingBeforeNotifications[D4F24A32-376A-7267-F293-B74FC14C10C8] = true
+🔍 [RTC CHECK DEBUG] isPending = true
+⏰ [RTC CHECK] Initial Device Status read complete - RTC is valid
+✅ [RTC CHECK] RTC is valid - enabling notifications immediately (SDD v1.4)
+🔔 [NOTIFICATIONS] Enabling notifications after RTC check (SDD v1.4 compliance)
+🔔 Enabled notifications for characteristic: 4F4E4D4C-4B4A-4948-4746-454443424140
+🔔 Enabled notifications for characteristic: 5F5E5D5C-5B5A-5958-5756-555453525150
+🔔 Enabled notifications for characteristic: 6F6E6D6C-6B6A-6968-6766-656463626160
+✅ [NOTIFICATIONS] All notifications enabled - ready for command sequence
+🔄 [POLLING] Starting default polling (120s interval) - will adjust if SET_DATA_ACQUISITION_INTERVAL received
+🔄 [POLLING WORKAROUND] Starting periodic Device Status polling every 120.0 seconds
+✅ [POLLING] Timer started for D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ [RTC CHECK] Pairing verified and RTC valid - confirming connection
+✅ [CONNECTION CONFIRMED] Pairing verified - confirming connection for DyreID
+✅ [BONDING] Adding newly paired device to bonded devices list
+ℹ️ [CONNECTION PROMISE] No pending promise found - this was likely an auto-connect
+📡 [DEVICE CONNECTED EVENT] Sending DeviceConnected event to JavaScript
+   📱 UI should update device list to show connected state
+   ⏰ Timestamp: 2025-12-11 13:45:58 +0000
+✅ [DISCOVERY COMPLETE] Event sent to JS after pairing verification - ready for command sequence
+ℹ️ [CONNECTION CONFIRMED] Connection confirmed - notifications should already be enabled via RTC check flow
+═══════════════════════════════════════════════════════
+📊 [DEVICE STATUS #1] SDD v1.3 format
+═══════════════════════════════════════════════════════
+   Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw data: 17 CB 3A 69 04 00 9E 0B
+   Timestamp: 1765460759 → 2025-12-11 13:45:59 +0000
+   Time diff from now: 0s (-0.000109862486521403 hours)
+   RTC Valid: ✅ YES
+   ✅ Records Available: 4
+   ✅ Battery: 2974mV (99)
+   Sync State: unknown
+   Note: Steps/Temperature are in Data Transfer records only
+═══════════════════════════════════════════════════════
+📊 [POLLING FLAG] isFromPolling=false for device status update
+📤 Sending device status update (SDD v1.3) for: D4F24A32-376A-7267-F293-B74FC14C10C8 - Battery Voltage: 2974mV (percentage from 2A19), Records: 4, RTC Valid: true
+📊 [EVENT] Sending DeviceDataUpdated with isFromPolling=false
+✅ [DEVICE CONNECTED EVENT] Event dispatched successfully
+'🔗 [Modern] Device connected event received:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', 'DyreID'
+📋 [ConnectionLog] Added log for D4F24A32-376A-7267-F293-B74FC14C10C8: Connected
+🚀 [NATIVE SEQUENCE] Starting full command sequence for D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ [NATIVE SEQUENCE] Command sequence started - reset dataSyncRequested to false
+✅ [RTC CHECK] RTC is valid - skipping SET time, sending Data Acquisition command directly
+📤 [DATA ACQUISITION] Sending Data Sync Start command for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Note: Polling already active with default 120s interval (started after notifications enabled)
+✅ [DATA ACQUISITION] Device already connected - starting sync immediately
+🔒 [DATA ACQUISITION] Pre-set dataSyncRequested to true before sending command
+📦 [v1.4 CHUNKING] Initializing file-based sync: 4 records, 1 file(s) of 500 records each
+📂 [v1.4 CHUNKING] Starting file #1 sync
+ℹ️ Expected 4 total records from manufacturer data
+🔒 dataSyncRequested already set to true (pre-set by caller)
+   ⚠️ [FIRMWARE DEBUG] dataSyncRequested[D4F24A32-376A-7267-F293-B74FC14C10C8] = true
+   ⚠️ [FIRMWARE DEBUG] Current state BEFORE command: syncing
+📤 Sending Data Sync Start command to D4F24A32-376A-7267-F293-B74FC14C10C8 (attempt 1/3)
+   Command: AA 08 01 00
+   Expected records: 4
+'🔔 [LISTENER] DeviceDataUpdated event received! deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8', { fullEvent: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     sddCompliant: true,
+     deviceName: 'DyreID',
+     rtcValid: true,
+     batteryVoltage: 2974,
+     sddVersion: '1.3',
+     timestamp: 1765460759000,
+     isFromPolling: false,
+     rawBuffer: '17cb3a6904009e0b',
+     lastUpdate: 1765460758617.184,
+     recordCount: 4,
+     dataSource: 'live' },
+  keys: 
+   [ 'deviceId',
+     'sddCompliant',
+     'deviceName',
+     'rtcValid',
+     'batteryVoltage',
+     'sddVersion',
+     'timestamp',
+     'isFromPolling',
+     'rawBuffer',
+     'lastUpdate',
+     'recordCount',
+     'dataSource' ] }
+✅ Data Sync Start command sent successfully
+   ⚠️ [FIRMWARE DEBUG] Waiting for sync_start notification (type 0x01) from firmware...
+   ⚠️ [FIRMWARE DEBUG] If no notification arrives, firmware may not be responding to DATA_SYNC_START
+✅ [DATA ACQUISITION] Data sync command sent successfully
+'🔔 [HANDLER] handleDeviceDataUpdated CALLED with event:', { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  hasEvent: true,
+  eventKeys: 
+   [ 'deviceId',
+     'sddCompliant',
+     'deviceName',
+     'rtcValid',
+     'batteryVoltage',
+     'sddVersion',
+     'timestamp',
+     'isFromPolling',
+     'rawBuffer',
+     'lastUpdate',
+     'recordCount',
+     'dataSource' ] }
+'📊 [EVENT DEBUG] DeviceDataUpdated event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { hasIsFromPolling: true,
+  isFromPollingValue: false,
+  isFromPollingType: 'boolean',
+  allEventKeys: 
+   [ 'deviceId',
+     'sddCompliant',
+     'deviceName',
+     'rtcValid',
+     'batteryVoltage',
+     'sddVersion',
+     'timestamp',
+     'isFromPolling',
+     'rawBuffer',
+     'lastUpdate',
+     'recordCount',
+     'dataSource' ],
+  pollingRelatedKeys: [ 'isFromPolling' ],
+  fullEvent: '{\n  "deviceId": "D4F24A32-376A-7267-F293-B74FC14C10C8",\n  "sddCompliant": true,\n  "deviceName": "DyreID",\n  "rtcValid": true,\n  "batteryVoltage": 2974,\n  "sddVersion": "1.3",\n  "timestamp": 1765460759000,\n  "isFromPolling": false,\n  "rawBuffer": "17cb3a6904009e0b",\n  "lastUpdate": 1765460758617.184,\n  "recordCount": 4,\n  "dataSource": "live"\n}' }
+'🔍 [EXTRACT DEBUG] Extracted from event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { recordCount: 4,
+  rtcValid: true,
+  isFromPolling: false,
+  hasRecordCount: true,
+  hasRtcValid: true,
+  recordCountValue: 4,
+  rtcValidValue: true }
+📊 [EVENT] Received DeviceDataUpdated with isFromPolling=false (type: boolean) for D4F24A32-376A-7267-F293-B74FC14C10C8
+📊 [ANDROID] Device data updated - Steps: undefined, Temp: undefined°C, Battery: null%
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: undefined,
+  steps: undefined,
+  recordCount: undefined,
+  dataSource: 'live' }
+🔍 [AUTO SYNC PRE-CHECK] Platform: ios, deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, eventRecordCount: 4, eventRtcValid: true, hasRecordCount: true, hasRtcValid: true
+'🔍 [AUTO SYNC DEBUG] Triggering auto-sync check for D4F24A32-376A-7267-F293-B74FC14C10C8 (ios):', { recordCount: 4,
+  rtcValid: true,
+  isFromPolling: false,
+  hasRecords: true }
+✅ [AUTO SYNC] Using isFromPolling=false from native event
+'📊 [AUTO SYNC] Auto-sync conditions (ios):', { hasRecordsAvailable: true,
+  isSyncActive: false,
+  syncJustCompleted: false,
+  isConnected: true,
+  isLiveData: true,
+  isFromPolling: false,
+  shouldSync: true,
+  recordCount: 4,
+  isSingleRecord: false,
+  recordCountIncreased: true,
+  throttleExpired: true,
+  throttleTime: 30000 }
+⏭️ [AUTO SYNC] Skipping - not from periodic polling (isFromPolling=false) - only polling reads trigger auto-sync
+📊 [AUTO SYNC] Conditions check: hasRecords=true, isSyncActive=false, isConnected=true, isLiveData=true, isFromPolling=false (raw: false, type: boolean), syncJustCompleted=false, isSingleRecord=false, recordCountIncreased=true, throttleExpired=true
+✅ [SERVICE DISCOVERY] Command sequence started successfully for D4F24A32-376A-7267-F293-B74FC14C10C8
+⏰ [TIME SYNC] Tracked time sync sent for D4F24A32-376A-7267-F293-B74FC14C10C8, will verify RTC validity
+⏰ [AUTO TIME SYNC] Time sync sent - will verify RTC when next device status notification arrives
+✅ [POLLING] Native polling will start after SET_DATA_ACQUISITION_INTERVAL command
+✅ Notification state updated for 4F4E4D4C-4B4A-4948-4746-454443424140: isNotifying=true
+🔔 SYSTEM_COMMAND notifications are now ENABLED
+✅ Notification state updated for 5F5E5D5C-5B5A-5958-5756-555453525150: isNotifying=true
+✅ Notification state updated for 6F6E6D6C-6B6A-6968-6766-656463626160: isNotifying=true
+📬 Received SYSTEM_COMMAND response: BB 08 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 08 00 00
+   Response ID: 0xBB
+   Command: 0x08 (DATA_SYNC_START)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Data Sync Started successfully
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 01 04 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 8,
+  rawData: undefined,
+  rawResponse: 'BB 08 00 00',
+  status: 'success' }
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:01 [1]:04 [2]:05 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x01 (1)
+Byte [1] Length: 0x04 (4)
+Payload start: byte [2]
+Payload end: byte [5]
+Payload length: 4 bytes
+Full packet hex: 01 04 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 05 00 00 00
+═══════════════════════════════════════════════════════
+📈 Data Sync Start notification received
+   Payload hex: 05000000
+   Payload length: 4 bytes
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8' ]
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8' ]
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+   Raw bytes: 0x05 0x00 0x00 0x00
+   Parsed as LE uint32: 5
+✅ Data Sync Started - Device will send 5 records
+📊 [v1.4 CHUNKING] Device reported 5 records (expected 4) - using device value
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 6A C8 3A 69 07 00 18 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:6A [3]:C8 [4]:3A [5]:69 [6]:07 [7]:00 [8]:18 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 6A C8 3A 69 07 00 18 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 6A C8 3A 69 07 00 18 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:04:34 - Temp: 24°C, Steps: 7
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 A6 C8 3A 69 0E 00 19 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:A6 [3]:C8 [4]:3A [5]:69 [6]:0E [7]:00 [8]:19 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 A6 C8 3A 69 0E 00 19 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: A6 C8 3A 69 0E 00 19 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:05:34 - Temp: 25°C, Steps: 14
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 E0 CA 3A 69 1F 00 18 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:E0 [3]:CA [4]:3A [5]:69 [6]:1F [7]:00 [8]:18 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 E0 CA 3A 69 1F 00 18 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: E0 CA 3A 69 1F 00 18 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:15:04 - Temp: 24°C, Steps: 31
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 FE CA 3A 69 2C 00 18 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:FE [3]:CA [4]:3A [5]:69 [6]:2C [7]:00 [8]:18 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 FE CA 3A 69 2C 00 18 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: FE CA 3A 69 2C 00 18 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:15:34 - Temp: 24°C, Steps: 44
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 17 CB 3A 69 21 00 18 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:17 [3]:CB [4]:3A [5]:69 [6]:21 [7]:00 [8]:18 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 17 CB 3A 69 21 00 18 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 17 CB 3A 69 21 00 18 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:15:59 - Temp: 24°C, Steps: 33
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 02 02 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:02 [1]:02 [2]:05 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x02 (2)
+Byte [1] Length: 0x02 (2)
+Payload start: byte [2]
+Payload end: byte [3]
+Payload length: 2 bytes
+Full packet hex: 02 02 05 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 05 00
+═══════════════════════════════════════════════════════
+📈 Data Sync Complete notification received
+═══════════════════════════════════════════════════════
+✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences
+✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ Data Sync Complete - 5 records transmitted successfully
+📊 File #1 complete: 5 records
+📊 Grand total received: 5 / 5 records
+✅ [v1.4 CHUNKING] All files synced - sync complete!
+═══════════════════════════════════════════════════════
+✅ Updated record count to 0 after file #1
+🧹 [AUTO CLEANUP] Sending DATA_SYNC_STOP to clear file #1...
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=7, Temp=24°C, Time=2025-12-11 19:04:34
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 1
+┐ %c action %chistoricalRecords/addRecords %c@ 19:15:58.865
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: { recordsByDevice: {} },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { temperature: 24,
+          steps: 7,
+          timestampDate: '2025-12-11 19:04:34',
+          flags: 0,
+          timestamp: 1765460074,
+          rawData: '6ac83a6907001800',
+          receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: undefined,
+  steps: undefined,
+  recordCount: 1,
+  dataSource: 'live' }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=14, Temp=25°C, Time=2025-12-11 19:05:34
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 2
+┐ %c action %chistoricalRecords/addRecords %c@ 19:15:58.869
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { temperature: 25,
+          timestampDate: '2025-12-11 19:05:34',
+          steps: 14,
+          flags: 0,
+          timestamp: 1765460134,
+          rawData: 'a6c83a690e001900',
+          receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: undefined,
+  steps: undefined,
+  recordCount: 2,
+  dataSource: 'live' }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=31, Temp=24°C, Time=2025-12-11 19:15:04
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 3
+┐ %c action %chistoricalRecords/addRecords %c@ 19:15:58.872
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { temperature: 24,
+          timestampDate: '2025-12-11 19:15:04',
+          steps: 31,
+          flags: 0,
+          timestamp: 1765460704,
+          rawData: 'e0ca3a691f001800',
+          receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: undefined,
+  steps: undefined,
+  recordCount: 3,
+  dataSource: 'live' }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=44, Temp=24°C, Time=2025-12-11 19:15:34
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 4
+┐ %c action %chistoricalRecords/addRecords %c@ 19:15:58.877
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { timestampDate: '2025-12-11 19:15:34',
+          steps: 44,
+          flags: 0,
+          timestamp: 1765460734,
+          rawData: 'feca3a692c001800',
+          temperature: 24,
+          receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: undefined,
+  steps: undefined,
+  recordCount: 4,
+  dataSource: 'live' }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=33, Temp=24°C, Time=2025-12-11 19:15:59
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 5
+┐ %c action %chistoricalRecords/addRecords %c@ 19:15:58.882
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { flags: 0,
+          timestamp: 1765460759,
+          rawData: '17cb3a6921001800',
+          steps: 33,
+          timestampDate: '2025-12-11 19:15:59',
+          temperature: 24,
+          receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: undefined,
+  steps: undefined,
+  recordCount: 5,
+  dataSource: 'live' }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📊 [SYNC COMPLETE] Received for D4F24A32-376A-7267-F293-B74FC14C10C8: 5 records
+🔄 [STATE TRANSITION] D4F24A32-376A-7267-F293-B74FC14C10C8: unknown → complete (sync successful)
+💾 [SYNC COMPLETE] Updating UI for D4F24A32-376A-7267-F293-B74FC14C10C8 with latest synced data
+'📊 [SYNC COMPLETE] Latest record:', { timestamp: 1765460759,
+  timestampDate: '2025-12-11 19:15:59',
+  steps: 33,
+  temperature: 24 }
+📊 [SYNC COMPLETE] Total from 5 records: 129 steps
+📅 [SYNC COMPLETE] Synced date: 2025-12-11T13:45:59.000Z
+'💾 [SYNC COMPLETE] Updated device data:', { temperature: 24,
+  steps: 33,
+  totalSteps: 129,
+  recordCount: 0,
+  lastUpdate: Thu Dec 11 2025 19:15:59 GMT+0530 }
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: 24,
+  steps: 33,
+  recordCount: 0,
+  dataSource: 'synced' }
+'📥 [Modern] deviceDataUpdate event received:', 'sync_complete', 'for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+'📊 [Modern] Sync complete - updating device data:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+📋 [ConnectionLog] Added log for D4F24A32-376A-7267-F293-B74FC14C10C8: 5 Records Synced
+✅ [SYNC COMPLETE] Tracked sync completion time for D4F24A32-376A-7267-F293-B74FC14C10C8 - will prevent auto-sync for 5 seconds
+📊 [METRICS] D4F24A32-376A-7267-F293-B74FC14C10C8: Success (latency: 0ms, avg: 0ms, success rate: 100.0%)
+'📢 [USER FEEDBACK] D4F24A32-376A-7267-F293-B74FC14C10C8: sync_completed', { recordsTransmitted: 5, latency: 0 }
+✅ [SYNC COMPLETE] Tracked sync completion time for D4F24A32-376A-7267-F293-B74FC14C10C8 - will prevent auto-sync for 5 seconds
+💾 [SYNC COMPLETE] Updating UI for D4F24A32-376A-7267-F293-B74FC14C10C8 with latest synced data
+'📊 [SYNC COMPLETE] Latest record:', { timestamp: 1765460759,
+  timestampDate: '2025-12-11 19:15:59',
+  steps: 33,
+  temperature: 24 }
+📊 [SYNC COMPLETE] Total from 5 records: 129 steps
+📅 [SYNC COMPLETE] Synced date: 2025-12-11T13:45:59.000Z
+'💾 [SYNC COMPLETE] Updated device data:', { temperature: 24,
+  steps: 33,
+  totalSteps: 129,
+  recordCount: 0,
+  lastUpdate: Thu Dec 11 2025 19:15:59 GMT+0530 }
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: 24,
+  steps: 33,
+  recordCount: 0,
+  dataSource: 'synced' }
+'📥 [Modern] deviceDataUpdate event received:', 'sync_complete', 'for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+'📊 [Modern] Sync complete - updating device data:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+📤 [HISTORICAL SYNC] Preparing to send 5 NEW records from this sync (total stored: 5, baseline: 0)
+📤 [HISTORICAL SYNC] Sending 5 records + aggregates for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📤 Sending pet health BLE data to server:', { PetId: 1059773,
+  Steps: 33,
+  Temperature: '24',
+  BatteryLevel: null,
+  TimeStamp: '2025-12-11T13:45:59.000Z',
+  Status: 'Connected',
+  Characteristic: 
+   [ { Characteristic: '180F',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 0 },
+     { Characteristic: '180A',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 0 },
+     { Characteristic: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 0 },
+     { Characteristic: '0F0E0D0C-0B0A-0908-0706-050403020100',
+       ServiceType: 'SMART_TAG_SERVICE',
+       CharacteristicsCount: 0 } ],
+  SyncType: 'historical_sync',
+  SyncedAt: '2025-12-11T13:45:58.888Z',
+  AllRecords: 
+   [ { Timestamp: '2025-12-11T13:34:34.000Z',
+       Steps: 7,
+       Temperature: 24,
+       Flags: 0,
+       RecordType: 'historical' },
+     { Timestamp: '2025-12-11T13:35:34.000Z',
+       Steps: 14,
+       Temperature: 25,
+       Flags: 0,
+       RecordType: 'historical' },
+     { Timestamp: '2025-12-11T13:45:04.000Z',
+       Steps: 31,
+       Temperature: 24,
+       Flags: 0,
+       RecordType: 'historical' },
+     { Timestamp: '2025-12-11T13:45:34.000Z',
+       Steps: 44,
+       Temperature: 24,
+       Flags: 0,
+       RecordType: 'historical' },
+     { Timestamp: '2025-12-11T13:45:59.000Z',
+       Steps: 33,
+       Temperature: 24,
+       Flags: 0,
+       RecordType: 'historical' } ],
+  Summary: 
+   { TotalSteps: 33,
+     StepsDelta: 26,
+     LatestTemperature: 24,
+     AverageTemperature: 24.2,
+     MinTemperature: 24,
+     MaxTemperature: 25,
+     RecordCount: 5 } }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+🔍 [RTC CHECK DEBUG] Flag check: rtcCheckPendingBeforeNotifications[D4F24A32-376A-7267-F293-B74FC14C10C8] = false
+🔍 [RTC CHECK DEBUG] isPending = false
+═══════════════════════════════════════════════════════
+📊 [DEVICE STATUS #2] SDD v1.3 format
+═══════════════════════════════════════════════════════
+   Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw data: 18 CB 3A 69 05 00 9E 0B
+   Timestamp: 1765460760 → 2025-12-11 13:46:00 +0000
+   Time diff from now: 0s (-8.778969446818033e-05 hours)
+   RTC Valid: ✅ YES
+   ✅ Records Available: 5
+   ✅ Battery: 2974mV (99)
+   Sync State: complete
+   Note: Steps/Temperature are in Data Transfer records only
+   ⏱️ This is notification #2 for this session
+═══════════════════════════════════════════════════════
+📊 [POLLING FLAG] isFromPolling=false for device status update
+📤 Sending device status update (SDD v1.3) for: D4F24A32-376A-7267-F293-B74FC14C10C8 - Battery Voltage: 2974mV (percentage from 2A19), Records: 5, RTC Valid: true
+📊 [EVENT] Sending DeviceDataUpdated with isFromPolling=false
+'🔔 [LISTENER] DeviceDataUpdated event received! deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8', { fullEvent: 
+   { timestamp: 1765460760000,
+     recordCount: 5,
+     rtcValid: true,
+     deviceName: 'DyreID',
+     lastUpdate: 1765460759685.154,
+     dataSource: 'live',
+     rawBuffer: '18cb3a6905009e0b',
+     isFromPolling: false,
+     sddCompliant: true,
+     batteryVoltage: 2974,
+     sddVersion: '1.3',
+     deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8' },
+  keys: 
+   [ 'timestamp',
+     'recordCount',
+     'rtcValid',
+     'deviceName',
+     'lastUpdate',
+     'dataSource',
+     'rawBuffer',
+     'isFromPolling',
+     'sddCompliant',
+     'batteryVoltage',
+     'sddVersion',
+     'deviceId' ] }
+'🔔 [HANDLER] handleDeviceDataUpdated CALLED with event:', { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  hasEvent: true,
+  eventKeys: 
+   [ 'timestamp',
+     'recordCount',
+     'rtcValid',
+     'deviceName',
+     'lastUpdate',
+     'dataSource',
+     'rawBuffer',
+     'isFromPolling',
+     'sddCompliant',
+     'batteryVoltage',
+     'sddVersion',
+     'deviceId' ] }
+'📊 [EVENT DEBUG] DeviceDataUpdated event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { hasIsFromPolling: true,
+  isFromPollingValue: false,
+  isFromPollingType: 'boolean',
+  allEventKeys: 
+   [ 'timestamp',
+     'recordCount',
+     'rtcValid',
+     'deviceName',
+     'lastUpdate',
+     'dataSource',
+     'rawBuffer',
+     'isFromPolling',
+     'sddCompliant',
+     'batteryVoltage',
+     'sddVersion',
+     'deviceId' ],
+  pollingRelatedKeys: [ 'isFromPolling' ],
+  fullEvent: '{\n  "timestamp": 1765460760000,\n  "recordCount": 5,\n  "rtcValid": true,\n  "deviceName": "DyreID",\n  "lastUpdate": 1765460759685.154,\n  "dataSource": "live",\n  "rawBuffer": "18cb3a6905009e0b",\n  "isFromPolling": false,\n  "sddCompliant": true,\n  "batteryVoltage": 2974,\n  "sddVersion": "1.3",\n  "deviceId": "D4F24A32-376A-7267-F293-B74FC14C10C8"\n}' }
+'🔍 [EXTRACT DEBUG] Extracted from event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { recordCount: 5,
+  rtcValid: true,
+  isFromPolling: false,
+  hasRecordCount: true,
+  hasRtcValid: true,
+  recordCountValue: 5,
+  rtcValidValue: true }
+📊 [EVENT] Received DeviceDataUpdated with isFromPolling=false (type: boolean) for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: null,
+  temperature: 24,
+  steps: 33,
+  recordCount: 0,
+  dataSource: 'live' }
+🔍 [AUTO SYNC PRE-CHECK] Platform: ios, deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, eventRecordCount: 5, eventRtcValid: true, hasRecordCount: true, hasRtcValid: true
+'🔍 [AUTO SYNC DEBUG] Triggering auto-sync check for D4F24A32-376A-7267-F293-B74FC14C10C8 (ios):', { recordCount: 5,
+  rtcValid: true,
+  isFromPolling: false,
+  hasRecords: true }
+✅ [AUTO SYNC] Using isFromPolling=false from native event
+'📊 [AUTO SYNC] Auto-sync conditions (ios):', { hasRecordsAvailable: true,
+  isSyncActive: false,
+  syncJustCompleted: false,
+  isConnected: true,
+  isLiveData: true,
+  isFromPolling: false,
+  shouldSync: true,
+  recordCount: 5,
+  isSingleRecord: false,
+  recordCountIncreased: true,
+  throttleExpired: true,
+  throttleTime: 30000 }
+⏭️ [AUTO SYNC] Skipping - not from periodic polling (isFromPolling=false) - only polling reads trigger auto-sync
+📊 [AUTO SYNC] Conditions check: hasRecords=true, isSyncActive=false, isConnected=true, isLiveData=true, isFromPolling=false (raw: false, type: boolean), syncJustCompleted=false, isSingleRecord=false, recordCountIncreased=true, throttleExpired=true
+📊 Device Status (SDD v1.4): Records=5, Battery=2974mV (99%), Time=2025-12-11T13:46:00.000Z
+⏰ [AUTO TIME SYNC] Ignoring device status notification - too soon after time sync (1s ago, need 5s)
+'Validating data:', { temperature: undefined,
+  steps: undefined,
+  batteryLevel: 99,
+  timestamp: Thu Dec 11 2025 19:16:00 GMT+0530 }
+Data validation passed (relaxed mode)
+⚡ [ADAPTIVE THROTTLE] D4F24A32-376A-7267-F293-B74FC14C10C8: Fast mode (28.0 records/30s) → 15000ms
+⏭️ [AUTO SYNC] Skipping - duplicate notification (3ms ago, same record count: 5)
+'📊 [Modern] Device data updated via callback:', 'D4F24A32-376A-7267-F293-B74FC14C10C8', { batteryLevel: 99,
+  temperature: 24,
+  steps: 33,
+  recordCount: 5,
+  dataSource: 'live' }
+'✅ Pet health BLE data sent successfully:', { Data: 4690, Status: 1, StatusCode: 200, Message: null }
+✅ [HISTORICAL SYNC] Sent 5 records successfully
+   Total Steps: 33, Temp: 24°C (avg: 24.2°C)
+⏰ [BATCH TIMER] Starting 5-minute batch upload timer for D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ DATA_SYNC_STOP sent - file #1 will be cleared
+📬 Received SYSTEM_COMMAND response: BB 09 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 09 00 00
+   Response ID: 0xBB
+   Command: 0x09 (DATA_SYNC_STOP)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Data Sync Stopped - Flash cleared successfully
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 9,
+  rawData: undefined,
+  rawResponse: 'BB 09 00 00',
+  status: 'success' }
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_9, command: 9, version: N/A
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9' ]
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_9, command: 9, version: N/A
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9' ]
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C11.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C11.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C11.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C11.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C11.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C11] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1043655e0 Failed : error 0:61 [61]
+💾 [SYNC COMPLETE] All files synced - Updated UI with latest synced data
+🔴 [LIVE READY] Device now ready for live notifications
+✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences
+✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ [SYNC COMPLETE] Relying on next polling cycle to check Device Status
+   Next poll will verify flash cleared and show any new records generated
+nw_socket_handle_socket_event [C12.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C12.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C12.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C12.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C12.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C12] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1043655e0 Failed : error 0:61 [61]
+   ⚠️ [FIRMWARE DEBUG] After 5 seconds:
+      - dataSyncRequested still true: false
+      - Current state: complete
+'📊 [Modern] Navigating to Live Data screen for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+nw_socket_handle_socket_event [C13.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C13.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C13.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C13.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C13.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C13] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1043663a0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C14.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C14.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C14.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C14.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C14.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C14] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x104367700 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C15.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C15.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C15.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C15.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C15.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C15] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x104367700 Failed : error 0:61 [61]
+'🔗 [Modern] Focus refresh connected devices:', 1
+I1211 19:16:09.271546 1873260544 UIManagerBinding.cpp:135] instanceHandle is null, event of type topMomentumScrollEnd will be dropped
+🔄 Periodic refresh - Profile: default, Battery: 80%
+📱 [DeviceDetails] Loading details for device: D4F24A32-376A-7267-F293-B74FC14C10C8
+'📱 [DeviceDetails] Initial device data:', 'Found'
+'📱 [DeviceDetails] Device data loaded:', { name: 'DyreID',
+  connectionState: 'connected',
+  hasDeviceData: true }
+📱 [DeviceDetails] Device is connected, requesting data...
+Callback setup successful
+📱 [GET API] DeviceDetails screen focused for device: D4F24A32-376A-7267-F293-B74FC14C10C8
+📱 [GET API] Starting GET API for device: D4F24A32-376A-7267-F293-B74FC14C10C8
+📱 [DeviceDetails] Loading details for device: D4F24A32-376A-7267-F293-B74FC14C10C8
+'📱 [DeviceDetails] Initial device data:', 'Found'
+'📱 [DeviceDetails] Device data loaded:', { name: 'DyreID',
+  connectionState: 'connected',
+  hasDeviceData: true }
+📱 [DeviceDetails] Device is connected, requesting data...
+Callback setup successful
+📱 [DeviceDetails] Data request completed
+📱 [DeviceDetails] Starting background service discovery...
+📱 [DeviceDetails] Loading completed, setting loading to false
+📱 [DeviceDetails] Data request completed
+📱 [DeviceDetails] Starting background service discovery...
+📱 [DeviceDetails] Loading completed, setting loading to false
+📱 [DeviceDetails] Background service discovery completed
+'UI updated with device data:', { name: 'DyreID',
+  batteryLevel: 99,
+  temperature: 24,
+  steps: 33,
+  lastUpdate: Thu Dec 11 2025 19:15:59 GMT+0530,
+  connectionState: 'connected' }
+🔍 [SERVICE DISCOVERY] Found 4 services for device: D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [SERVICE DISCOVERY] Tracking 4 services for characteristic discovery
+📋 [CHAR DISCOVERY] Service 180F complete. 3 services remaining
+📋 [CHAR DISCOVERY] Service 180A complete. 2 services remaining
+📋 [CHAR DISCOVERY] Service 8D53DC1D-1DB7-4CD3-868B-8A527460AA84 complete. 1 services remaining
+📋 [CHAR DISCOVERY] Service 0F0E0D0C-0B0A-0908-0706-050403020100 complete. 0 services remaining
+✅ [DISCOVERY COMPLETE] ALL services discovered! Checking if ready to send event...
+📋 [DISCOVERY COMPLETE] Found characteristics:
+   - System Command: ✅
+   - Device Status: ✅
+   - Data Transfer: ✅
+✅ [DISCOVERY COMPLETE] Event sent to JS - ready for command sequence
+⏰ [RTC CHECK] Reading Device Status to check RTC validity BEFORE enabling notifications (SDD v1.4 compliance)
+'🔍 [renderServices] Device services debug:', { device: true,
+  connectionState: 'connected',
+  hasServices: true,
+  servicesLength: 4,
+  services: 
+   [ { uuid: '180F', characteristics: 0 },
+     { uuid: '180A', characteristics: 0 },
+     { uuid: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
+       characteristics: 0 },
+     { uuid: '0F0E0D0C-0B0A-0908-0706-050403020100',
+       characteristics: 0 } ] }
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+(
+    "<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>",
+    "<NSLayoutConstraint:0x102a43480 'fittingSizeHTarget' _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width == 215   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+
+<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+(
+    "<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>",
+    "<NSLayoutConstraint:0x1041f7b60 'fittingSizeHTarget' _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width == 215   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+🚀 [NATIVE SEQUENCE] Starting full command sequence for D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ [NATIVE SEQUENCE] Command sequence started - reset dataSyncRequested to false
+✅ [RTC CHECK] RTC is valid - skipping SET time, sending Data Acquisition command directly
+📤 [DATA ACQUISITION] Sending Data Sync Start command for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Note: Polling already active with default 120s interval (started after notifications enabled)
+✅ [DATA ACQUISITION] Device already connected - starting sync immediately
+🔒 [DATA ACQUISITION] Pre-set dataSyncRequested to true before sending command
+📦 [v1.4 CHUNKING] Initializing file-based sync: 5 records, 1 file(s) of 500 records each
+📂 [v1.4 CHUNKING] Starting file #1 sync
+ℹ️ Expected 5 total records from manufacturer data
+🔒 dataSyncRequested already set to true (pre-set by caller)
+   ⚠️ [FIRMWARE DEBUG] dataSyncRequested[D4F24A32-376A-7267-F293-B74FC14C10C8] = true
+   ⚠️ [FIRMWARE DEBUG] Current state BEFORE command: syncing
+📤 Sending Data Sync Start command to D4F24A32-376A-7267-F293-B74FC14C10C8 (attempt 1/3)
+   Command: AA 08 01 00
+   Expected records: 5
+✅ Data Sync Start command sent successfully
+   ⚠️ [FIRMWARE DEBUG] Waiting for sync_start notification (type 0x01) from firmware...
+   ⚠️ [FIRMWARE DEBUG] If no notification arrives, firmware may not be responding to DATA_SYNC_START
+✅ [DATA ACQUISITION] Data sync command sent successfully
+✅ [SERVICE DISCOVERY] Command sequence started successfully for D4F24A32-376A-7267-F293-B74FC14C10C8
+⏰ [TIME SYNC] Tracked time sync sent for D4F24A32-376A-7267-F293-B74FC14C10C8, will verify RTC validity
+⏰ [AUTO TIME SYNC] Time sync sent - will verify RTC when next device status notification arrives
+✅ [POLLING] Native polling will start after SET_DATA_ACQUISITION_INTERVAL command
+🔍 [RTC CHECK DEBUG] Flag check: rtcCheckPendingBeforeNotifications[D4F24A32-376A-7267-F293-B74FC14C10C8] = true
+🔍 [RTC CHECK DEBUG] isPending = true
+⏰ [RTC CHECK] Initial Device Status read complete - RTC is valid
+✅ [RTC CHECK] RTC is valid - enabling notifications immediately (SDD v1.4)
+🔔 [NOTIFICATIONS] Enabling notifications after RTC check (SDD v1.4 compliance)
+🔔 Enabled notifications for characteristic: 4F4E4D4C-4B4A-4948-4746-454443424140
+🔔 Enabled notifications for characteristic: 5F5E5D5C-5B5A-5958-5756-555453525150
+🔔 Enabled notifications for characteristic: 6F6E6D6C-6B6A-6968-6766-656463626160
+🔔 Enabled notifications for characteristic: 4F4E4D4C-4B4A-4948-4746-454443424140
+🔔 Enabled notifications for characteristic: 5F5E5D5C-5B5A-5958-5756-555453525150
+🔔 Enabled notifications for characteristic: 6F6E6D6C-6B6A-6968-6766-656463626160
+✅ [NOTIFICATIONS] All notifications enabled - ready for command sequence
+🔄 [POLLING] Starting default polling (120s interval) - will adjust if SET_DATA_ACQUISITION_INTERVAL received
+⚠️ [POLLING] Native polling already active for D4F24A32-376A-7267-F293-B74FC14C10C8 - skipping duplicate start
+═══════════════════════════════════════════════════════
+📊 [DEVICE STATUS #3] SDD v1.3 format
+═══════════════════════════════════════════════════════
+   Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw data: 23 CB 3A 69 00 00 9E 0B
+   Timestamp: 1765460771 → 2025-12-11 13:46:11 +0000
+   Time diff from now: 0s (-6.607413291931152e-05 hours)
+   RTC Valid: ✅ YES
+   ✅ Records Available: 0
+   ✅ Battery: 2974mV (99)
+   Sync State: syncing
+   Note: Steps/Temperature are in Data Transfer records only
+   ⏱️ This is notification #3 for this session
+═══════════════════════════════════════════════════════
+📊 [POLLING FLAG] isFromPolling=false for device status update
+📤 Sending device status update (SDD v1.3) for: D4F24A32-376A-7267-F293-B74FC14C10C8 - Battery Voltage: 2974mV (percentage from 2A19), Records: 0, RTC Valid: true
+📊 [EVENT] Sending DeviceDataUpdated with isFromPolling=false
+'🔔 [LISTENER] DeviceDataUpdated event received! deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8', { fullEvent: 
+   { recordCount: 0,
+     timestamp: 1765460771000,
+     deviceName: 'DyreID',
+     rtcValid: true,
+     lastUpdate: 1765460770764.0637,
+     isFromPolling: false,
+     rawBuffer: '23cb3a6900009e0b',
+     dataSource: 'live',
+     deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     sddCompliant: true,
+     sddVersion: '1.3',
+     batteryVoltage: 2974 },
+  keys: 
+   [ 'recordCount',
+     'timestamp',
+     'deviceName',
+     'rtcValid',
+     'lastUpdate',
+     'isFromPolling',
+     'rawBuffer',
+     'dataSource',
+     'deviceId',
+     'sddCompliant',
+     'sddVersion',
+     'batteryVoltage' ] }
+'🔔 [HANDLER] handleDeviceDataUpdated CALLED with event:', { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  hasEvent: true,
+  eventKeys: 
+   [ 'recordCount',
+     'timestamp',
+     'deviceName',
+     'rtcValid',
+     'lastUpdate',
+     'isFromPolling',
+     'rawBuffer',
+     'dataSource',
+     'deviceId',
+     'sddCompliant',
+     'sddVersion',
+     'batteryVoltage' ] }
+'📊 [EVENT DEBUG] DeviceDataUpdated event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { hasIsFromPolling: true,
+  isFromPollingValue: false,
+  isFromPollingType: 'boolean',
+  allEventKeys: 
+   [ 'recordCount',
+     'timestamp',
+     'deviceName',
+     'rtcValid',
+     'lastUpdate',
+     'isFromPolling',
+     'rawBuffer',
+     'dataSource',
+     'deviceId',
+     'sddCompliant',
+     'sddVersion',
+     'batteryVoltage' ],
+  pollingRelatedKeys: [ 'isFromPolling' ],
+  fullEvent: '{\n  "recordCount": 0,\n  "timestamp": 1765460771000,\n  "deviceName": "DyreID",\n  "rtcValid": true,\n  "lastUpdate": 1765460770764.0637,\n  "isFromPolling": false,\n  "rawBuffer": "23cb3a6900009e0b",\n  "dataSource": "live",\n  "deviceId": "D4F24A32-376A-7267-F293-B74FC14C10C8",\n  "sddCompliant": true,\n  "sddVersion": "1.3",\n  "batteryVoltage": 2974\n}' }
+'🔍 [EXTRACT DEBUG] Extracted from event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { recordCount: 0,
+  rtcValid: true,
+  isFromPolling: false,
+  hasRecordCount: true,
+  hasRtcValid: true,
+  recordCountValue: 0,
+  rtcValidValue: true }
+📊 [EVENT] Received DeviceDataUpdated with isFromPolling=false (type: boolean) for D4F24A32-376A-7267-F293-B74FC14C10C8
+'Device data updated via callback:', { manufacturerRecordCount: 4,
+  manufacturerCompanyId: 4660,
+  manufacturerRawData: '341203000335FF7BCDE5C10400',
+  lastManufacturerUpdate: 1765460755720,
+  batteryLevel: 99,
+  batteryMillivolts: null,
+  steps: 33,
+  temperature: 24,
+  timestamp: Wed Mar 24 57915 23:13:20 GMT+0530,
+  dataSource: 'live',
+  lastUpdate: Thu Dec 11 2025 19:15:59 GMT+0530,
+  recordCount: 5,
+  totalSteps: 129,
+  syncedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+  type: 'device_status',
+  deviceRTC: 1765460760,
+  batteryVoltage: 2974,
+  rtcValid: true,
+  rawBuffer: '18cb3a6905009e0b',
+  sddCompliant: true,
+  sddVersion: '1.4',
+  note: 'SDD v1.4 format - Steps/Temperature are in Data Transfer records only' }
+🔍 [AUTO SYNC PRE-CHECK] Platform: ios, deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, eventRecordCount: 0, eventRtcValid: true, hasRecordCount: true, hasRtcValid: true
+'🔍 [AUTO SYNC DEBUG] Triggering auto-sync check for D4F24A32-376A-7267-F293-B74FC14C10C8 (ios):', { recordCount: 0,
+  rtcValid: true,
+  isFromPolling: false,
+  hasRecords: false }
+✅ [AUTO SYNC] Using isFromPolling=false from native event
+⚡ [ADAPTIVE THROTTLE] D4F24A32-376A-7267-F293-B74FC14C10C8: Fast mode (27.9 records/30s) → 15000ms
+'📊 [AUTO SYNC] Auto-sync conditions (ios):', { hasRecordsAvailable: false,
+  isSyncActive: false,
+  syncJustCompleted: false,
+  isConnected: true,
+  isLiveData: true,
+  isFromPolling: false,
+  shouldSync: true,
+  recordCount: 0,
+  isSingleRecord: false,
+  recordCountIncreased: true,
+  throttleExpired: true,
+  throttleTime: 15000 }
+⏭️ [AUTO SYNC] Skipping - no records available (0), not from periodic polling (isFromPolling=false) - only polling reads trigger auto-sync
+📊 [AUTO SYNC] Conditions check: hasRecords=false, isSyncActive=false, isConnected=true, isLiveData=true, isFromPolling=false (raw: false, type: boolean), syncJustCompleted=false, isSingleRecord=false, recordCountIncreased=true, throttleExpired=true
+📊 Device Status (SDD v1.4): Records=0, Battery=2974mV (99%), Time=2025-12-11T13:46:11.000Z
+⏰ [AUTO TIME SYNC] Ignoring device status notification - too soon after time sync (0s ago, need 5s)
+'Validating data:', { temperature: undefined,
+  steps: undefined,
+  batteryLevel: 99,
+  timestamp: Thu Dec 11 2025 19:16:11 GMT+0530 }
+Data validation passed (relaxed mode)
+🐌 [ADAPTIVE THROTTLE] D4F24A32-376A-7267-F293-B74FC14C10C8: Slow mode (0.0 records/30s) → 60000ms
+⏭️ [AUTO SYNC] Skipping - duplicate notification (3ms ago, same record count: 0)
+'Device data updated via callback:', { manufacturerRecordCount: 4,
+  manufacturerCompanyId: 4660,
+  manufacturerRawData: '341203000335FF7BCDE5C10400',
+  lastManufacturerUpdate: 1765460755720,
+  batteryLevel: 99,
+  batteryMillivolts: null,
+  steps: 33,
+  temperature: 24,
+  timestamp: Thu Dec 11 2025 19:16:11 GMT+0530,
+  dataSource: 'live',
+  lastUpdate: Thu Dec 11 2025 19:16:10 GMT+0530,
+  recordCount: 0,
+  totalSteps: 129,
+  syncedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+  type: 'device_status',
+  deviceRTC: 1765460771,
+  batteryVoltage: 2974,
+  rtcValid: true,
+  rawBuffer: '23cb3a6900009e0b',
+  sddCompliant: true,
+  sddVersion: '1.4',
+  note: 'SDD v1.4 format - Steps/Temperature are in Data Transfer records only' }
+📊 [LIVE BUFFER] Added record to buffer for D4F24A32-376A-7267-F293-B74FC14C10C8: 1/10
+📤 [AUTO UPLOAD] Buffer conditions met, uploading batch...
+📤 [LIVE BATCH] Uploading 1 buffered live records for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📤 Sending pet health BLE data to server:', { PetId: 1059773,
+  Steps: undefined,
+  Temperature: null,
+  BatteryLevel: '99',
+  TimeStamp: '2025-12-11T13:46:10.771Z',
+  Status: 'Connected',
+  Characteristic: 
+   [ { Characteristic: '180F',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 0 },
+     { Characteristic: '180A',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 0 },
+     { Characteristic: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 0 },
+     { Characteristic: '0F0E0D0C-0B0A-0908-0706-050403020100',
+       ServiceType: 'SMART_TAG_SERVICE',
+       CharacteristicsCount: 0 } ],
+  SyncType: 'live_batch',
+  BatchedAt: '2025-12-11T13:46:10.774Z',
+  AllRecords: 
+   [ { Timestamp: '2025-12-11T13:46:10.771Z',
+       Steps: undefined,
+       Temperature: undefined,
+       BatteryLevel: 99,
+       Flags: 0,
+       RecordType: 'live' } ],
+  Summary: 
+   { StepsDelta: NaN,
+     CurrentSteps: undefined,
+     LatestTemperature: undefined,
+     AverageTemperature: NaN,
+     MinTemperature: NaN,
+     MaxTemperature: NaN,
+     LatestBattery: 99,
+     RecordCount: 1 } }
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+(
+    "<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>",
+    "<NSLayoutConstraint:0x125ab1180 'fittingSizeHTarget' _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width == 215   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+
+<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+nw_socket_handle_socket_event [C16.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C16.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C16.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C16.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C16.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C16] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab5cc0 Failed : error 0:61 [61]
+📱 [DeviceDetails] Background service discovery completed
+'✅ Pet health BLE data sent successfully:', { Data: 4691, Status: 1, StatusCode: 200, Message: null }
+✅ [LIVE BATCH] Uploaded successfully: 1 records, NaN steps gained
+📬 Received SYSTEM_COMMAND response: BB 08 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 08 00 00
+   Response ID: 0xBB
+   Command: 0x08 (DATA_SYNC_START)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Data Sync Started successfully
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 01 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 8,
+  rawData: undefined,
+  rawResponse: 'BB 08 00 00',
+  status: 'success' }
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+All bytes: [0]:01 [1]:04 [2]:00 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x01 (1)
+Byte [1] Length: 0x04 (4)
+Payload start: byte [2]
+Payload end: byte [5]
+Payload length: 4 bytes
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+Full packet hex: 01 04 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 00 00 00 00
+═══════════════════════════════════════════════════════
+📈 Data Sync Start notification received
+   Payload hex: 00000000
+   Payload length: 4 bytes
+   Raw bytes: 0x00 0x00 0x00 0x00
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9' ]
+   Parsed as LE uint32: 0
+✅ Data Sync Started - Device will send 0 records
+📊 [v1.4 CHUNKING] Device reported 0 records (expected 5) - using device value
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+   Hex: 04 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9' ]
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+All bytes: [0]:04 [1]:01 [2]:00 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x04 (4)
+Byte [1] Length: 0x01 (1)
+Payload start: byte [2]
+Payload end: byte [2]
+Payload length: 1 bytes
+Full packet hex: 04 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 00
+═══════════════════════════════════════════════════════
+❌ Data Read Error
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+✅ Notification state updated for 4F4E4D4C-4B4A-4948-4746-454443424140: isNotifying=true
+🔔 SYSTEM_COMMAND notifications are now ENABLED
+✅ Notification state updated for 5F5E5D5C-5B5A-5958-5756-555453525150: isNotifying=true
+✅ Notification state updated for 6F6E6D6C-6B6A-6968-6766-656463626160: isNotifying=true
+✅ Notification state updated for 4F4E4D4C-4B4A-4948-4746-454443424140: isNotifying=true
+🔔 SYSTEM_COMMAND notifications are now ENABLED
+Changing the translatesAutoresizingMaskIntoConstraints property of a UICollectionViewCell that is managed by a UICollectionView is not supported, and will result in incorrect self-sizing. View: <_UIAlertControllerTextFieldViewCollectionCell: 0x1258ef900; frame = (0 0; 320 24); gestureRecognizers = <NSArray: 0x12597a690>; layer = <CALayer: 0x1260e5380>>
+⚠️ [DeviceDetails] Loading timeout reached, forcing completion
+   ⚠️ [FIRMWARE DEBUG] After 5 seconds:
+      - dataSyncRequested still true: true
+      - Current state: syncing
+      - ❌ NO NOTIFICATIONS RECEIVED - This indicates a FIRMWARE ISSUE
+      - Firmware should send sync_start (0x01) notification after DATA_SYNC_START
+✅ Notification state updated for 5F5E5D5C-5B5A-5958-5756-555453525150: isNotifying=true
+✅ Notification state updated for 6F6E6D6C-6B6A-6968-6766-656463626160: isNotifying=true
+nw_socket_handle_socket_event [C17.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C17.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C17.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C17.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C17.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C17] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126205860 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+XPC connection interrupted
+'📥 Fetching pet health BLE details from server for Pet ID:', 1059773
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+Reporter disconnected. { function=sendMessage, reporterID=82729660055553 }
+nw_socket_handle_socket_event [C18.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C18.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C18.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C18.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_endpoint_flow_failed_with_error [C18.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C18] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126206e40 Failed : error 0:61 [61]
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = <null selector>, customInfoType = UIEmojiSearchOperations
+nw_socket_handle_socket_event [C19.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C19.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C19.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C19.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C19.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C19] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126205b80 Failed : error 0:61 [61]
+Reporter disconnected or already stopped. { func=stop, reporterID=82729660055553 }
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = <null selector>, customInfoType = UIEmojiSearchOperations
+📊 [UI] Setting data acquisition interval to 30s (30000ms)
+📊 [DATA INTERVAL] Setting data acquisition interval: 30s (30000ms)
+📝 [POLLING] Stored requested interval: 30s for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📊 [UI] Set data acquisition interval result:', { success: true, duration: 2, commandName: 'Set Data Interval' }
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = <null selector>, customInfoType = UIEmojiSearchOperations
+nw_socket_handle_socket_event [C20.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C20.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C20.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C20.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C20.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C20] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126207ac0 Failed : error 0:61 [61]
+📬 Received SYSTEM_COMMAND response: BB 04 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 04 00 00
+   Response ID: 0xBB
+   Command: 0x04 (SET_DATA_ACQUISITION_INTERVAL)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Set Data Acquisition Interval command successful
+🔄 [POLLING] User requested 30.0s interval, using 30.0s (min 30s)
+🛑 [POLLING] Stopped for D4F24A32-376A-7267-F293-B74FC14C10C8
+🔄 [POLLING WORKAROUND] Starting periodic Device Status polling every 30.0 seconds
+✅ [POLLING] Timer started for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 4,
+  rawData: undefined,
+  rawResponse: 'BB 04 00 00',
+  status: 'success' }
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_4, command: 4, version: N/A
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_4, command: 4, version: N/A
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+✅ [DATA INTERVAL] Data acquisition interval set successfully for D4F24A32-376A-7267-F293-B74FC14C10C8
+🔄 [POLLING] Native code will update polling interval automatically
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+nw_socket_handle_socket_event [C21.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C21.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C21.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C21.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C21.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C21] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262078e0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C22.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C22.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C22.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C22.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C22.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C22] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262064e0 Failed : error 0:61 [61]
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = <null selector>, customInfoType = UIEmojiSearchOperations
+'📥 Fetching pet health BLE details from server for Pet ID:', 1059773
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+(
+    "<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>",
+    "<NSLayoutConstraint:0x1263e9a90 'fittingSizeHTarget' _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width == 215   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+
+<NSLayoutConstraint:0x102a41270 _TtCC5UIKit29ButtonBarButtonVisualProviderP33_A98CD29F4F6ECA17AFECE41BBB264E596Button:0x12590c380.width <= 161.667   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+📱 [GET API] DeviceDetails screen losing focus for device: D4F24A32-376A-7267-F293-B74FC14C10C8
+📱 [GET API] Stopping GET API for device: D4F24A32-376A-7267-F293-B74FC14C10C8
+'🔗 [Modern] Focus refresh connected devices:', 1
+nw_socket_handle_socket_event [C23.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C23.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C23.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C23.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C23.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C23] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126207ac0 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C24.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C24.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C24.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C24.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C24.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C24] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C25.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C25.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C25.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C25.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C25.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C25] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C26.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C26.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C26.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C26.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C26.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C26] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C27.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C27.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C27.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C27.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C27.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C27] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C28.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C28.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C28.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C28.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C28.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C28] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C29.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C29.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C29.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C29.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C29.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C29] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C30.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C30.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C30.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C30.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C30.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C30] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C31.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C31.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C31.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C31.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C31.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C31] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C32.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C32.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C32.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C32.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C32.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C32] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C33.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C33.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C33.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C33.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C33.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C33] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C34.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C34.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C34.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C34.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C34.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C34] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+🔄 [POLLING] Reading Device Status from D4F24A32-376A-7267-F293-B74FC14C10C8
+🔍 [RTC CHECK DEBUG] Flag check: rtcCheckPendingBeforeNotifications[D4F24A32-376A-7267-F293-B74FC14C10C8] = false
+🔍 [RTC CHECK DEBUG] isPending = false
+═══════════════════════════════════════════════════════
+📊 [DEVICE STATUS #4] SDD v1.3 format
+═══════════════════════════════════════════════════════
+   Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw data: 5E CB 3A 69 01 00 9E 0B
+   Timestamp: 1765460830 → 2025-12-11 13:47:10 +0000
+   Time diff from now: 0s (4.4324398040771484e-05 hours)
+   RTC Valid: ✅ YES
+   ✅ Records Available: 1
+   ✅ Battery: 2974mV (99)
+   Sync State: syncing
+   Note: Steps/Temperature are in Data Transfer records only
+   ⏱️ This is notification #4 for this session
+═══════════════════════════════════════════════════════
+📊 [POLLING] Marking device status as from polling read (read initiated 641ms ago)
+📊 [POLLING FLAG] isFromPolling=true for device status update
+📤 Sending device status update (SDD v1.3) for: D4F24A32-376A-7267-F293-B74FC14C10C8 - Battery Voltage: 2974mV (percentage from 2A19), Records: 1, RTC Valid: true
+📊 [EVENT] Sending DeviceDataUpdated with isFromPolling=true
+'🔔 [LISTENER] DeviceDataUpdated event received! deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8', { fullEvent: 
+   { sddCompliant: true,
+     deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     dataSource: 'live',
+     lastUpdate: 1765460830160.291,
+     isFromPolling: true,
+     rawBuffer: '5ecb3a6901009e0b',
+     rtcValid: true,
+     deviceName: 'DyreID',
+     batteryVoltage: 2974,
+     timestamp: 1765460830000,
+     recordCount: 1,
+     sddVersion: '1.3' },
+  keys: 
+   [ 'sddCompliant',
+     'deviceId',
+     'dataSource',
+     'lastUpdate',
+     'isFromPolling',
+     'rawBuffer',
+     'rtcValid',
+     'deviceName',
+     'batteryVoltage',
+     'timestamp',
+     'recordCount',
+     'sddVersion' ] }
+'🔔 [HANDLER] handleDeviceDataUpdated CALLED with event:', { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  hasEvent: true,
+  eventKeys: 
+   [ 'sddCompliant',
+     'deviceId',
+     'dataSource',
+     'lastUpdate',
+     'isFromPolling',
+     'rawBuffer',
+     'rtcValid',
+     'deviceName',
+     'batteryVoltage',
+     'timestamp',
+     'recordCount',
+     'sddVersion' ] }
+'📊 [EVENT DEBUG] DeviceDataUpdated event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { hasIsFromPolling: true,
+  isFromPollingValue: true,
+  isFromPollingType: 'boolean',
+  allEventKeys: 
+   [ 'sddCompliant',
+     'deviceId',
+     'dataSource',
+     'lastUpdate',
+     'isFromPolling',
+     'rawBuffer',
+     'rtcValid',
+     'deviceName',
+     'batteryVoltage',
+     'timestamp',
+     'recordCount',
+     'sddVersion' ],
+  pollingRelatedKeys: [ 'isFromPolling' ],
+  fullEvent: '{\n  "sddCompliant": true,\n  "deviceId": "D4F24A32-376A-7267-F293-B74FC14C10C8",\n  "dataSource": "live",\n  "lastUpdate": 1765460830160.291,\n  "isFromPolling": true,\n  "rawBuffer": "5ecb3a6901009e0b",\n  "rtcValid": true,\n  "deviceName": "DyreID",\n  "batteryVoltage": 2974,\n  "timestamp": 1765460830000,\n  "recordCount": 1,\n  "sddVersion": "1.3"\n}' }
+'🔍 [EXTRACT DEBUG] Extracted from event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { recordCount: 1,
+  rtcValid: true,
+  isFromPolling: true,
+  hasRecordCount: true,
+  hasRtcValid: true,
+  recordCountValue: 1,
+  rtcValidValue: true }
+📊 [EVENT] Received DeviceDataUpdated with isFromPolling=true (type: boolean) for D4F24A32-376A-7267-F293-B74FC14C10C8
+🔍 [AUTO SYNC PRE-CHECK] Platform: ios, deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, eventRecordCount: 1, eventRtcValid: true, hasRecordCount: true, hasRtcValid: true
+'🔍 [AUTO SYNC DEBUG] Triggering auto-sync check for D4F24A32-376A-7267-F293-B74FC14C10C8 (ios):', { recordCount: 1,
+  rtcValid: true,
+  isFromPolling: true,
+  hasRecords: true }
+✅ [AUTO SYNC] Using isFromPolling=true from native event
+🐌 [ADAPTIVE THROTTLE] D4F24A32-376A-7267-F293-B74FC14C10C8: Slow mode (0.0 records/30s) → 60000ms
+'📊 [AUTO SYNC] Auto-sync conditions (ios):', { hasRecordsAvailable: true,
+  isSyncActive: false,
+  syncJustCompleted: false,
+  isConnected: true,
+  isLiveData: true,
+  isFromPolling: true,
+  shouldSync: true,
+  recordCount: 1,
+  isSingleRecord: true,
+  recordCountIncreased: true,
+  throttleExpired: true,
+  throttleTime: 60000 }
+✅ [AUTO SYNC] All conditions met for ios, proceeding with auto-sync for D4F24A32-376A-7267-F293-B74FC14C10C8
+⏰ [AUTO SYNC] Starting sync immediately for D4F24A32-376A-7267-F293-B74FC14C10C8 (1 records available)
+📊 [AUTO SYNC] Auto-sync conditions: isSingleRecord=true, recordCountIncreased=true, throttleExpired=true (throttle: 60000ms), lastSyncAt=never
+📊 Device Status (SDD v1.4): Records=1, Battery=2974mV (99%), Time=2025-12-11T13:47:10.000Z
+'Validating data:', { temperature: undefined,
+  steps: undefined,
+  batteryLevel: 99,
+  timestamp: Thu Dec 11 2025 19:17:10 GMT+0530 }
+Data validation passed (relaxed mode)
+🐌 [ADAPTIVE THROTTLE] D4F24A32-376A-7267-F293-B74FC14C10C8: Slow mode (0.0 records/30s) → 60000ms
+⏭️ [AUTO SYNC] Skipping - duplicate notification (4ms ago, same record count: 1)
+📊 [LIVE BUFFER] Added record to buffer for D4F24A32-376A-7267-F293-B74FC14C10C8: 1/10
+⏰ [AUTO SYNC] Starting sync immediately for D4F24A32-376A-7267-F293-B74FC14C10C8 (no debounce delay)
+🔄 [AUTO SYNC] Triggering sync start from live notification
+📊 [AUTO SYNC] Record count at notification: 1, current: 1, delta: 0
+⏱️ [AUTO SYNC] Delay between notification and sync start: 34ms
+ℹ️ [AUTO SYNC] Note: Device continues generating records during delay - sync will include all available records
+🔄 [STATE TRANSITION] D4F24A32-376A-7267-F293-B74FC14C10C8: unknown → syncing (auto-sync triggered)
+'📢 [USER FEEDBACK] D4F24A32-376A-7267-F293-B74FC14C10C8: sync_starting', { recordCount: 1, reason: 'auto_sync' }
+📊 [SYNC START] Tracking baseline: 5 records before sync
+📊 [METRICS] D4F24A32-376A-7267-F293-B74FC14C10C8: Success (latency: 1ms, avg: 1ms, success rate: 100.0%)
+'📢 [USER FEEDBACK] D4F24A32-376A-7267-F293-B74FC14C10C8: sync_started', { recordCount: 1 }
+📬 Received SYSTEM_COMMAND response: BB 08 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 08 00 00
+   Response ID: 0xBB
+   Command: 0x08 (DATA_SYNC_START)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Data Sync Started successfully
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 01 04 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 8,
+  rawData: undefined,
+  rawResponse: 'BB 08 00 00',
+  status: 'success' }
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+All bytes: [0]:01 [1]:04 [2]:02 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x01 (1)
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+Byte [1] Length: 0x04 (4)
+Payload start: byte [2]
+Payload end: byte [5]
+Payload length: 4 bytes
+Full packet hex: 01 04 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+Payload hex: 02 00 00 00
+═══════════════════════════════════════════════════════
+📈 Data Sync Start notification received
+   Payload hex: 02000000
+   Payload length: 4 bytes
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+   Raw bytes: 0x02 0x00 0x00 0x00
+   Parsed as LE uint32: 2
+✅ Data Sync Started - Device will send 2 records
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 5D CB 3A 69 47 00 19 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:5D [3]:CB [4]:3A [5]:69 [6]:47 [7]:00 [8]:19 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 5D CB 3A 69 47 00 19 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 5D CB 3A 69 47 00 19 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:17:09 - Temp: 25°C, Steps: 71
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 5E CB 3A 69 03 00 18 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:5E [3]:CB [4]:3A [5]:69 [6]:03 [7]:00 [8]:18 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 5E CB 3A 69 03 00 18 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 5E CB 3A 69 03 00 18 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:17:10 - Temp: 24°C, Steps: 3
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 02 02 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: true
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: YES ✅
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:02 [1]:02 [2]:02 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x02 (2)
+Byte [1] Length: 0x02 (2)
+Payload start: byte [2]
+Payload end: byte [3]
+Payload length: 2 bytes
+Full packet hex: 02 02 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 02 00
+═══════════════════════════════════════════════════════
+📈 Data Sync Complete notification received
+═══════════════════════════════════════════════════════
+✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences
+✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ Data Sync Complete - 2 records transmitted successfully
+📊 File #1 complete: 2 records
+📊 Grand total received: 2 / 2 records
+✅ [v1.4 CHUNKING] All files synced - sync complete!
+═══════════════════════════════════════════════════════
+✅ Updated record count to 0 after file #1
+🧹 [AUTO CLEANUP] Sending DATA_SYNC_STOP to clear file #1...
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=71, Temp=25°C, Time=2025-12-11 19:17:09
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 6
+┐ %c action %chistoricalRecords/addRecords %c@ 19:17:10.445
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { timestampDate: '2025-12-11 19:17:09',
+          steps: 71,
+          flags: 0,
+          timestamp: 1765460829,
+          rawData: '5dcb3a6947001900',
+          temperature: 25,
+          receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:17:09',
+             steps: 71,
+             flags: 0,
+             timestamp: 1765460829,
+             rawData: '5dcb3a6947001900',
+             temperature: 25,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=3, Temp=24°C, Time=2025-12-11 19:17:10
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 7
+┐ %c action %chistoricalRecords/addRecords %c@ 19:17:10.456
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:17:09',
+             steps: 71,
+             flags: 0,
+             timestamp: 1765460829,
+             rawData: '5dcb3a6947001900',
+             temperature: 25,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { rawData: '5ecb3a6903001800',
+          flags: 0,
+          timestamp: 1765460830,
+          temperature: 24,
+          timestampDate: '2025-12-11 19:17:10',
+          steps: 3,
+          receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:17:09',
+             steps: 71,
+             flags: 0,
+             timestamp: 1765460829,
+             rawData: '5dcb3a6947001900',
+             temperature: 25,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { rawData: '5ecb3a6903001800',
+             flags: 0,
+             timestamp: 1765460830,
+             temperature: 24,
+             timestampDate: '2025-12-11 19:17:10',
+             steps: 3,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📊 [SYNC COMPLETE] Received for D4F24A32-376A-7267-F293-B74FC14C10C8: 2 records
+🔄 [STATE TRANSITION] D4F24A32-376A-7267-F293-B74FC14C10C8: unknown → complete (sync successful)
+💾 [SYNC COMPLETE] Updating UI for D4F24A32-376A-7267-F293-B74FC14C10C8 with latest synced data
+'📊 [SYNC COMPLETE] Latest record:', { timestamp: 1765460830,
+  timestampDate: '2025-12-11 19:17:10',
+  steps: 3,
+  temperature: 24 }
+📊 [SYNC COMPLETE] Total from 7 records: 203 steps
+📅 [SYNC COMPLETE] Synced date: 2025-12-11T13:47:10.000Z
+'💾 [SYNC COMPLETE] Updated device data:', { temperature: 24,
+  steps: 3,
+  totalSteps: 203,
+  recordCount: 0,
+  lastUpdate: Thu Dec 11 2025 19:17:10 GMT+0530 }
+'📥 [Modern] deviceDataUpdate event received:', 'sync_complete', 'for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+'📊 [Modern] Sync complete - updating device data:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+📋 [ConnectionLog] Added log for D4F24A32-376A-7267-F293-B74FC14C10C8: 2 Records Synced
+📊 [LiveData] Sync data updated, refreshing...
+✅ [SYNC COMPLETE] Tracked sync completion time for D4F24A32-376A-7267-F293-B74FC14C10C8 - will prevent auto-sync for 5 seconds
+📊 [METRICS] D4F24A32-376A-7267-F293-B74FC14C10C8: Success (latency: 0ms, avg: 0ms, success rate: 100.0%)
+'📢 [USER FEEDBACK] D4F24A32-376A-7267-F293-B74FC14C10C8: sync_completed', { recordsTransmitted: 2, latency: 0 }
+✅ [SYNC COMPLETE] Tracked sync completion time for D4F24A32-376A-7267-F293-B74FC14C10C8 - will prevent auto-sync for 5 seconds
+💾 [SYNC COMPLETE] Updating UI for D4F24A32-376A-7267-F293-B74FC14C10C8 with latest synced data
+'📊 [SYNC COMPLETE] Latest record:', { timestamp: 1765460830,
+  timestampDate: '2025-12-11 19:17:10',
+  steps: 3,
+  temperature: 24 }
+📊 [SYNC COMPLETE] Total from 7 records: 203 steps
+📅 [SYNC COMPLETE] Synced date: 2025-12-11T13:47:10.000Z
+'💾 [SYNC COMPLETE] Updated device data:', { temperature: 24,
+  steps: 3,
+  totalSteps: 203,
+  recordCount: 0,
+  lastUpdate: Thu Dec 11 2025 19:17:10 GMT+0530 }
+'📥 [Modern] deviceDataUpdate event received:', 'sync_complete', 'for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+'📊 [Modern] Sync complete - updating device data:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+📊 [LiveData] Sync data updated, refreshing...
+📤 [HISTORICAL SYNC] Preparing to send 2 NEW records from this sync (total stored: 7, baseline: 5)
+📤 [HISTORICAL SYNC] Sending 2 records + aggregates for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📤 Sending pet health BLE data to server:', { PetId: 1059773,
+  Steps: 3,
+  Temperature: '24',
+  BatteryLevel: '99',
+  TimeStamp: '2025-12-11T13:47:10.000Z',
+  Status: 'Connected',
+  Characteristic: 
+   [ { Characteristic: '180F',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 1 },
+     { Characteristic: '180A',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 3 },
+     { Characteristic: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 1 },
+     { Characteristic: '0F0E0D0C-0B0A-0908-0706-050403020100',
+       ServiceType: 'SMART_TAG_SERVICE',
+       CharacteristicsCount: 3 } ],
+  SyncType: 'historical_sync',
+  SyncedAt: '2025-12-11T13:47:10.467Z',
+  AllRecords: 
+   [ { Timestamp: '2025-12-11T13:47:09.000Z',
+       Steps: 71,
+       Temperature: 25,
+       Flags: 0,
+       RecordType: 'historical' },
+     { Timestamp: '2025-12-11T13:47:10.000Z',
+       Steps: 3,
+       Temperature: 24,
+       Flags: 0,
+       RecordType: 'historical' } ],
+  Summary: 
+   { TotalSteps: 3,
+     StepsDelta: -68,
+     LatestTemperature: 24,
+     AverageTemperature: 24.5,
+     MinTemperature: 24,
+     MaxTemperature: 25,
+     RecordCount: 2 } }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+nw_socket_handle_socket_event [C35.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C35.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C35.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C35.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C35.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C35] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1262057c0 Failed : error 0:61 [61]
+'✅ Pet health BLE data sent successfully:', { Data: 4692, Status: 1, StatusCode: 200, Message: null }
+✅ [HISTORICAL SYNC] Sent 2 records successfully
+   Total Steps: 3, Temp: 24°C (avg: 24.5°C)
+🛑 [BATCH TIMER] Stopped for D4F24A32-376A-7267-F293-B74FC14C10C8
+⏰ [BATCH TIMER] Starting 5-minute batch upload timer for D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ DATA_SYNC_STOP sent - file #1 will be cleared
+📬 Received SYSTEM_COMMAND response: BB 09 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 09 00 00
+   Response ID: 0xBB
+   Command: 0x09 (DATA_SYNC_STOP)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Data Sync Stopped - Flash cleared successfully
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 9,
+  rawData: undefined,
+  rawResponse: 'BB 09 00 00',
+  status: 'success' }
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_9, command: 9, version: N/A
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_9, command: 9, version: N/A
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+nw_socket_handle_socket_event [C36.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C36.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C36.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C36.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C36.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C36] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126205ae0 Failed : error 0:61 [61]
+💾 [SYNC COMPLETE] All files synced - Updated UI with latest synced data
+🔴 [LIVE READY] Device now ready for live notifications
+✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences
+✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ [SYNC COMPLETE] Relying on next polling cycle to check Device Status
+   Next poll will verify flash cleared and show any new records generated
+nw_socket_handle_socket_event [C37.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C37.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C37.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C37.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C37.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C37] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126206c60 Failed : error 0:61 [61]
+✅ Pet health BLE details fetched successfully:
+nw_socket_handle_socket_event [C38.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C38.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C38.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C38.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C38.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C38] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126206c60 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C39.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C39.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C39.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C39.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C39.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C39] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126206c60 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C40.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C40.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C40.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C40.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C40.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C40] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126206c60 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C41.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C41.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C41.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C41.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C41.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C41] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x126206c60 Failed : error 0:61 [61]
+'📊 [Modern] Navigating to Live Data screen for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+'🔗 [Modern] Focus refresh connected devices:', 1
+'📋 [Modern] Navigating to Connection Log screen for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+nw_socket_handle_socket_event [C42.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C42.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C42.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C42.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C42.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C42] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab4fa0 Failed : error 0:61 [61]
+'🔗 [Modern] Focus refresh connected devices:', 1
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C43.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C43.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C43.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C43.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C43.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C43] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab4fa0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C44.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C44.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C44.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C44.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C44.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C44] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab4fa0 Failed : error 0:61 [61]
+'📋 [Modern] Navigating to Connection Log screen for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+<0x1029ce300> Gesture: System gesture gate timed out.
+<0x1029ce440> Touch: System gesture gate timed out.
+nw_socket_connect [C45.1.1:1] connectx(14, [srcif=0, srcaddr=<NULL>, dstaddr=::1.8081], SAE_ASSOCID_ANY, 0, NULL, 0, NULL, SAE_CONNID_ANY) failed: [61: Connection refused]
+nw_socket_connect [C45.1.1:1] connectx failed (fd 14) [61: Connection refused]
+nw_socket_connect connectx failed [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C45.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C45.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_socket_handle_socket_event [C46.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C45.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C45.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C45] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab4fa0 Failed : error 0:61 [61]
+nw_endpoint_flow_failed_with_error [C46.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C46.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C46.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C46.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C46] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab73e0 Failed : error 0:61 [61]
+The action 'GO_BACK' was not handled by any navigator.
+
+Is there any screen to go back to?
+
+This is a development-only warning and won't be shown in production.
+The action 'GO_BACK' was not handled by any navigator.
+
+Is there any screen to go back to?
+
+This is a development-only warning and won't be shown in production.
+'🔗 [Modern] Focus refresh connected devices:', 1
+I1211 19:17:33.787617 1873260544 UIManagerBinding.cpp:135] instanceHandle is null, event of type topMomentumScrollEnd will be dropped
+Task <E63054E7-3737-475C-B619-0B589670FD42>.<4> finished with error [-1001] Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={_kCFStreamErrorCodeKey=-2102, NSUnderlyingError=0x1259a3b40 {Error Domain=kCFErrorDomainCFNetwork Code=-1001 "(null)" UserInfo={_kCFStreamErrorCodeKey=-2102, _kCFStreamErrorDomainKey=4}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <E63054E7-3737-475C-B619-0B589670FD42>.<4>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalDataTask <E63054E7-3737-475C-B619-0B589670FD42>.<4>"
+), NSLocalizedDescription=The request timed out., NSErrorFailingURLStringKey=https://api.staging.dyreid.no/api/Pet/PetHealthBLEDetails?PetId=1059773, NSErrorFailingURLKey=https://api.staging.dyreid.no/api/Pet/PetHealthBLEDetails?PetId=1059773, _kCFStreamErrorDomainKey=4}
+'❌ Failed to fetch pet health BLE details:', [AxiosError: timeout of 50000ms exceeded]
+CoreUI: CUIThemeStore: No theme registered with id=0
+CoreUI: CUIThemeStore: No theme registered with id=0
+nw_socket_handle_socket_event [C47.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C47.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C47.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C47.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C47.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C47] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab70c0 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C48.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C48.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C48.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C48.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C48.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C48] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab7480 Failed : error 0:61 [61]
+🔄 [POLLING] Reading Device Status from D4F24A32-376A-7267-F293-B74FC14C10C8
+🔍 [RTC CHECK DEBUG] Flag check: rtcCheckPendingBeforeNotifications[D4F24A32-376A-7267-F293-B74FC14C10C8] = false
+🔍 [RTC CHECK DEBUG] isPending = false
+═══════════════════════════════════════════════════════
+📊 [DEVICE STATUS #5] SDD v1.3 format
+═══════════════════════════════════════════════════════
+   Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw data: 7C CB 3A 69 01 00 A1 0B
+   Timestamp: 1765460860 → 2025-12-11 13:47:40 +0000
+   Time diff from now: 0s (-3.8810306125217016e-05 hours)
+   RTC Valid: ✅ YES
+   ✅ Records Available: 1
+   ✅ Battery: 2977mV (99)
+   Sync State: complete
+   Note: Steps/Temperature are in Data Transfer records only
+   ⏱️ This is notification #5 for this session
+═══════════════════════════════════════════════════════
+📊 [POLLING] Marking device status as from polling read (read initiated 342ms ago)
+📊 [POLLING FLAG] isFromPolling=true for device status update
+📤 Sending device status update (SDD v1.3) for: D4F24A32-376A-7267-F293-B74FC14C10C8 - Battery Voltage: 2977mV (percentage from 2A19), Records: 1, RTC Valid: true
+📊 [EVENT] Sending DeviceDataUpdated with isFromPolling=true
+'🔔 [LISTENER] DeviceDataUpdated event received! deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8', { fullEvent: 
+   { timestamp: 1765460860000,
+     batteryVoltage: 2977,
+     lastUpdate: 1765460859861.924,
+     dataSource: 'live',
+     deviceName: 'DyreID',
+     rtcValid: true,
+     sddCompliant: true,
+     rawBuffer: '7ccb3a690100a10b',
+     isFromPolling: true,
+     deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     sddVersion: '1.3',
+     recordCount: 1 },
+  keys: 
+   [ 'timestamp',
+     'batteryVoltage',
+     'lastUpdate',
+     'dataSource',
+     'deviceName',
+     'rtcValid',
+     'sddCompliant',
+     'rawBuffer',
+     'isFromPolling',
+     'deviceId',
+     'sddVersion',
+     'recordCount' ] }
+'🔔 [HANDLER] handleDeviceDataUpdated CALLED with event:', { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  hasEvent: true,
+  eventKeys: 
+   [ 'timestamp',
+     'batteryVoltage',
+     'lastUpdate',
+     'dataSource',
+     'deviceName',
+     'rtcValid',
+     'sddCompliant',
+     'rawBuffer',
+     'isFromPolling',
+     'deviceId',
+     'sddVersion',
+     'recordCount' ] }
+'📊 [EVENT DEBUG] DeviceDataUpdated event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { hasIsFromPolling: true,
+  isFromPollingValue: true,
+  isFromPollingType: 'boolean',
+  allEventKeys: 
+   [ 'timestamp',
+     'batteryVoltage',
+     'lastUpdate',
+     'dataSource',
+     'deviceName',
+     'rtcValid',
+     'sddCompliant',
+     'rawBuffer',
+     'isFromPolling',
+     'deviceId',
+     'sddVersion',
+     'recordCount' ],
+  pollingRelatedKeys: [ 'isFromPolling' ],
+  fullEvent: '{\n  "timestamp": 1765460860000,\n  "batteryVoltage": 2977,\n  "lastUpdate": 1765460859861.924,\n  "dataSource": "live",\n  "deviceName": "DyreID",\n  "rtcValid": true,\n  "sddCompliant": true,\n  "rawBuffer": "7ccb3a690100a10b",\n  "isFromPolling": true,\n  "deviceId": "D4F24A32-376A-7267-F293-B74FC14C10C8",\n  "sddVersion": "1.3",\n  "recordCount": 1\n}' }
+'🔍 [EXTRACT DEBUG] Extracted from event for D4F24A32-376A-7267-F293-B74FC14C10C8:', { recordCount: 1,
+  rtcValid: true,
+  isFromPolling: true,
+  hasRecordCount: true,
+  hasRtcValid: true,
+  recordCountValue: 1,
+  rtcValidValue: true }
+📊 [EVENT] Received DeviceDataUpdated with isFromPolling=true (type: boolean) for D4F24A32-376A-7267-F293-B74FC14C10C8
+🔍 [AUTO SYNC PRE-CHECK] Platform: ios, deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, eventRecordCount: 1, eventRtcValid: true, hasRecordCount: true, hasRtcValid: true
+'🔍 [AUTO SYNC DEBUG] Triggering auto-sync check for D4F24A32-376A-7267-F293-B74FC14C10C8 (ios):', { recordCount: 1,
+  rtcValid: true,
+  isFromPolling: true,
+  hasRecords: true }
+✅ [AUTO SYNC] Using isFromPolling=true from native event
+🐌 [ADAPTIVE THROTTLE] D4F24A32-376A-7267-F293-B74FC14C10C8: Slow mode (0.0 records/30s) → 60000ms
+'📊 [AUTO SYNC] Auto-sync conditions (ios):', { hasRecordsAvailable: true,
+  isSyncActive: false,
+  syncJustCompleted: false,
+  isConnected: true,
+  isLiveData: true,
+  isFromPolling: true,
+  shouldSync: true,
+  recordCount: 1,
+  isSingleRecord: true,
+  recordCountIncreased: false,
+  throttleExpired: false,
+  throttleTime: 60000 }
+✅ [AUTO SYNC] All conditions met for ios, proceeding with auto-sync for D4F24A32-376A-7267-F293-B74FC14C10C8
+⏰ [AUTO SYNC] Starting sync immediately for D4F24A32-376A-7267-F293-B74FC14C10C8 (1 records available)
+📊 [AUTO SYNC] Auto-sync conditions: isSingleRecord=true, recordCountIncreased=false, throttleExpired=false (throttle: 60000ms), lastSyncAt=1765460830205
+📊 Device Status (SDD v1.4): Records=1, Battery=2977mV (99%), Time=2025-12-11T13:47:40.000Z
+'Validating data:', { temperature: undefined,
+  steps: undefined,
+  batteryLevel: 99,
+  timestamp: Thu Dec 11 2025 19:17:40 GMT+0530 }
+Data validation passed (relaxed mode)
+🐌 [ADAPTIVE THROTTLE] D4F24A32-376A-7267-F293-B74FC14C10C8: Slow mode (0.3 records/30s) → 60000ms
+⏭️ [AUTO SYNC] Skipping - duplicate notification (3ms ago, same record count: 1)
+📊 [LIVE BUFFER] Added record to buffer for D4F24A32-376A-7267-F293-B74FC14C10C8: 2/10
+⏰ [AUTO SYNC] Starting sync immediately for D4F24A32-376A-7267-F293-B74FC14C10C8 (no debounce delay)
+🔄 [AUTO SYNC] Triggering sync start from live notification
+📊 [AUTO SYNC] Record count at notification: 1, current: 1, delta: 0
+⏱️ [AUTO SYNC] Delay between notification and sync start: 35ms
+ℹ️ [AUTO SYNC] Note: Device continues generating records during delay - sync will include all available records
+🔄 [STATE TRANSITION] D4F24A32-376A-7267-F293-B74FC14C10C8: unknown → syncing (auto-sync triggered)
+'📢 [USER FEEDBACK] D4F24A32-376A-7267-F293-B74FC14C10C8: sync_starting', { recordCount: 1, reason: 'auto_sync' }
+📊 [SYNC START] Tracking baseline: 7 records before sync
+📊 [METRICS] D4F24A32-376A-7267-F293-B74FC14C10C8: Success (latency: 1ms, avg: 1ms, success rate: 100.0%)
+'📢 [USER FEEDBACK] D4F24A32-376A-7267-F293-B74FC14C10C8: sync_started', { recordCount: 1 }
+📬 Received SYSTEM_COMMAND response: BB 08 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 08 00 00
+   Response ID: 0xBB
+   Command: 0x08 (DATA_SYNC_START)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Data Sync Started successfully
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 8,
+  rawData: undefined,
+  rawResponse: 'BB 08 00 00',
+  status: 'success' }
+   Hex: 01 04 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+   dataSyncRequested: false
+   dataSyncState: syncing
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+═══════════════════════════════════════════════════════
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_8, command: 8, version: N/A
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: NO ❌
+Data Sync State: syncing
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+All bytes: [0]:01 [1]:04 [2]:02 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x01 (1)
+Byte [1] Length: 0x04 (4)
+Payload start: byte [2]
+Payload end: byte [5]
+Payload length: 4 bytes
+Full packet hex: 01 04 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 02 00 00 00
+═══════════════════════════════════════════════════════
+📈 Data Sync Start notification received
+   Payload hex: 02000000
+   Payload length: 4 bytes
+   Raw bytes: 0x02 0x00 0x00 0x00
+   Parsed as LE uint32: 2
+✅ Data Sync Started - Device will send 2 records
+📦 [v1.4 CHUNKING] Initialized sync state - Total: 2 records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 60 CB 3A 69 05 00 19 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: false
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: NO ❌
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:60 [3]:CB [4]:3A [5]:69 [6]:05 [7]:00 [8]:19 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 60 CB 3A 69 05 00 19 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 60 CB 3A 69 05 00 19 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:17:12 - Temp: 25°C, Steps: 5
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 03 08 7C CB 3A 69 33 00 19 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: false
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: NO ❌
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:03 [1]:08 [2]:7C [3]:CB [4]:3A [5]:69 [6]:33 [7]:00 [8]:19 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x03 (3)
+Byte [1] Length: 0x08 (8)
+Payload start: byte [2]
+Payload end: byte [9]
+Payload length: 8 bytes
+Full packet hex: 03 08 7C CB 3A 69 33 00 19 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 7C CB 3A 69 33 00 19 00
+═══════════════════════════════════════════════════════
+📋 Record Data
+   Record 1: 2025-12-11 19:17:40 - Temp: 25°C, Steps: 51
+✅ Received 1 health records
+🔔 [FIRMWARE DEBUG] DATA_TRANSFER notification received for D4F24A32-376A-7267-F293-B74FC14C10C8
+   Hex: 02 02 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+   dataSyncRequested: false
+   dataSyncState: syncing
+═══════════════════════════════════════════════════════
+🔍 RAW DATA TRANSFER ANALYSIS
+═══════════════════════════════════════════════════════
+Device: D4F24A32-376A-7267-F293-B74FC14C10C8
+Data Sync Requested: NO ❌
+Data Sync State: syncing
+Should Accept Data: YES ✅
+Total data length: 20 bytes
+⚠️ [FIRMWARE DEBUG] This notification was received - firmware IS sending data
+All bytes: [0]:02 [1]:02 [2]:02 [3]:00 [4]:00 [5]:00 [6]:00 [7]:00 [8]:00 [9]:00 [10]:00 [11]:00 [12]:00 [13]:00 [14]:00 [15]:00 [16]:00 [17]:00 [18]:00 [19]:00
+Byte [0] DataType: 0x02 (2)
+Byte [1] Length: 0x02 (2)
+Payload start: byte [2]
+Payload end: byte [3]
+Payload length: 2 bytes
+Full packet hex: 02 02 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Payload hex: 02 00
+═══════════════════════════════════════════════════════
+📈 Data Sync Complete notification received
+═══════════════════════════════════════════════════════
+✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences
+✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ Data Sync Complete - 2 records transmitted successfully
+📊 File #1 complete: 2 records
+📊 Grand total received: 2 / 2 records
+✅ [v1.4 CHUNKING] All files synced - sync complete!
+═══════════════════════════════════════════════════════
+✅ Updated record count to 0 after file #1
+🧹 [AUTO CLEANUP] Sending DATA_SYNC_STOP to clear file #1...
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=5, Temp=25°C, Time=2025-12-11 19:17:12
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 8
+┐ %c action %chistoricalRecords/addRecords %c@ 19:17:40.141
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:17:09',
+             steps: 71,
+             flags: 0,
+             timestamp: 1765460829,
+             rawData: '5dcb3a6947001900',
+             temperature: 25,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { rawData: '5ecb3a6903001800',
+             flags: 0,
+             timestamp: 1765460830,
+             temperature: 24,
+             timestampDate: '2025-12-11 19:17:10',
+             steps: 3,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { temperature: 25,
+          steps: 5,
+          timestampDate: '2025-12-11 19:17:12',
+          rawData: '60cb3a6905001900',
+          timestamp: 1765460832,
+          flags: 0,
+          receivedAt: Thu Dec 11 2025 19:17:40 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:17:09',
+             steps: 71,
+             flags: 0,
+             timestamp: 1765460829,
+             rawData: '5dcb3a6947001900',
+             temperature: 25,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { rawData: '5ecb3a6903001800',
+             flags: 0,
+             timestamp: 1765460830,
+             temperature: 24,
+             timestampDate: '2025-12-11 19:17:10',
+             steps: 3,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             steps: 5,
+             timestampDate: '2025-12-11 19:17:12',
+             rawData: '60cb3a6905001900',
+             timestamp: 1765460832,
+             flags: 0,
+             receivedAt: Thu Dec 11 2025 19:17:40 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📋 [RECORD] Received 1 records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📋 [RECORD] Storing: Steps=51, Temp=25°C, Time=2025-12-11 19:17:40
+📊 [RECORD] Filtered: 1 valid, 0 invalid records
+📊 [RECORD] Total records stored for D4F24A32-376A-7267-F293-B74FC14C10C8: 9
+┐ %c action %chistoricalRecords/addRecords %c@ 19:17:40.148
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:17:09',
+             steps: 71,
+             flags: 0,
+             timestamp: 1765460829,
+             rawData: '5dcb3a6947001900',
+             temperature: 25,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { rawData: '5ecb3a6903001800',
+             flags: 0,
+             timestamp: 1765460830,
+             temperature: 24,
+             timestampDate: '2025-12-11 19:17:10',
+             steps: 3,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             steps: 5,
+             timestampDate: '2025-12-11 19:17:12',
+             rawData: '60cb3a6905001900',
+             timestamp: 1765460832,
+             flags: 0,
+             receivedAt: Thu Dec 11 2025 19:17:40 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'historicalRecords/addRecords',
+  payload: 
+   { deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+     records: 
+      [ { rawData: '7ccb3a6933001900',
+          timestamp: 1765460860,
+          flags: 0,
+          temperature: 25,
+          timestampDate: '2025-12-11 19:17:40',
+          steps: 51,
+          receivedAt: Thu Dec 11 2025 19:17:40 GMT+0530,
+          deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+          source: 'native' } ] } }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: 
+   { recordsByDevice: 
+      { 'D4F24A32-376A-7267-F293-B74FC14C10C8': 
+         [ { temperature: 24,
+             steps: 7,
+             timestampDate: '2025-12-11 19:04:34',
+             flags: 0,
+             timestamp: 1765460074,
+             rawData: '6ac83a6907001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             timestampDate: '2025-12-11 19:05:34',
+             steps: 14,
+             flags: 0,
+             timestamp: 1765460134,
+             rawData: 'a6c83a690e001900',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 24,
+             timestampDate: '2025-12-11 19:15:04',
+             steps: 31,
+             flags: 0,
+             timestamp: 1765460704,
+             rawData: 'e0ca3a691f001800',
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:15:34',
+             steps: 44,
+             flags: 0,
+             timestamp: 1765460734,
+             rawData: 'feca3a692c001800',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { flags: 0,
+             timestamp: 1765460759,
+             rawData: '17cb3a6921001800',
+             steps: 33,
+             timestampDate: '2025-12-11 19:15:59',
+             temperature: 24,
+             receivedAt: Thu Dec 11 2025 19:15:58 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { timestampDate: '2025-12-11 19:17:09',
+             steps: 71,
+             flags: 0,
+             timestamp: 1765460829,
+             rawData: '5dcb3a6947001900',
+             temperature: 25,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { rawData: '5ecb3a6903001800',
+             flags: 0,
+             timestamp: 1765460830,
+             temperature: 24,
+             timestampDate: '2025-12-11 19:17:10',
+             steps: 3,
+             receivedAt: Thu Dec 11 2025 19:17:10 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { temperature: 25,
+             steps: 5,
+             timestampDate: '2025-12-11 19:17:12',
+             rawData: '60cb3a6905001900',
+             timestamp: 1765460832,
+             flags: 0,
+             receivedAt: Thu Dec 11 2025 19:17:40 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' },
+           { rawData: '7ccb3a6933001900',
+             timestamp: 1765460860,
+             flags: 0,
+             temperature: 25,
+             timestampDate: '2025-12-11 19:17:40',
+             steps: 51,
+             receivedAt: Thu Dec 11 2025 19:17:40 GMT+0530,
+             deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+             source: 'native' } ] } },
+  _persist: { version: -1, rehydrated: true } }
+┘
+💾 [Redux] Saved 1 records to Redux for device D4F24A32-376A-7267-F293-B74FC14C10C8
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+📊 [SYNC COMPLETE] Received for D4F24A32-376A-7267-F293-B74FC14C10C8: 2 records
+🔄 [STATE TRANSITION] D4F24A32-376A-7267-F293-B74FC14C10C8: unknown → complete (sync successful)
+💾 [SYNC COMPLETE] Updating UI for D4F24A32-376A-7267-F293-B74FC14C10C8 with latest synced data
+'📊 [SYNC COMPLETE] Latest record:', { timestamp: 1765460860,
+  timestampDate: '2025-12-11 19:17:40',
+  steps: 51,
+  temperature: 25 }
+📊 [SYNC COMPLETE] Total from 9 records: 259 steps
+📅 [SYNC COMPLETE] Synced date: 2025-12-11T13:47:40.000Z
+'💾 [SYNC COMPLETE] Updated device data:', { temperature: 25,
+  steps: 51,
+  totalSteps: 259,
+  recordCount: 0,
+  lastUpdate: Thu Dec 11 2025 19:17:40 GMT+0530 }
+'📥 [Modern] deviceDataUpdate event received:', 'sync_complete', 'for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+'📊 [Modern] Sync complete - updating device data:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+📋 [ConnectionLog] Added log for D4F24A32-376A-7267-F293-B74FC14C10C8: 2 Records Synced
+📊 [LiveData] Sync data updated, refreshing...
+📊 [LiveData] Sync data updated, refreshing...
+📋 [ConnectionLog] Sync data updated, refreshing...
+📋 [ConnectionLog] Sync data updated, refreshing...
+✅ [SYNC COMPLETE] Tracked sync completion time for D4F24A32-376A-7267-F293-B74FC14C10C8 - will prevent auto-sync for 5 seconds
+📊 [METRICS] D4F24A32-376A-7267-F293-B74FC14C10C8: Success (latency: 0ms, avg: 0ms, success rate: 100.0%)
+'📢 [USER FEEDBACK] D4F24A32-376A-7267-F293-B74FC14C10C8: sync_completed', { recordsTransmitted: 2, latency: 0 }
+✅ [SYNC COMPLETE] Tracked sync completion time for D4F24A32-376A-7267-F293-B74FC14C10C8 - will prevent auto-sync for 5 seconds
+💾 [SYNC COMPLETE] Updating UI for D4F24A32-376A-7267-F293-B74FC14C10C8 with latest synced data
+'📊 [SYNC COMPLETE] Latest record:', { timestamp: 1765460860,
+  timestampDate: '2025-12-11 19:17:40',
+  steps: 51,
+  temperature: 25 }
+📊 [SYNC COMPLETE] Total from 9 records: 259 steps
+📅 [SYNC COMPLETE] Synced date: 2025-12-11T13:47:40.000Z
+'💾 [SYNC COMPLETE] Updated device data:', { temperature: 25,
+  steps: 51,
+  totalSteps: 259,
+  recordCount: 0,
+  lastUpdate: Thu Dec 11 2025 19:17:40 GMT+0530 }
+'📥 [Modern] deviceDataUpdate event received:', 'sync_complete', 'for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+'📊 [Modern] Sync complete - updating device data:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+📊 [LiveData] Sync data updated, refreshing...
+📊 [LiveData] Sync data updated, refreshing...
+📋 [ConnectionLog] Sync data updated, refreshing...
+📋 [ConnectionLog] Sync data updated, refreshing...
+📤 [HISTORICAL SYNC] Preparing to send 2 NEW records from this sync (total stored: 9, baseline: 7)
+📤 [HISTORICAL SYNC] Sending 2 records + aggregates for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📤 Sending pet health BLE data to server:', { PetId: 1059773,
+  Steps: 51,
+  Temperature: '25',
+  BatteryLevel: '99',
+  TimeStamp: '2025-12-11T13:47:40.000Z',
+  Status: 'Connected',
+  Characteristic: 
+   [ { Characteristic: '180F',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 1 },
+     { Characteristic: '180A',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 3 },
+     { Characteristic: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 1 },
+     { Characteristic: '0F0E0D0C-0B0A-0908-0706-050403020100',
+       ServiceType: 'SMART_TAG_SERVICE',
+       CharacteristicsCount: 3 } ],
+  SyncType: 'historical_sync',
+  SyncedAt: '2025-12-11T13:47:40.165Z',
+  AllRecords: 
+   [ { Timestamp: '2025-12-11T13:47:12.000Z',
+       Steps: 5,
+       Temperature: 25,
+       Flags: 0,
+       RecordType: 'historical' },
+     { Timestamp: '2025-12-11T13:47:40.000Z',
+       Steps: 51,
+       Temperature: 25,
+       Flags: 0,
+       RecordType: 'historical' } ],
+  Summary: 
+   { TotalSteps: 51,
+     StepsDelta: 46,
+     LatestTemperature: 25,
+     AverageTemperature: 25,
+     MinTemperature: 25,
+     MaxTemperature: 25,
+     RecordCount: 2 } }
+📡 [DATA TRANSFER] Skipping CharacteristicData handler - using DataTransferEvent instead
+'✅ Pet health BLE data sent successfully:', { Data: 4693, Status: 1, StatusCode: 200, Message: null }
+✅ [HISTORICAL SYNC] Sent 2 records successfully
+   Total Steps: 51, Temp: 25°C (avg: 25°C)
+🛑 [BATCH TIMER] Stopped for D4F24A32-376A-7267-F293-B74FC14C10C8
+⏰ [BATCH TIMER] Starting 5-minute batch upload timer for D4F24A32-376A-7267-F293-B74FC14C10C8
+nw_socket_handle_socket_event [C49.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C49.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C49.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C49.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C49.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C49] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab5e00 Failed : error 0:61 [61]
+✅ DATA_SYNC_STOP sent - file #1 will be cleared
+📬 Received SYSTEM_COMMAND response: BB 09 00 00
+📥 System Command Response received from D4F24A32-376A-7267-F293-B74FC14C10C8
+   Raw: BB 09 00 00
+   Response ID: 0xBB
+   Command: 0x09 (DATA_SYNC_STOP)
+   Length: 0
+   Status: 0x00 (Success ✅)
+✅ Data Sync Stopped - Flash cleared successfully
+'📥 [NATIVE SYSTEM COMMAND] Received eventData:', { type: undefined,
+  deviceId: 'D4F24A32-376A-7267-F293-B74FC14C10C8',
+  commandId: 9,
+  rawData: undefined,
+  rawResponse: 'BB 09 00 00',
+  status: 'success' }
+📥 [NATIVE SYSTEM COMMAND] Parsing response for deviceId: D4F24A32-376A-7267-F293-B74FC14C10C8, hex length: 8
+💾 [NATIVE SYSTEM COMMAND] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_9, command: 9, version: N/A
+'💾 [NATIVE SYSTEM COMMAND] All stored keys after storage:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+💾 [SYSTEM COMMAND RESPONSE] Stored response for key: D4F24A32-376A-7267-F293-B74FC14C10C8_9, command: 9, version: N/A
+'💾 [SYSTEM COMMAND RESPONSE] All stored keys:', [ 'D4F24A32-376A-7267-F293-B74FC14C10C8_8',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_9',
+  'D4F24A32-376A-7267-F293-B74FC14C10C8_4' ]
+🔧 [SYSTEM COMMAND] Skipping CharacteristicData handler - using SystemCommandEvent instead
+'📋 [Modern] Navigating to Connection Log screen for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+💾 [SYNC COMPLETE] All files synced - Updated UI with latest synced data
+🔴 [LIVE READY] Device now ready for live notifications
+✅ [SYNC COMPLETE] Reset systemCommandsSent flag - ready for new command sequences
+✅ [SYNC COMPLETE] Reset dataSyncRequested flag for: D4F24A32-376A-7267-F293-B74FC14C10C8
+✅ [SYNC COMPLETE] Relying on next polling cycle to check Device Status
+   Next poll will verify flash cleared and show any new records generated
+nw_socket_handle_socket_event [C50.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C50.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C50.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C50.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C50.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C50] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x125ab5e00 Failed : error 0:61 [61]
+'🔗 [Modern] Focus refresh connected devices:', 1
+'📊 [Modern] Navigating to Live Data screen for device:', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+nw_socket_handle_socket_event [C51.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C51.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C51.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C51.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C51.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C51] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x129a0c8c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C52.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C52.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C52.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C52.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C52.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C52] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x129a0c820 Failed : error 0:61 [61]
+'🔗 [Modern] Focus refresh connected devices:', 1
+I1211 19:17:47.221429 1873260544 UIManagerBinding.cpp:135] instanceHandle is null, event of type topHeaderHeightChange will be dropped
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C53.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C53.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C53.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C53.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C53.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C53] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x129a0c8c0 Failed : error 0:61 [61]
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = dismissAutoFillPanel, customInfoType = UIUserInteractionRemoteInputOperations
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = dismissAutoFillPanel, customInfoType = UIUserInteractionRemoteInputOperations
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = dismissAutoFillPanel, customInfoType = UIUserInteractionRemoteInputOperations
+[C:4] Error received: Connection interrupted.
+[C:4-1] Error received: Connection interrupted.
+-[RTIInputSystemClient _configureConnection:withMachName:]_block_invoke  Client connection to service was interrupted: <NSXPCConnection: 0x126205a40> connection to service with pid -1 named (null)
+📤 [APP BACKGROUND] Uploading all pending live data buffers...
+📤 [APP BACKGROUND] Uploading 2 pending records for D4F24A32-376A-7267-F293-B74FC14C10C8
+📤 [LIVE BATCH] Uploading 2 buffered live records for D4F24A32-376A-7267-F293-B74FC14C10C8
+'📤 Sending pet health BLE data to server:', { PetId: 1059773,
+  Steps: undefined,
+  Temperature: null,
+  BatteryLevel: '99',
+  TimeStamp: '2025-12-11T13:47:39.872Z',
+  Status: 'Connected',
+  Characteristic: 
+   [ { Characteristic: '180F',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 1 },
+     { Characteristic: '180A',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 3 },
+     { Characteristic: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
+       ServiceType: 'CUSTOM_SERVICE',
+       CharacteristicsCount: 1 },
+     { Characteristic: '0F0E0D0C-0B0A-0908-0706-050403020100',
+       ServiceType: 'SMART_TAG_SERVICE',
+       CharacteristicsCount: 3 } ],
+  SyncType: 'live_batch',
+  BatchedAt: '2025-12-11T13:47:49.891Z',
+  AllRecords: 
+   [ { Timestamp: '2025-12-11T13:47:10.171Z',
+       Steps: undefined,
+       Temperature: undefined,
+       BatteryLevel: 99,
+       Flags: 0,
+       RecordType: 'live' },
+     { Timestamp: '2025-12-11T13:47:39.872Z',
+       Steps: undefined,
+       Temperature: undefined,
+       BatteryLevel: 99,
+       Flags: 0,
+       RecordType: 'live' } ],
+  Summary: 
+   { StepsDelta: NaN,
+     CurrentSteps: undefined,
+     LatestTemperature: undefined,
+     AverageTemperature: NaN,
+     MinTemperature: NaN,
+     MaxTemperature: NaN,
+     LatestBattery: 99,
+     RecordCount: 2 } }
+Snapshotting a view (0x10408a000, UIKeyboardImpl) that is not in a visible window requires afterScreenUpdates:YES.
+Snapshotting a view (0x104068600, RNSScreenView) that is not in a visible window requires afterScreenUpdates:YES.
+🧹 [Modern] Cleaned up listeners, callbacks, intervals, and scan timeout
+W1211 19:17:49.912145 4115407360 Scheduler.cpp:148] Scheduler::~Scheduler() was called (address: 0x102875740).

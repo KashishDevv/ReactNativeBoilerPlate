@@ -1,5 +1,39 @@
 import { createSlice } from '@reduxjs/toolkit';
 
+/**
+ * ✅ FIX: Normalize timestamp to Unix seconds (number) for consistent comparison
+ * Handles Date objects, Unix timestamps (seconds or milliseconds), and ISO strings
+ * @param {Date|number|string|null|undefined} timestamp - Timestamp in any format
+ * @returns {number|null} Unix timestamp in seconds, or null if invalid
+ */
+const normalizeTimestamp = (timestamp) => {
+  if (!timestamp) return null;
+  
+  // If it's already a number, check if it's seconds or milliseconds
+  if (typeof timestamp === 'number') {
+    // If it's > year 2100 in seconds, it's likely milliseconds
+    if (timestamp > 4102444800) {
+      return Math.floor(timestamp / 1000);
+    }
+    return timestamp;
+  }
+  
+  // If it's a Date object
+  if (timestamp instanceof Date) {
+    return Math.floor(timestamp.getTime() / 1000);
+  }
+  
+  // If it's a string (ISO format or other)
+  if (typeof timestamp === 'string') {
+    const date = new Date(timestamp);
+    if (!isNaN(date.getTime())) {
+      return Math.floor(date.getTime() / 1000);
+    }
+  }
+  
+  return null;
+};
+
 const initialState = {
   // Structure: { [deviceId]: [record1, record2, ...] }
   // Example:
@@ -23,11 +57,13 @@ export const historicalRecordsSlice = createSlice({
         state.recordsByDevice[deviceId] = [];
       }
       
-      // Check for duplicates before adding
+      // ✅ FIX: Check for duplicates before adding - normalize timestamps for consistent comparison
+      const recordTimestamp = normalizeTimestamp(record.timestamp || record.timestampDate);
       const isDuplicate = state.recordsByDevice[deviceId].some(r => {
-        const existingTimestamp = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : null);
-        const recordTimestamp = record.timestamp || (record.timestampDate ? Math.floor(new Date(record.timestampDate).getTime() / 1000) : null);
-        return existingTimestamp === recordTimestamp && 
+        const existingTimestamp = normalizeTimestamp(r.timestamp || r.timestampDate);
+        return existingTimestamp !== null && 
+               recordTimestamp !== null &&
+               existingTimestamp === recordTimestamp && 
                r.steps === record.steps && 
                r.temperature === record.temperature;
       });
@@ -49,11 +85,13 @@ export const historicalRecordsSlice = createSlice({
       }
       
       records.forEach(record => {
-        // Check for duplicates
+        // ✅ FIX: Check for duplicates - normalize timestamps for consistent comparison
+        const recordTimestamp = normalizeTimestamp(record.timestamp || record.timestampDate);
         const isDuplicate = state.recordsByDevice[deviceId].some(r => {
-          const existingTimestamp = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : null);
-          const recordTimestamp = record.timestamp || (record.timestampDate ? Math.floor(new Date(record.timestampDate).getTime() / 1000) : null);
-          return existingTimestamp === recordTimestamp && 
+          const existingTimestamp = normalizeTimestamp(r.timestamp || r.timestampDate);
+          return existingTimestamp !== null && 
+                 recordTimestamp !== null &&
+                 existingTimestamp === recordTimestamp && 
                  r.steps === record.steps && 
                  r.temperature === record.temperature;
         });

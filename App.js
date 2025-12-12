@@ -12,8 +12,30 @@ import MainNavigation from './src/navigation/MainNavigation';
 import SplashScreen from 'react-native-splash-screen';
 import ConnectionInfo from './src/utils/ConnectionInfo';
 import NotificationPermissions from './src/utils/NotificationPermissions';
-import { Platform } from 'react-native';
+import { Platform, StatusBar, View } from 'react-native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+
+function AppContent() {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <View style={{ 
+      flex: 1, 
+      paddingTop: Platform.OS === 'android' ? insets.top : 0,
+      paddingBottom: Platform.OS === 'android' ? insets.bottom : 0,
+      paddingLeft: Platform.OS === 'android' ? insets.left : 0,
+      paddingRight: Platform.OS === 'android' ? insets.right : 0
+    }}>
+      <Provider store={store}>
+        <PersistGate loading={null} persistor={persistor}>
+          {/* <ConnectionInfo /> */}
+          <MainNavigation />
+        </PersistGate>
+      </Provider >
+    </View>
+  );
+}
 
 function App() {
   useEffect(() => {
@@ -40,14 +62,10 @@ function App() {
 
 
   return (
-    <>
-      <Provider store={store}>
-        <PersistGate loading={null} persistor={persistor}>
-          {/* <ConnectionInfo /> */}
-          <MainNavigation />
-        </PersistGate>
-      </Provider >
-    </>
+    <SafeAreaProvider>
+      <StatusBar translucent backgroundColor="transparent" barStyle={Platform.OS === 'android' ? 'dark-content' : 'default'} />
+      <AppContent />
+    </SafeAreaProvider>
   );
 }
 
