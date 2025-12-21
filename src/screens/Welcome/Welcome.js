@@ -1,8 +1,10 @@
-import { Text, SafeAreaView, NativeModules, View, Button, Platform } from 'react-native'
+import { Text, View, Button, Platform } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import React, { useState } from 'react'
 import styles from './style';
 import Header from '../../components/Header';
 import { useNavigation } from '@react-navigation/native';
+import BridgingCodeModule from '../../native-modules/NativeBridgingCodeModule';
 
 
 function Welcome() {
@@ -10,45 +12,39 @@ function Welcome() {
     const [id, setId] = useState('Press the button to get The ID');
     const navigation = useNavigation();
 
-    let NativeModule;
-
-    if (Platform.OS === 'android') {
-        NativeModule = NativeModules.SampleBridgeAndroid;
-    } else {
-        NativeModule = NativeModules.BridgingCodeModule;
-    }
-    console.log(NativeModule, "NativeModule=====>")
-
-
+    // Updated to use Turbo Module - unified API for both platforms
     // For Android
-    const nativeSimpleMethodReturnsforAndroid = () => {
-        NativeModule.examplePayment("Api Called", "i3789293782", result => {
-            alert(result)
-        })
+    const nativeSimpleMethodReturnsforAndroid = async () => {
+        try {
+            // Now using Promises instead of callbacks
+            const paymentResult = await BridgingCodeModule.examplePayment("Api Called", "i3789293782");
+            alert(`Payment Result: ${paymentResult[0]}, ${paymentResult[1]}`);
 
-        NativeModule.callExampleApi('https://jsonplaceholder.typicode.com/todos/1', (status, response) => {
-            if (status === 'Success') {
-                console.log('API Response:', response);
+            const apiResult = await BridgingCodeModule.callExampleApi('https://jsonplaceholder.typicode.com/todos/1');
+            if (apiResult[0] === 'Success') {
+                console.log('API Response:', apiResult[1]);
             } else {
-                console.error('API Error:', response);
+                console.error('API Error:', apiResult[1]);
             }
-        });
-
+        } catch (error) {
+            console.error('Error in native method:', error);
+            alert(`Error: ${error.message}`);
+        }
     }
 
     // For IOS
-    const nativeSimpleMethodforIos = () => {
-        NativeModule.bothClassifyAndCallback("https://fileinfo.com/img/ss/xl/jpg_44-2.jpg", result => {
-            alert(result)
-        })
+    const nativeSimpleMethodforIos = async () => {
+        try {
+            // Now using Promises instead of callbacks
+            const classifyResult = await BridgingCodeModule.bothClassifyAndCallback("https://fileinfo.com/img/ss/xl/jpg_44-2.jpg");
+            alert(`Classify Result: ${classifyResult}`);
 
-        NativeModule.makeApiCall('https://jsonplaceholder.typicode.com/todos/1')
-            .then(response => {
-                console.log('API Response:', response);
-            })
-            .catch(error => {
-                console.error('API Error:', error);
-            });
+            const apiResponse = await BridgingCodeModule.makeApiCall('https://jsonplaceholder.typicode.com/todos/1');
+            console.log('API Response:', apiResponse);
+        } catch (error) {
+            console.error('Error in native method:', error);
+            alert(`Error: ${error.message}`);
+        }
     }
 
 

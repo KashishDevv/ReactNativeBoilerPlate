@@ -86,6 +86,32 @@ You've successfully run and modified your React Native App. :partying_face:
 
 If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
 
+## OpenSSL Certificate Issues on macOS
+
+If you encounter OpenSSL certificate errors when running `bundle install` or `pod install` (errors like `X509_LOOKUP_load_file: BIO lib` or `Could not verify the SSL certificate`), this is typically due to Homebrew Ruby not finding the OpenSSL certificates.
+
+**Solution:** Set the SSL certificate environment variables before running bundle or pod commands:
+
+```sh
+export SSL_CERT_FILE=/opt/homebrew/etc/openssl@3/cert.pem
+export SSL_CERT_DIR=/opt/homebrew/etc/openssl@3/certs
+bundle install
+cd ios && bundle exec pod install
+```
+
+Alternatively, use the provided helper script:
+
+```sh
+cd ios && ./pod-install.sh
+```
+
+To make this permanent, add these lines to your `~/.zshrc` or `~/.bash_profile`:
+
+```sh
+export SSL_CERT_FILE=/opt/homebrew/etc/openssl@3/cert.pem
+export SSL_CERT_DIR=/opt/homebrew/etc/openssl@3/certs
+```
+
 # Learn More
 
 To learn more about React Native, take a look at the following resources:

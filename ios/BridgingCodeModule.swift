@@ -1,23 +1,25 @@
 import Foundation
 import AVFoundation
+import React
 
 @objc(BridgingCodeModule)
 class BridgingCodeModule: NSObject {
   
-  @objc(passString:resolver:)
-  func passString(str: String, resolver callback: RCTResponseSenderBlock) {
+  // Updated to use Promises instead of callbacks for Turbo Module support
+  @objc(passString:resolve:reject:)
+  func passString(str: String, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
     print("The entered string Value is", str)
-    return callback([str])
+    resolve(str)
   }
   
-  @objc(bothClassifyAndCallback:resolver12:)
-  func bothClassifyAndCallback(_ img: String, resolver12 callback: RCTResponseSenderBlock) {
+  @objc(bothClassifyAndCallback:resolve:reject:)
+  func bothClassifyAndCallback(_ img: String, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
     print("The entered string Value is", img)
-    return callback([img])
+    resolve(img)
   }
   
-  @objc(makeApiCall:resolver:rejecter:)
-  func makeApiCall(url: String, resolver callback: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+  @objc(makeApiCall:resolve:reject:)
+  func makeApiCall(url: String, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
     guard let requestUrl = URL(string: url) else {
       reject("Invalid URL", "The provided URL is invalid", nil)
       return
@@ -34,7 +36,43 @@ class BridgingCodeModule: NSObject {
         return
       }
       
-      callback(responseString)
+      resolve(responseString)
+    }
+    
+    task.resume()
+  }
+  
+  // Android-compatible methods (for unified API)
+  @objc(showToast:)
+  func showToast(_ message: String) {
+    print("Toast (iOS): \(message)")
+  }
+  
+  @objc(examplePayment:donationId:resolve:reject:)
+  func examplePayment(_ strStart: String, donationId: String, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+    print("BridgingCodeModule: examplePayment called with: \(strStart), \(donationId)")
+    resolve([strStart, donationId])
+  }
+  
+  @objc(callExampleApi:resolve:reject:)
+  func callExampleApi(_ url: String, resolve: @escaping RCTPromiseResolveBlock, reject: @escaping RCTPromiseRejectBlock) {
+    guard let requestUrl = URL(string: url) else {
+      resolve(["Error", "Invalid URL"])
+      return
+    }
+    
+    let task = URLSession.shared.dataTask(with: requestUrl) { (data, response, error) in
+      if let error = error {
+        resolve(["Error", error.localizedDescription])
+        return
+      }
+      
+      guard let data = data, let responseString = String(data: data, encoding: .utf8) else {
+        resolve(["Error", "Unable to fetch data"])
+        return
+      }
+      
+      resolve(["Success", responseString])
     }
     
     task.resume()
