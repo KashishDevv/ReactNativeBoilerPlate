@@ -12,14 +12,18 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSelector, useDispatch } from 'react-redux';
 import BLEService from '../../services/ble/BLEService';
 import { CONNECTION_STATES } from '../../constants/BLEConstants';
+import { selectLogsByDevice, clearDeviceLogs } from '../../feature/connectionLogsSlice/connectionLogsSlice';
 import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
 import { Metrics } from '../../theme/Metrics';
 
 const ConnectionLogScreen = ({ route, navigation }) => {
   const { deviceId, deviceName } = route.params;
+  const dispatch = useDispatch();
+  const reduxLogs = useSelector(state => selectLogsByDevice(state, deviceId));
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -45,7 +49,7 @@ const ConnectionLogScreen = ({ route, navigation }) => {
         BLEService.off('syncDataUpdated', logListenerRef.current);
       }
     };
-  }, [deviceId]);
+  }, [deviceId, reduxLogs]); // ✅ Re-run when Redux logs change
 
   const checkConnectionStatus = () => {
     try {
@@ -104,25 +108,83 @@ const ConnectionLogScreen = ({ route, navigation }) => {
   const loadInitialData = () => {
     try {
       setLoading(true);
-      // Load connection logs from BLEService
-      const connectionLogs = BLEService.getConnectionLogs(deviceId);
       
-      if (!connectionLogs || connectionLogs.length === 0) {
+      // ✅ Load persisted logs from Redux
+      const persistedLogs = reduxLogs || [];
+      
+      // ✅ Load live logs from BLEService (if device is connected)
+      const liveLogs = BLEService.getConnectionLogs(deviceId) || [];
+      
+      // ✅ Merge logs and remove duplicates
+      // Normalize timestamp to milliseconds for consistent comparison
+      // Handles Date objects, Unix timestamps (seconds or milliseconds), and ISO strings
+      const normalizeTimestamp = (timestamp) => {
+        if (!timestamp) return null;
+        
+        // If it's a Date object
+        if (timestamp instanceof Date) {
+          return timestamp.getTime();
+        }
+        
+        // If it's a number
+        if (typeof timestamp === 'number') {
+          // If it's > year 2100 in seconds, it's likely milliseconds
+          // Year 2100 in seconds: 4102444800
+          if (timestamp > 4102444800) {
+            return timestamp; // Already milliseconds
+          }
+          // Otherwise assume it's seconds and convert to milliseconds
+          return timestamp * 1000;
+        }
+        
+        // If it's a string (ISO format from Redux persistence)
+        if (typeof timestamp === 'string') {
+          const date = new Date(timestamp);
+          if (!isNaN(date.getTime())) {
+            return date.getTime();
+          }
+        }
+        
+        return null;
+      };
+      
+      // Combine all logs
+      const allLogs = [...persistedLogs, ...liveLogs];
+      
+      // Remove duplicates based on timestamp and action
+      const uniqueLogsMap = new Map();
+      allLogs.forEach(log => {
+        const timestamp = normalizeTimestamp(log.timestamp);
+        const key = `${timestamp}_${log.action}`;
+        
+        if (!uniqueLogsMap.has(key)) {
+          uniqueLogsMap.set(key, log);
+        } else {
+          // If duplicate found, prefer the one with more info or newer receivedAt
+          const existing = uniqueLogsMap.get(key);
+          const existingReceivedAt = existing.receivedAt ? new Date(existing.receivedAt).getTime() : 0;
+          const logReceivedAt = log.receivedAt ? new Date(log.receivedAt).getTime() : 0;
+          
+          // Keep the one with more recent receivedAt or more info
+          if (logReceivedAt > existingReceivedAt || Object.keys(log).length > Object.keys(existing).length) {
+            uniqueLogsMap.set(key, log);
+          }
+        }
+      });
+      
+      const mergedLogs = Array.from(uniqueLogsMap.values());
+      
+      if (mergedLogs.length === 0) {
         setLogs([]);
         setLoading(false);
         return;
       }
 
       // Sort logs by timestamp (newest first - latest on top)
-      const sortedLogs = [...connectionLogs].sort((a, b) => {
+      const sortedLogs = mergedLogs.sort((a, b) => {
         const getTimestampMs = (log) => {
-          if (log.timestamp instanceof Date) {
-            return log.timestamp.getTime();
-          }
-          if (typeof log.timestamp === 'number') {
-            return log.timestamp;
-          }
-          return 0;
+          const ts = normalizeTimestamp(log.timestamp);
+          return ts || 0;
         };
         
         return getTimestampMs(b) - getTimestampMs(a); // Reverse order: newest first
@@ -157,6 +219,12 @@ const ConnectionLogScreen = ({ route, navigation }) => {
       const timestamp = getTimestampDate(log);
       const timeDate = formatTimeDate(timestamp);
       dataText += `${log.action} ${timeDate}\n`;
+      if (log.commandHex) {
+        dataText += `  Command: ${log.commandHex}\n`;
+      }
+      if (log.responseHex) {
+        dataText += `  Response: ${log.responseHex}\n`;
+      }
     });
 
     // Copy to clipboard
@@ -185,9 +253,14 @@ const ConnectionLogScreen = ({ route, navigation }) => {
           style: 'destructive',
           onPress: async () => {
             try {
+              // ✅ Clear from BLEService (live logs)
               if (BLEService.clearConnectionLogs) {
                 await BLEService.clearConnectionLogs(deviceId);
               }
+              
+              // ✅ Clear from Redux (persisted logs)
+              dispatch(clearDeviceLogs({ deviceId }));
+              
               setLogs([]);
               Alert.alert('Data Cleared', 'Connection logs have been cleared.');
             } catch (error) {
@@ -211,15 +284,16 @@ const ConnectionLogScreen = ({ route, navigation }) => {
   };
 
   const formatTimeDate = (date) => {
-    // Format: "15:20:30 10 Dec 2025" (HH:MM:SS DD MMM YYYY)
+    // Format: "15:20:30.123 10 Dec 2025" (HH:MM:SS.mmm DD MMM YYYY) - Added millisecond precision
     const hours = date.getHours().toString().padStart(2, '0');
     const minutes = date.getMinutes().toString().padStart(2, '0');
     const seconds = date.getSeconds().toString().padStart(2, '0');
+    const milliseconds = date.getMilliseconds().toString().padStart(3, '0');
     const day = date.getDate();
     const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const month = monthNames[date.getMonth()];
     const year = date.getFullYear();
-    return `${hours}:${minutes}:${seconds} ${day} ${month} ${year}`;
+    return `${hours}:${minutes}:${seconds}.${milliseconds} ${day} ${month} ${year}`;
   };
 
   const renderLog = ({ item, index }) => {
@@ -229,6 +303,37 @@ const ConnectionLogScreen = ({ route, navigation }) => {
     return (
       <View style={styles.logContainer}>
         <Text style={styles.logText}>{item.action} {timeDate}</Text>
+        {item.commandHex && (
+          <Text style={styles.hexText}>Command: {item.commandHex}</Text>
+        )}
+        {item.responseHex && (
+          <Text style={styles.hexText}>Response: {item.responseHex}</Text>
+        )}
+        {/* ✅ Display time information for SET_TIME commands */}
+        {item.systemTimestamp !== undefined && (
+          <>
+            <Text style={styles.hexText}>System Time: {item.systemTimestamp} ({item.systemTimestampISO || new Date(item.systemTimestamp * 1000).toISOString()})</Text>
+            {item.timestampHex && (
+              <Text style={styles.hexText}>Timestamp Hex: {item.timestampHex}</Text>
+            )}
+            {item.deviceRTCValid !== undefined && (
+              <Text style={styles.hexText}>Device RTC Valid: {item.deviceRTCValid ? 'Yes' : 'No'}</Text>
+            )}
+          </>
+        )}
+        {/* ✅ Display RTC read information */}
+        {item.deviceRTC !== undefined && (
+          <>
+            <Text style={styles.hexText}>Device RTC: {item.deviceRTC} ({item.deviceRTCISO || 'N/A'})</Text>
+            <Text style={styles.hexText}>System Time: {item.systemTime} ({item.systemTimeISO || 'N/A'})</Text>
+            {item.timeDifference !== undefined && (
+              <Text style={styles.hexText}>Time Difference: {item.timeDifferenceFormatted || `${item.timeDifference}s`}</Text>
+            )}
+            {item.rtcValid !== undefined && (
+              <Text style={styles.hexText}>RTC Valid: {item.rtcValid ? '✅ Yes' : '❌ No'}</Text>
+            )}
+          </>
+        )}
       </View>
     );
   };
@@ -427,6 +532,13 @@ const styles = StyleSheet.create({
     fontSize: Fonts.size.medium,
     fontFamily: Fonts.type.regular,
     color: Colors.text,
+  },
+  hexText: {
+    fontSize: Fonts.size.small,
+    fontFamily: Fonts.type.mono || Fonts.type.regular,
+    color: Colors.primary,
+    marginTop: 4,
+    fontWeight: '500',
   },
   emptyContainer: {
     flex: 1,

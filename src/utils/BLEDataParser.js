@@ -594,7 +594,6 @@ class BLEDataParser {
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.GET_FW_VERSION:
           // ✅ SDD v1.4: Response data contains version string (e.g., "1.0.2")
-          console.log(`🔍 [PARSER] GET_FW_VERSION - data length: ${data.length}, hex: ${data.toString('hex')}, utf8: ${data.toString('utf8')}`);
           if (data.length > 0) {
             const version = data.toString('utf8');
             parsedData = {
@@ -611,7 +610,6 @@ class BLEDataParser {
           
         case SYSTEM_COMMAND_CONSTANTS.CMD.GET_HW_VERSION:
           // ✅ SDD v1.4: Response data contains version string (e.g., "1.0.2")
-          console.log(`🔍 [PARSER] GET_HW_VERSION - data length: ${data.length}, hex: ${data.toString('hex')}, utf8: ${data.toString('utf8')}`);
           if (data.length > 0) {
             const version = data.toString('utf8');
             parsedData = {
@@ -1255,7 +1253,6 @@ class BLEDataParser {
       }
       parsedData.typeString = typeString;
 
-      console.log(`📡 [DATA TRANSFER] Type: ${dataType}, Length: ${length}, Data: ${data.toString('hex')}`);
 
       switch (dataType) {
         case DATA_TRANSFER_TYPES.SYNC_START:
@@ -1264,13 +1261,11 @@ class BLEDataParser {
             
             // Check if the data looks corrupted
             if (rawTotalRecords > 1000000) {
-              console.log(`⚠️ [SYNC START] Corrupted data: ${rawTotalRecords}`);
               parsedData.totalRecords = 0;
               parsedData.corrupted = true;
               parsedData.rawValue = rawTotalRecords;
             } else {
               parsedData.totalRecords = rawTotalRecords;
-              console.log(`📡 [SYNC START] Total records: ${parsedData.totalRecords}`);
             }
           }
           break;
@@ -1282,15 +1277,12 @@ class BLEDataParser {
               parsedData.success = false;
               parsedData.terminated = true;
               parsedData.reason = 'Force termination';
-              console.log(`📡 [SYNC COMPLETE] Force termination`);
             } else if (count >= 0x0001 && count <= 0x01F4) {
               parsedData.success = true;
               parsedData.recordsTransmitted = count;
-              console.log(`📡 [SYNC COMPLETE] Success: ${count} records`);
             } else {
               parsedData.success = false;
               parsedData.reason = `Invalid count: ${count}`;
-              console.log(`📡 [SYNC COMPLETE] Invalid count: ${count}`);
             }
           }
           break;
@@ -1325,7 +1317,6 @@ class BLEDataParser {
                 parsedData.records.push(record);
                 parsedData.recordCount++;
                 
-                console.log(`📡 [RECORD] ${parsedData.recordCount}: ${record.timestamp.toISOString()}, Steps: ${steps}, Temp: ${temperature}°C`);
                 
                 offset += 8;
               } catch (error) {
@@ -1338,11 +1329,9 @@ class BLEDataParser {
           
         case DATA_TRANSFER_TYPES.READ_ERROR:
           parsedData.error = true;
-          console.log(`📡 [READ ERROR]`);
           break;
           
         default:
-          console.log(`📡 [UNKNOWN] Type: ${dataType}`);
           return null;
       }
 

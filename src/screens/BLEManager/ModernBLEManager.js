@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -54,6 +54,8 @@ const getBatteryColor = (level) => {
 
 const ModernBLEManager = ({ navigation }) => {
   const [devices, setDevices] = useState([]);
+  // Track last sync completion time per device to ignore device_status events immediately after sync
+  const lastSyncCompleteTime = useRef(new Map());
   const [connectedDevices, setConnectedDevices] = useState([]);
   const [isScanning, setIsScanning] = useState(false);
   const [currentPowerProfile, setCurrentProfile] = useState('default');
@@ -422,9 +424,12 @@ const ModernBLEManager = ({ navigation }) => {
         return;
       }
       
-      // Handle sync_complete events
+      // Handle sync_complete events - set recordCount to 0 after sync
       if (eventData.type === 'sync_complete') {
-        console.log('📊 [Modern] Sync complete - updating device data:', eventData.deviceId);
+        console.log('📊 [Modern] Sync complete - setting recordCount to 0:', eventData.deviceId);
+        
+        // Track sync completion time to ignore device_status events for 10 seconds
+        lastSyncCompleteTime.current.set(eventData.deviceId, Date.now());
         
         setDevices(prevDevices => {
           return prevDevices.map(d => {
@@ -434,7 +439,7 @@ const ModernBLEManager = ({ navigation }) => {
                 deviceData: {
                   ...d.deviceData,
                   ...eventData.deviceData,
-                  recordCount: 0, // Set to 0 after sync
+                  recordCount: 0, // Always 0 after sync complete
                 },
                 manufacturerData: d.manufacturerData ? {
                   ...d.manufacturerData,
@@ -478,50 +483,32 @@ const ModernBLEManager = ({ navigation }) => {
         setRefreshTrigger(prev => prev + 1);
       }
       
-      // Handle device_status events (recordCount updates)
+      // Handle device_status events - only update recordCount from polling reads
       if (eventData.type === 'device_status' && eventData.deviceData?.recordCount !== undefined) {
-        console.log('📊 [Modern] Device status - recordCount updated:', eventData.deviceId, 'records:', eventData.deviceData.recordCount);
+        const deviceId = eventData.deviceId;
+        const isFromPolling = eventData.deviceData?.isFromPolling === true;
+        
+        // SIMPLE: Only update if from polling, otherwise ignore
+        if (!isFromPolling) {
+          return; // Ignore keep-alive reads
+        }
+        
+        const recordCount = eventData.deviceData.recordCount;
         
         setDevices(prevDevices => {
           return prevDevices.map(d => {
-            if (d.id === eventData.deviceId) {
-              // ✅ CRITICAL FIX: If sync just completed, only preserve 0 if device_status shows same/lower count
-              // If device_status shows HIGHER count, those are NEW records generated after sync and should be shown
-              const syncJustCompleted = eventData.syncJustCompleted === true;
-              const syncCompletedRecordCount = eventData.syncCompletedRecordCount !== undefined 
-                ? eventData.syncCompletedRecordCount 
-                : (syncJustCompleted ? 0 : undefined);
-              
-              const deviceStatusRecordCount = eventData.deviceData.recordCount;
-              
-              // Only preserve 0 if:
-              // 1. Sync just completed AND
-              // 2. Device status shows same or lower count (old value before flash clear)
-              // If device status shows HIGHER count, those are new records - show them!
-              let finalRecordCount = deviceStatusRecordCount;
-              if (syncJustCompleted && syncCompletedRecordCount !== undefined) {
-                if (deviceStatusRecordCount <= syncCompletedRecordCount) {
-                  // Same or lower - this is the old value before flash clear, preserve 0
-                  finalRecordCount = syncCompletedRecordCount;
-                  console.log(`🛡️ [Modern] Sync just completed - preserving recordCount: ${finalRecordCount} (device_status shows old value: ${deviceStatusRecordCount})`);
-                } else {
-                  // Higher - these are NEW records generated after sync, show them!
-                  finalRecordCount = deviceStatusRecordCount;
-                  console.log(`✅ [Modern] Sync just completed but device has ${deviceStatusRecordCount} NEW records (generated after sync) - showing new count`);
-                }
-              }
-              
+            if (d.id === deviceId) {
               return {
                 ...d,
                 deviceData: {
                   ...d.deviceData,
                   ...eventData.deviceData,
-                  recordCount: finalRecordCount, // Use preserved value if sync just completed
+                  recordCount: recordCount,
                 },
                 manufacturerData: d.manufacturerData ? {
                   ...d.manufacturerData,
-                  recordCount: finalRecordCount, // Use preserved value if sync just completed
-                  hasRecords: finalRecordCount > 0
+                  recordCount: recordCount,
+                  hasRecords: recordCount > 0
                 } : d.manufacturerData
               };
             }
@@ -572,37 +559,31 @@ const ModernBLEManager = ({ navigation }) => {
     console.log('📞 [Modern] Device data update event listener registered');
     
     // ✅ CRITICAL FIX: Set up device data update callback for live notifications
-    // This ensures UI updates immediately when device data changes (battery, steps, temperature, recordCount)
     BLEService.setDeviceDataUpdateCallback((deviceId, deviceData) => {
-      console.log('📊 [Modern] Device data updated via callback:', deviceId, {
-        batteryLevel: deviceData.batteryLevel,
-        temperature: deviceData.temperature,
-        steps: deviceData.steps,
-        recordCount: deviceData.recordCount,
-        dataSource: deviceData.dataSource,
-      });
-      
       // Update the specific device in the devices list
       setDevices(prevDevices => {
         return prevDevices.map(d => {
           if (d.id === deviceId) {
-            // Get fresh device data from BLEService to ensure we have all latest updates
+            // Get fresh device data from BLEService
             const allKnownDevices = BLEService.getScannedDevices();
             const freshDevice = allKnownDevices.find(dev => dev.id === deviceId);
             
+            // SIMPLE: Only update recordCount if isFromPolling is true, otherwise keep existing value
+            const isFromPolling = deviceData.isFromPolling === true;
+            const recordCount = isFromPolling ? deviceData.recordCount : d.deviceData?.recordCount;
+            
             return {
               ...d,
-              deviceData: freshDevice?.deviceData || {
-                ...d.deviceData,
-                ...deviceData, // Fallback to callback data if fresh device not found
+              deviceData: {
+                ...(freshDevice?.deviceData || d.deviceData),
+                ...deviceData,
+                recordCount: recordCount !== undefined ? recordCount : d.deviceData?.recordCount,
               },
-              // Also update manufacturerData.recordCount if available in deviceData
-              manufacturerData: (deviceData.recordCount !== undefined && d.manufacturerData) ? {
+              manufacturerData: d.manufacturerData ? {
                 ...d.manufacturerData,
-                recordCount: deviceData.recordCount,
-                hasRecords: deviceData.recordCount > 0,
-              } : (freshDevice?.manufacturerData || d.manufacturerData),
-              // Update other fields from fresh device if available
+                recordCount: recordCount !== undefined ? recordCount : d.manufacturerData.recordCount,
+                hasRecords: (recordCount !== undefined ? recordCount : d.manufacturerData.recordCount) > 0,
+              } : d.manufacturerData,
               ...(freshDevice && {
                 rssi: freshDevice.rssi,
                 connectionState: freshDevice.connectionState,
@@ -612,7 +593,6 @@ const ModernBLEManager = ({ navigation }) => {
           return d;
         });
       });
-      // Trigger refresh to ensure allDevices useMemo recalculates
       setRefreshTrigger(prev => prev + 1);
     });
     console.log('📞 [Modern] Device data update callback registered for live notifications');
