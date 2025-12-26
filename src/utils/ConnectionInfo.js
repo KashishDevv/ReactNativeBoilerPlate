@@ -1,10 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import NetInfo from '@react-native-community/netinfo';
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { moderateScale, moderateVerticalScale } from 'react-native-size-matters';
-import colors from '../theme/Colors';
-import { Metrics } from '../theme/Metrics';
-import Icon from 'react-native-vector-icons/FontAwesome5';
+import { FontAwesome } from '@react-native-vector-icons/fontawesome';
 
 // Modal component for showing no internet connection alert
 function ConnectionInfoAlert({ isVisible, onClose }) {
@@ -21,7 +18,7 @@ function ConnectionInfoAlert({ isVisible, onClose }) {
           <TouchableOpacity
           // onPress={onClose}
           >
-            <Icon name="wifi" size={50} color="#777777" />
+            <FontAwesome name="exclamation-triangle" size={50} color="#777777" />
           </TouchableOpacity>
         </View>
       </View>
