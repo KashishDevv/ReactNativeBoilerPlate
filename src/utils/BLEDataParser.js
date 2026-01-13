@@ -1306,8 +1306,20 @@ class BLEDataParser {
                 const temperature = data.readUInt8(offset + 6);  // ✅ CORRECT POSITION
                 const flags = data.readUInt8(offset + 7);
                 
+                // ✅ FIX: Add timestampDate as formatted string to match iOS native code behavior
+                // iOS format: "yyyy-MM-dd HH:mm:ss" (e.g., "2025-12-31 10:39:53")
+                const timestampDate = new Date(timestamp * 1000);
+                const year = timestampDate.getFullYear();
+                const month = String(timestampDate.getMonth() + 1).padStart(2, '0');
+                const day = String(timestampDate.getDate()).padStart(2, '0');
+                const hours = String(timestampDate.getHours()).padStart(2, '0');
+                const minutes = String(timestampDate.getMinutes()).padStart(2, '0');
+                const seconds = String(timestampDate.getSeconds()).padStart(2, '0');
+                const timestampDateString = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                
                 const record = {
-                  timestamp: new Date(timestamp * 1000),
+                  timestamp: timestampDate,
+                  timestampDate: timestampDateString, // ✅ FIX: Add formatted date string matching iOS format "yyyy-MM-dd HH:mm:ss"
                   temperature,
                   steps,
                   flags,

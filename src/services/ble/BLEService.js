@@ -12,7 +12,8 @@ import {
   DEVICE_STATUS_LAYOUT,
   POWER_PROFILE,
   RECONNECTION_CONSTANTS,
-  ERROR_TYPES
+  ERROR_TYPES,
+  DEMO_TAG_CONFIG
 } from '../../constants/BLEConstants';
 import BLEDataParser from '../../utils/BLEDataParser';
 import BLEPermissions from '../../utils/BLEPermissions';
@@ -23,6 +24,9 @@ import DeviceInfo from 'react-native-device-info';
 import { store } from '../../feature/Store';
 import { addRecord, addRecords } from '../../feature/historicalRecordsSlice/historicalRecordsSlice';
 import { addLog, clearDeviceLogs } from '../../feature/connectionLogsSlice/connectionLogsSlice';
+// DemoTag: Import DemoTagSimulator
+import DemoTagSimulator from './DemoTagSimulator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Import native modules
 const { SampleBridgeAndroid, BridgingCodeModule } = NativeModules;
@@ -36,6 +40,7 @@ class BLEService {
     this.operationQueue = Promise.resolve();
     this.connectedDevices = new Map();
     this.scannedDevices = new Map();
+    this.deviceDataStore = new Map(); // DemoTag: Store device data for demo and real devices
     this.scanState = SCAN_STATES.IDLE;
     this.bleState = BLE_STATES.UNKNOWN;
     this.scanSubscription = null;
@@ -218,6 +223,9 @@ class BLEService {
       this.setupAndroidEventListeners();
     }
 
+    // DemoTag: Initialize demo tag mode from storage
+    this.initDemoTagMode();
+
     this.init();
 
     // Setup auto-connect callbacks after initialization
@@ -225,6 +233,120 @@ class BLEService {
 
     // Auto-scan for bonded devices on startup (iOS only)
     this.checkAndStartAutoScan();
+  }
+
+  /**
+   * DemoTag: Initialize demo tag mode from AsyncStorage
+   */
+  async initDemoTagMode() {
+    try {
+      const enabled = await AsyncStorage.getItem(DEMO_TAG_CONFIG.ENABLED_STORAGE_KEY);
+      if (enabled === 'true') {
+        DemoTagSimulator.setEnabled(true);
+        
+        // ✅ Set up callback for polling interval changes
+        DemoTagSimulator.setPollingIntervalCallback((deviceId, intervalSeconds) => {
+          console.log(`🏷️ DemoTag: Polling interval changed to ${intervalSeconds}s for ${deviceId}, restarting polling...`);
+          // Restart polling with new interval
+          const device = this.scannedDevices.get(deviceId);
+          if (device && device.isDemoTag && device.connectionState === CONNECTION_STATES.CONNECTED) {
+            console.log(`🏷️ DemoTag: Restarting polling for ${deviceId} with new interval ${intervalSeconds}s`);
+            // ✅ CRITICAL FIX: Stop polling first to clear the active flag, then start with new interval
+            // This prevents "Polling already active, skipping duplicate start" error
+            this.stopDemoDevicePolling(deviceId);
+            // ✅ CRITICAL: Use the passed interval directly instead of calling getPollingInterval
+            // This ensures we use the exact interval that was just set
+            this.startDemoDevicePolling(deviceId, intervalSeconds * 1000);
+            
+            // ✅ FIX: Also restart notifications with new interval to keep them in sync
+            const notificationInterval = intervalSeconds * 1000;
+            DemoTagSimulator.stopNotifications(deviceId);
+            DemoTagSimulator.startNotifications(deviceId, (notification) => {
+              this.handleDemoCharacteristicNotification(deviceId, notification);
+            }, notificationInterval);
+            console.log(`🏷️ DemoTag: Restarted notifications for ${deviceId} with new interval ${intervalSeconds}s`);
+          } else {
+            console.warn(`🏷️ DemoTag: Cannot restart polling - device not found or not connected:`, {
+              deviceId,
+              deviceExists: !!device,
+              isDemoTag: device?.isDemoTag,
+              connectionState: device?.connectionState
+            });
+          }
+        });
+        
+        // DemoTag: Create default demo device if enabled
+        this.createDefaultDemoDevice();
+      }
+    } catch (error) {
+      console.warn('🏷️ DemoTag: Could not load demo mode state:', error);
+    }
+  }
+
+  /**
+   * DemoTag: Create default demo device
+   */
+  createDefaultDemoDevice() {
+    if (!DemoTagSimulator.isDemoModeEnabled()) return;
+    
+    const demoDevice = DemoTagSimulator.createDemoDevice(
+      DEMO_TAG_CONFIG.DEFAULT_DEVICE_ID,
+      DEMO_TAG_CONFIG.DEFAULT_DEVICE_NAME
+    );
+    
+    // DemoTag: Add to scanned devices so it appears in the list
+    this.scannedDevices.set(demoDevice.id, {
+      ...demoDevice,
+      lastSeen: Date.now(),
+      serviceUUIDs: [BLE_SERVICES.SMART_TAG],
+      isDemoTag: true,
+    });
+    
+    console.log('🏷️ DemoTag: Default demo device created');
+  }
+
+  /**
+   * DemoTag: Enable/disable demo mode
+   */
+  async setDemoModeEnabled(enabled) {
+    try {
+      await AsyncStorage.setItem(DEMO_TAG_CONFIG.ENABLED_STORAGE_KEY, enabled ? 'true' : 'false');
+      DemoTagSimulator.setEnabled(enabled);
+      
+      if (enabled) {
+        // DemoTag: Create default demo device
+        this.createDefaultDemoDevice();
+        // DemoTag: Trigger device list update
+        this.scheduleListUpdate();
+      } else {
+        // DemoTag: Remove demo devices from scanned devices
+        const demoDeviceIds = Array.from(this.scannedDevices.entries())
+          .filter(([id, device]) => device.isDemoTag)
+          .map(([id]) => id);
+        
+        demoDeviceIds.forEach(id => {
+          this.scannedDevices.delete(id);
+          this.connectedDevices.delete(id);
+        });
+        
+        // DemoTag: Cleanup simulator
+        DemoTagSimulator.cleanup();
+        // DemoTag: Trigger device list update
+        this.scheduleListUpdate();
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('🏷️ DemoTag: Error setting demo mode:', error);
+      return false;
+    }
+  }
+
+  /**
+   * DemoTag: Check if demo mode is enabled
+   */
+  isDemoModeEnabled() {
+    return DemoTagSimulator.isDemoModeEnabled();
   }
 
   /**
@@ -289,6 +411,11 @@ class BLEService {
     // ✅ Listen for RTC read events (for connection log tracking)
     this.iosEventEmitter.addListener('RTCRead', (eventData) => {
       this.handleRTCRead(eventData);
+    });
+    
+    // ✅ Listen for polling started events (for connection log tracking)
+    this.iosEventEmitter.addListener('PollingStarted', (eventData) => {
+      this.handlePollingStarted(eventData);
     });
     
     // RSSI update event
@@ -398,6 +525,11 @@ class BLEService {
     // ✅ Listen for RTC read events (for connection log tracking)
     DeviceEventEmitter.addListener('RTCRead', (eventData) => {
       this.handleRTCRead(eventData);
+    });
+    
+    // ✅ Listen for polling started events (for connection log tracking)
+    DeviceEventEmitter.addListener('PollingStarted', (eventData) => {
+      this.handlePollingStarted(eventData);
     });
 
     // Listen for data transfer events from native side (matching iOS event name)
@@ -1526,33 +1658,51 @@ class BLEService {
     try {
       // Only start command sequence if device has system command characteristic
       if (hasSystemCommand) {
-        // ✅ Log that Device Status will be read for RTC check (with deduplication)
-        const now = Date.now();
-        const lastRTCLog = this.lastRTCReadLogs.get(deviceId);
-        const shouldLogRTC = !lastRTCLog || (now - lastRTCLog.timestamp) > 1000; // Prevent duplicates within 1 second
+        // ✅ DEMO TAG FIX: Check if device is a demo tag before calling native bridge
+        const device = this.connectedDevices.get(deviceId);
+        const isDemoTag = device?.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
         
-        if (shouldLogRTC) {
-          this.addConnectionLog(deviceId, 'RTC Check: Reading Device Status Characteristic', {
-            purpose: 'RTC validation',
-            connectionType: 'manual_or_auto',
-            platform: Platform.OS
-          });
-          this.lastRTCReadLogs.set(deviceId, { timestamp: now });
-        }
-        
-        // ✅ PLATFORM-SPECIFIC: Call appropriate native method
-        let result;
-        if (Platform.OS === 'android') {
-          // Android uses SampleBridgeAndroid
-          result = await SampleBridgeAndroid.startCommandSequence(deviceId);
+        if (isDemoTag) {
+          // DemoTag: Handle command sequence in JavaScript
+          // For demo tags, we don't need to call native bridge
+          // The demo tag simulator handles everything in JavaScript
+          console.log(`🏷️ DemoTag: Skipping native command sequence for ${deviceId} (handled in JS)`);
+          
+          // DemoTag: Read device status to get RTC validity (simulated)
+          // The demo tag already has valid RTC, so we can proceed with data sync if needed
+          setTimeout(() => {
+            // DemoTag: Auto-sync will be triggered by polling if conditions are met
+            // No need to manually trigger sync here for demo tags
+          }, 1000);
         } else {
-          // iOS uses BridgingCodeModule
-          result = await BridgingCodeModule.startCommandSequence(deviceId);
-        }
-        
-        if (result.status === 'success') {
-          // Note: RTC validity check happens in native code after Device Status is read
-          // The result will be logged when Device Status notification arrives
+          // ✅ Log that Device Status will be read for RTC check (with deduplication)
+          const now = Date.now();
+          const lastRTCLog = this.lastRTCReadLogs.get(deviceId);
+          const shouldLogRTC = !lastRTCLog || (now - lastRTCLog.timestamp) > 1000; // Prevent duplicates within 1 second
+          
+          if (shouldLogRTC) {
+            this.addConnectionLog(deviceId, 'RTC Check: Reading Device Status Characteristic', {
+              purpose: 'RTC validation',
+              connectionType: 'manual_or_auto',
+              platform: Platform.OS
+            });
+            this.lastRTCReadLogs.set(deviceId, { timestamp: now });
+          }
+          
+          // ✅ PLATFORM-SPECIFIC: Call appropriate native method
+          let result;
+          if (Platform.OS === 'android') {
+            // Android uses SampleBridgeAndroid
+            result = await SampleBridgeAndroid.startCommandSequence(deviceId);
+          } else {
+            // iOS uses BridgingCodeModule
+            result = await BridgingCodeModule.startCommandSequence(deviceId);
+          }
+          
+          if (result.status === 'success') {
+            // Note: RTC validity check happens in native code after Device Status is read
+            // The result will be logged when Device Status notification arrives
+          }
         }
       }
       
@@ -2146,11 +2296,17 @@ class BLEService {
     const eventRtcValid = rtcValid !== undefined ? rtcValid : (event?.deviceData?.rtcValid);
     
     if (eventRecordCount !== undefined || eventRtcValid !== undefined) {
+      // ✅ CRITICAL FIX: For demo tags, if isFromPolling is not set, check deviceData.isFromPolling
+      // Demo tags set isFromPolling in deviceData during handleDemoDeviceStatusUpdate
+      const finalIsFromPolling = isFromPolling !== undefined 
+        ? isFromPolling 
+        : (device.deviceData?.isFromPolling !== undefined ? device.deviceData.isFromPolling : false);
+      
       const parsedData = {
         recordCount: eventRecordCount !== undefined ? eventRecordCount : device.deviceData?.recordCount,
         rtcValid: eventRtcValid !== undefined ? eventRtcValid : (device.deviceData?.rtcValid ?? true),
         deviceRTC: deviceRTC || (timestamp ? Math.floor(timestamp / 1000) : undefined),
-        isFromPolling: isFromPolling !== undefined ? isFromPolling : false,
+        isFromPolling: finalIsFromPolling,
         dataSource: dataSource || device.deviceData?.dataSource
       };
       
@@ -2267,16 +2423,17 @@ class BLEService {
         }
       }
       
-      // ✅ CRITICAL FIX: Explicitly preserve temperature and steps when device_status event comes
-      // Device Status characteristic (SDD v1.4) does NOT contain temperature or steps
+      // ✅ CRITICAL FIX: Explicitly preserve temperature, steps, and totalSteps when device_status event comes
+      // Device Status characteristic (SDD v1.4) does NOT contain temperature, steps, or totalSteps
       // These values come from Data Transfer records during sync, so we MUST preserve them
       
-      // ✅ CRITICAL FIX: When recordCount is 0, check for previously synced records to persist temperature/steps
+      // ✅ CRITICAL FIX: When recordCount is 0, check for previously synced records to persist temperature/steps/totalSteps
       // This ensures we show the last known values even after all records have been synced and cleared from device
       const freshRecordCount = recordCount !== undefined ? recordCount : (eventDeviceData?.recordCount);
       
       let preservedTemperature = device.deviceData.temperature;
       let preservedSteps = device.deviceData.steps;
+      let preservedTotalSteps = device.deviceData.totalSteps;
       
       // ✅ CRITICAL FIX: When recordCount is 0, always check synced records to restore values
       // Even if current values exist, if recordCount is 0 (meaning all records synced), we should use synced values
@@ -2298,7 +2455,7 @@ class BLEService {
             r.steps != null && r.steps !== undefined && r.steps > 0
           ) || latestRecord;
           
-          // ✅ CRITICAL: When recordCount is 0, device status update doesn't contain temperature/steps
+          // ✅ CRITICAL: When recordCount is 0, device status update doesn't contain temperature/steps/totalSteps
           // So we MUST use synced record values if available, regardless of current values
           // This ensures persistence of synced data even when device has no records available
           if (latestRecordWithTemp.temperature != null && latestRecordWithTemp.temperature !== undefined) {
@@ -2309,6 +2466,16 @@ class BLEService {
           if (latestRecordWithSteps.steps != null && latestRecordWithSteps.steps !== undefined) {
             preservedSteps = latestRecordWithSteps.steps;
             console.log(`💾 [DEVICE STATUS] Restored steps from synced records: ${preservedSteps} (was ${device.deviceData.steps}) for ${deviceId} (recordCount: ${freshRecordCount})`);
+          }
+          
+          // ✅ CRITICAL FIX: Calculate totalSteps from all synced records
+          // This ensures totalSteps persists even when new records are generated on device
+          const calculatedTotalSteps = (device.syncRecords || []).reduce((sum, record) => {
+            return sum + (record.steps || 0);
+          }, 0);
+          if (calculatedTotalSteps > 0) {
+            preservedTotalSteps = calculatedTotalSteps;
+            console.log(`💾 [DEVICE STATUS] Restored totalSteps from synced records: ${preservedTotalSteps} (was ${device.deviceData.totalSteps}) for ${deviceId} (recordCount: ${freshRecordCount})`);
           }
         }
       }
@@ -2337,10 +2504,11 @@ class BLEService {
         batteryLevel: batteryLevelToUse, // Use 2A19 battery level (priority) or Device Status as fallback
         batteryVoltage: batteryVoltage !== undefined ? batteryVoltage : (eventDeviceData?.batteryVoltage ?? device.deviceData.batteryVoltage),
         recordCount: finalRecordCount, // Only update if from polling
-        // ✅ CRITICAL FIX: Explicitly preserve temperature and steps (device_status doesn't have these)
+        // ✅ CRITICAL FIX: Explicitly preserve temperature, steps, and totalSteps (device_status doesn't have these)
         // If recordCount is 0, these values come from previously synced records (persisted above)
         temperature: preservedTemperature,
         steps: preservedSteps,
+        totalSteps: preservedTotalSteps, // ✅ CRITICAL FIX: Preserve totalSteps from synced records
         // Mark as live data if RTC is valid and timestamp is recent
         dataSource: isLiveData ? 'live' : (device.deviceData?.dataSource || 'cached'),
         lastUpdate: timestampMs ? new Date(timestampMs) : (eventDeviceData?.lastUpdate ? new Date(eventDeviceData.lastUpdate) : device.deviceData.lastUpdate || new Date()),
@@ -2531,6 +2699,10 @@ class BLEService {
           recordCount: device.deviceData.recordCount,
           recordsTransmitted: event.recordsTransmitted || 0,
           totalRecords: event.totalRecords || 0,
+          // ✅ CRITICAL FIX: Include totalSteps in sync_complete event so UI can preserve it
+          totalSteps: device.deviceData.totalSteps,
+          steps: device.deviceData.steps,
+          temperature: device.deviceData.temperature,
           // ✅ CRITICAL FIX: Include sync completion info to prevent device_status from overwriting recordCount
           syncJustCompleted: (() => {
             if (!this.autoSyncMeta) return false;
@@ -2783,9 +2955,14 @@ class BLEService {
         return;
       }
 
+      // ✅ DEMO TAG FIX: Check if device is a demo tag before calling native bridge
+      const isDemoTag = device.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
       
       let rssi;
-      if (Platform.OS === 'android') {
+      if (isDemoTag) {
+        // DemoTag: Use simulated RSSI from DemoTagSimulator
+        rssi = DemoTagSimulator.updateRSSI(deviceId);
+      } else if (Platform.OS === 'android') {
         // Use native Android RSSI reading
         try {
           const result = await SampleBridgeAndroid.readDeviceRSSI(deviceId);
@@ -3313,6 +3490,35 @@ class BLEService {
       // Now assign the preserved devices
       this.scannedDevices = preservedDevices;
 
+      // DemoTag: Inject demo devices if demo mode is enabled
+      if (DemoTagSimulator.isDemoModeEnabled()) {
+        const demoDevices = DemoTagSimulator.getAllDemoDevices();
+        demoDevices.forEach(demoDevice => {
+          // DemoTag: Update RSSI to simulate signal variation
+          DemoTagSimulator.updateRSSI(demoDevice.id);
+          const updatedDevice = DemoTagSimulator.getDemoDevice(demoDevice.id);
+          
+          // DemoTag: Add/update demo device in scanned devices
+          this.scannedDevices.set(demoDevice.id, {
+            ...updatedDevice,
+            lastSeen: Date.now(),
+            serviceUUIDs: [BLE_SERVICES.SMART_TAG],
+            isDemoTag: true,
+          });
+          
+          // DemoTag: Trigger onDeviceFound callback if provided
+          if (onDeviceFound) {
+            onDeviceFound({
+              id: demoDevice.id,
+              name: demoDevice.name,
+              rssi: updatedDevice.rssi,
+              manufacturerData: updatedDevice.manufacturerData,
+              serviceUUIDs: [BLE_SERVICES.SMART_TAG],
+              isDemoTag: true,
+            });
+          }
+        });
+      }
 
       // Refresh bonded/known devices cache (iOS)
       if (Platform.OS === 'ios') {
@@ -3337,7 +3543,10 @@ class BLEService {
       const scanOptions = {
         maxScanDurationMs: maxDuration || this.profile.maxScanDurationMs || 15000,
         scanMode: this.profile.scanMode || 'LowLatency',
-        allowDuplicates: true
+        allowDuplicates: true,
+        // ⚡ iOS PERFORMANCE: Use targeted scan (service UUID filter) for MUCH faster discovery
+        // Falls back to broad scan automatically after 5s if no devices found
+        useTargetedScan: Platform.OS === 'ios' ? true : undefined
       };
       
       if (Platform.OS === 'android') {
@@ -3668,6 +3877,11 @@ class BLEService {
   // Connect to a device
   async connectToDevice(deviceId, onConnectionStateChange) {
     try {
+      // DemoTag: Check if this is a demo device
+      if (DemoTagSimulator.isDemoDevice(deviceId)) {
+        return await this.connectToDemoDevice(deviceId, onConnectionStateChange);
+      }
+
       const device = this.scannedDevices.get(deviceId);
       if (!device) {
         throw new Error('Device not found in scanned devices');
@@ -3825,8 +4039,14 @@ class BLEService {
 
       // Measure initial RSSI and set connection quality
       try {
+        // ✅ DEMO TAG FIX: Check if device is a demo tag before calling native bridge
+        const isDemoTag = connectedDevice.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
+        
         let initialRssi;
-        if (Platform.OS === 'android') {
+        if (isDemoTag) {
+          // DemoTag: Use simulated RSSI from DemoTagSimulator
+          initialRssi = DemoTagSimulator.updateRSSI(deviceId);
+        } else if (Platform.OS === 'android') {
           // Use native Android RSSI reading
           const result = await SampleBridgeAndroid.readDeviceRSSI(deviceId);
           initialRssi = result.rssi;
@@ -3969,8 +4189,492 @@ class BLEService {
   }
 
   // Disconnect from device
+  /**
+   * DemoTag: Connect to demo device
+   */
+  async connectToDemoDevice(deviceId, onConnectionStateChange) {
+    try {
+      const device = this.scannedDevices.get(deviceId);
+      if (!device) {
+        throw new Error('DemoTag: Demo device not found');
+      }
+
+      // DemoTag: Update connection state
+      device.connectionState = CONNECTION_STATES.CONNECTING;
+      this.scannedDevices.set(deviceId, device);
+      
+      if (onConnectionStateChange) {
+        onConnectionStateChange(deviceId, CONNECTION_STATES.CONNECTING);
+      }
+
+      // DemoTag: Simulate connection
+      await DemoTagSimulator.connectDevice(deviceId);
+      
+      // DemoTag: Update device state
+      device.connectionState = CONNECTION_STATES.CONNECTED;
+      this.scannedDevices.set(deviceId, device);
+      this.connectedDevices.set(deviceId, {
+        id: deviceId,
+        name: device.name,
+        isDemoTag: true,
+      });
+
+      // DemoTag: Store device data
+      const demoDevice = DemoTagSimulator.getDemoDevice(deviceId);
+      if (demoDevice && demoDevice.deviceData) {
+        this.deviceDataStore.set(deviceId, demoDevice.deviceData);
+      }
+
+      // ✅ DemoTag: Log connection (matching original tag behavior)
+      this.addConnectionLog(deviceId, 'Connected');
+
+      // DemoTag: Load services (simulate service discovery)
+      await this.loadDemoDeviceServices(deviceId);
+
+      // ✅ Match original tag: Enable notifications FIRST, then start polling
+      // Original tag flow: Service Discovery → Enable Notifications → Start Polling
+      // DemoTag: Start notifications (simulate periodic device status updates)
+      // ✅ FIX: Use polling interval for notifications to keep them in sync (notifications don't trigger auto-sync)
+      const notificationInterval = DemoTagSimulator.getPollingInterval(deviceId);
+      DemoTagSimulator.startNotifications(deviceId, (notification) => {
+        this.handleDemoCharacteristicNotification(deviceId, notification);
+      }, notificationInterval);
+
+      // ✅ Match original tag: Start polling AFTER notifications are enabled
+      // DemoTag: Start live polling (simulate native polling every 30 seconds)
+      this.startDemoDevicePolling(deviceId);
+
+      // DemoTag: Start heartbeat monitoring (like real devices)
+      this.startHeartbeatMonitoring(deviceId);
+
+      // DemoTag: Start connection health check
+      this.startConnectionHealthCheck();
+
+      // DemoTag: Start GET API calling (like real devices)
+      setTimeout(() => {
+        this.startGetApiCalling(deviceId);
+      }, 6000);
+
+      // DemoTag: Start RSSI polling
+      this.startRSSIPolling(deviceId);
+
+      if (onConnectionStateChange) {
+        onConnectionStateChange(deviceId, CONNECTION_STATES.CONNECTED);
+      }
+
+      // DemoTag: Trigger device list update
+      this.scheduleListUpdate();
+
+      console.log(`🏷️ DemoTag: Connected to ${device.name}`);
+      return device;
+    } catch (error) {
+      console.error('🏷️ DemoTag: Connection error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * DemoTag: Load demo device services (simulate service discovery)
+   */
+  async loadDemoDeviceServices(deviceId) {
+    const device = this.scannedDevices.get(deviceId);
+    if (!device || !device.isDemoTag) return;
+
+    // DemoTag: Simulate service discovery
+    const services = [BLE_SERVICES.SMART_TAG, BLE_SERVICES.BATTERY, BLE_SERVICES.DEVICE_INFO];
+    device.services = services;
+    device.characteristics = {
+      [BLE_SERVICES.SMART_TAG]: [
+        BLE_CHARACTERISTICS.SYSTEM_COMMAND,
+        BLE_CHARACTERISTICS.DEVICE_STATUS,
+        BLE_CHARACTERISTICS.DATA_TRANSFER,
+      ],
+      [BLE_SERVICES.BATTERY]: [BLE_CHARACTERISTICS.BATTERY_LEVEL],
+      [BLE_SERVICES.DEVICE_INFO]: [
+        BLE_CHARACTERISTICS.MANUFACTURER_NAME,
+        BLE_CHARACTERISTICS.MODEL_NUMBER,
+        BLE_CHARACTERISTICS.SERIAL_NUMBER,
+        BLE_CHARACTERISTICS.FIRMWARE_REVISION,
+        BLE_CHARACTERISTICS.HARDWARE_REVISION,
+      ],
+    };
+    
+    this.scannedDevices.set(deviceId, device);
+    
+    // ✅ DemoTag: Log service discovery (matching original tag behavior)
+    const totalCharacteristics = Object.values(device.characteristics).flat().length;
+    this.addConnectionLog(deviceId, `Characteristics Discovered (${services.length} services: Smart Tag, Battery, Device Information)`, {
+      serviceCount: services.length,
+      totalCharacteristicCount: totalCharacteristics,
+      services: services.map(serviceUuid => ({
+        serviceUuid: serviceUuid,
+        serviceName: serviceUuid === BLE_SERVICES.SMART_TAG ? 'Smart Tag' : 
+                     serviceUuid === BLE_SERVICES.BATTERY ? 'Battery' : 'Device Information',
+        characteristicCount: device.characteristics[serviceUuid]?.length || 0
+      })),
+      platform: 'demo_tag'
+    });
+  }
+
+  /**
+   * DemoTag: Start live polling for demo device (simulates native polling)
+   * @param {string} deviceId - Device ID
+   * @param {number} [pollIntervalMs] - Optional polling interval in milliseconds. If not provided, uses getPollingInterval()
+   */
+  startDemoDevicePolling(deviceId, pollIntervalMs = null) {
+    // ✅ Match original tag: Initialize polling active map if needed
+    if (!this.demoPollingActive) {
+      this.demoPollingActive = new Map();
+    }
+    
+    // ✅ Match original tag: Check if polling is already active to prevent duplicates
+    if (this.demoPollingActive.get(deviceId) === true) {
+      console.log(`🏷️ DemoTag: Polling already active for ${deviceId}, skipping duplicate start`);
+      return;
+    }
+    
+    // DemoTag: Stop existing polling if any (this also clears the active flag)
+    this.stopDemoDevicePolling(deviceId);
+
+    // ✅ Ensure callback is set (in case initDemoTagMode wasn't called or was called before connection)
+    if (!DemoTagSimulator.hasPollingIntervalCallback()) {
+      console.log(`🏷️ DemoTag: Setting up polling interval callback for ${deviceId}`);
+      DemoTagSimulator.setPollingIntervalCallback((deviceId, intervalSeconds) => {
+        console.log(`🏷️ DemoTag: Polling interval changed to ${intervalSeconds}s for ${deviceId}, restarting polling...`);
+        // Restart polling with new interval
+        const device = this.scannedDevices.get(deviceId);
+        if (device && device.isDemoTag && device.connectionState === CONNECTION_STATES.CONNECTED) {
+          console.log(`🏷️ DemoTag: Restarting polling for ${deviceId} with new interval ${intervalSeconds}s`);
+          // ✅ CRITICAL FIX: Stop polling first to clear the active flag, then start with new interval
+          // This prevents "Polling already active, skipping duplicate start" error
+          this.stopDemoDevicePolling(deviceId);
+          // ✅ CRITICAL: Use the passed interval directly instead of calling getPollingInterval
+          // This ensures we use the exact interval that was just set
+          this.startDemoDevicePolling(deviceId, intervalSeconds * 1000);
+          
+          // ✅ FIX: Also restart notifications with new interval to keep them in sync
+          const notificationInterval = intervalSeconds * 1000;
+          DemoTagSimulator.stopNotifications(deviceId);
+          DemoTagSimulator.startNotifications(deviceId, (notification) => {
+            this.handleDemoCharacteristicNotification(deviceId, notification);
+          }, notificationInterval);
+          console.log(`🏷️ DemoTag: Restarted notifications for ${deviceId} with new interval ${intervalSeconds}s`);
+        } else {
+          console.warn(`🏷️ DemoTag: Cannot restart polling - device not found or not connected:`, {
+            deviceId,
+            deviceExists: !!device,
+            isDemoTag: device?.isDemoTag,
+            connectionState: device?.connectionState
+          });
+        }
+      });
+    }
+
+    // ✅ Get polling interval: use provided interval, or get from DemoTagSimulator (defaults to 30 seconds)
+    const pollInterval = pollIntervalMs !== null ? pollIntervalMs : DemoTagSimulator.getPollingInterval(deviceId);
+    const pollIntervalSeconds = pollInterval / 1000;
+
+    // ✅ Log polling start for demo tag
+    // ✅ FIX: Remove isFromPolling field from Polling Started log (it's the initial start, not a polling read)
+    this.addConnectionLog(deviceId, 'Polling Started', {
+      source: 'demo_tag',
+      pollInterval: pollInterval,
+      pollIntervalSeconds: pollIntervalSeconds
+    });
+
+    // ✅ Match original tag: Mark as active before starting timer
+    this.demoPollingActive.set(deviceId, true);
+    
+    console.log(`🏷️ DemoTag: Starting polling for ${deviceId} with interval ${pollIntervalSeconds}s (${pollInterval}ms)`);
+    const pollingTimer = setInterval(async () => {
+      try {
+        const device = this.scannedDevices.get(deviceId);
+        if (!device || !device.isDemoTag || device.connectionState !== CONNECTION_STATES.CONNECTED) {
+          this.stopDemoDevicePolling(deviceId);
+          return;
+        }
+
+        // ✅ DemoTag: Update RSSI during polling (simulates real device behavior)
+        const previousRssi = device.rssi;
+        const newRssi = DemoTagSimulator.updateRSSI(deviceId);
+        if (newRssi !== null && newRssi !== undefined) {
+          device.rssi = newRssi;
+          this.rssiValues.set(deviceId, newRssi);
+          this.lastRssiUpdate.set(deviceId, Date.now());
+          
+          // ✅ FIX: Reset health check failure counter on successful RSSI update
+          this.healthCheckFailures.delete(deviceId);
+          
+          // ✅ Log RSSI update to connection logs (matching real device behavior)
+          this.addConnectionLog(deviceId, 'RSSI Update', {
+            rssi: newRssi,
+            previousRssi: previousRssi || null,
+            platform: 'demo_tag',
+            source: 'polling'
+          });
+          
+          // Emit RSSI updated event (matching real device behavior)
+          this.emit('rssiUpdated', {
+            deviceId,
+            rssi: newRssi,
+            timestamp: Date.now()
+          });
+          
+          // Check connection quality based on RSSI
+          this.checkRssiConnectionQuality(deviceId, newRssi);
+        }
+
+        // DemoTag: Read device status (simulate native polling)
+        // Note: updateDeviceData in readDeviceStatus automatically generates new records every 30 seconds
+        const statusData = DemoTagSimulator.readDeviceStatus(deviceId);
+        if (statusData) {
+          // ✅ DemoTag: Log device status read (matching original tag behavior)
+          this.addConnectionLog(deviceId, 'Device Status Read', {
+            characteristicUUID: BLE_CHARACTERISTICS.DEVICE_STATUS,
+            source: 'polling',
+            isFromPolling: true
+          });
+          
+          // DemoTag: Trigger device data update (same as real devices)
+          await this.handleDemoDeviceStatusUpdate(deviceId, statusData, true); // isFromPolling=true
+        }
+      } catch (error) {
+        console.error('🏷️ DemoTag: Polling error:', error);
+      }
+    }, pollInterval);
+
+    // DemoTag: Store polling timer
+    if (!this.demoPollingTimers) {
+      this.demoPollingTimers = new Map();
+    }
+    this.demoPollingTimers.set(deviceId, pollingTimer);
+
+    // DemoTag: Do initial poll immediately
+    setTimeout(async () => {
+      try {
+        const device = this.scannedDevices.get(deviceId);
+        if (device && device.isDemoTag) {
+          // ✅ DemoTag: Update RSSI on initial poll
+          const previousRssi = device.rssi;
+          const newRssi = DemoTagSimulator.updateRSSI(deviceId);
+          if (newRssi !== null && newRssi !== undefined) {
+            device.rssi = newRssi;
+            this.rssiValues.set(deviceId, newRssi);
+            this.lastRssiUpdate.set(deviceId, Date.now());
+            
+            // Emit RSSI updated event
+            this.emit('rssiUpdated', {
+              deviceId,
+              rssi: newRssi,
+              timestamp: Date.now()
+            });
+            
+            // Check connection quality
+            this.checkRssiConnectionQuality(deviceId, newRssi);
+          }
+        }
+        
+        const statusData = DemoTagSimulator.readDeviceStatus(deviceId);
+        if (statusData) {
+          await this.handleDemoDeviceStatusUpdate(deviceId, statusData, true);
+        }
+      } catch (error) {
+        console.error('🏷️ DemoTag: Initial poll error:', error);
+      }
+    }, 1000);
+  }
+
+  /**
+   * DemoTag: Stop live polling for demo device
+   */
+  stopDemoDevicePolling(deviceId) {
+    // ✅ Match original tag: Clear active flag first
+    if (this.demoPollingActive) {
+      this.demoPollingActive.set(deviceId, false);
+    }
+    
+    // Stop timer
+    if (this.demoPollingTimers && this.demoPollingTimers.has(deviceId)) {
+      const timer = this.demoPollingTimers.get(deviceId);
+      clearInterval(timer);
+      this.demoPollingTimers.delete(deviceId);
+      console.log(`🏷️ DemoTag: Stopped polling timer for ${deviceId}`);
+    } else {
+      // ✅ Match original tag: Ensure flag is cleared even if timer doesn't exist
+      if (this.demoPollingActive) {
+        this.demoPollingActive.set(deviceId, false);
+      }
+    }
+  }
+
+  /**
+   * DemoTag: Handle device status update (triggers auto-sync like real devices)
+   */
+  async handleDemoDeviceStatusUpdate(deviceId, statusData, isFromPolling = false, isFromNotification = false) {
+    try {
+      // DemoTag: Parse device status
+      const parsedData = BLEDataParser.parseDeviceStatus(statusData);
+      if (!parsedData) return;
+
+      const device = this.scannedDevices.get(deviceId);
+      if (!device || !device.isDemoTag) return;
+
+      // DemoTag: Update device data (same flow as real devices)
+      const currentData = this.deviceDataStore.get(deviceId) || {};
+      const demoDevice = DemoTagSimulator.getDemoDevice(deviceId);
+      
+      // ✅ CRITICAL: Device status doesn't include steps/temperature, so preserve them from current data
+      // Device status only contains: recordCount, batteryVoltage, deviceRTC
+      // ✅ FIX: For demo tags, steps/temperature should ONLY come from synced records
+      // If there are no synced records, we should NOT show random values (matches real device behavior)
+      const latestSyncedRecord = device?.syncRecords && device.syncRecords.length > 0
+        ? device.syncRecords[device.syncRecords.length - 1]
+        : null;
+      
+      // ✅ CRITICAL FIX: Only use steps/temperature from synced records
+      // If no synced records exist, use null/undefined (don't show random values)
+      // This matches real device behavior where steps/temp only appear after first sync
+      // ✅ FIX: Remove fallback to currentData - only use synced records, otherwise null
+      const stepsValue = latestSyncedRecord?.steps !== undefined 
+        ? latestSyncedRecord.steps 
+        : null;
+      
+      const temperatureValue = latestSyncedRecord?.temperature !== undefined 
+        ? latestSyncedRecord.temperature 
+        : null;
+      
+      // ✅ CRITICAL FIX: Calculate totalSteps from all synced records
+      // This ensures totalSteps persists even when new records are generated on device
+      const calculatedTotalSteps = (device?.syncRecords || []).reduce((sum, record) => {
+        return sum + (record.steps || 0);
+      }, 0);
+      const totalStepsValue = calculatedTotalSteps > 0 
+        ? calculatedTotalSteps 
+        : (currentData.totalSteps !== undefined ? currentData.totalSteps : undefined);
+      
+      const updatedData = {
+        ...currentData,
+        ...parsedData,
+        // ✅ FIX: Use steps from latest synced record (matches real device behavior)
+        steps: stepsValue,
+        temperature: temperatureValue,
+        // ✅ CRITICAL FIX: Preserve totalSteps from synced records
+        totalSteps: totalStepsValue,
+        dataSource: 'demo',
+        isFromPolling: isFromPolling,
+      };
+      this.deviceDataStore.set(deviceId, updatedData);
+
+      // DemoTag: Update device in scanned devices
+      device.deviceData = updatedData;
+      this.scannedDevices.set(deviceId, device);
+
+      // DemoTag: Trigger device data update event (same as real devices)
+      if (this.onDeviceDataUpdated) {
+        this.onDeviceDataUpdated(deviceId, updatedData);
+      }
+
+      // ✅ CRITICAL FIX: Only trigger auto-sync if this is from polling, NOT from notifications
+      // Notifications are just for UI updates, auto-sync should only happen on polling (matching original tag)
+      if (!isFromNotification) {
+        // DemoTag: Call handleDeviceDataUpdated to trigger auto-sync (same as real devices)
+        // ✅ CRITICAL FIX: Ensure isFromPolling is passed at top level AND in deviceData
+        // This ensures it's correctly extracted in handleDeviceDataUpdated
+        await this.handleDeviceDataUpdated({
+          deviceId: deviceId,
+          deviceData: {
+            ...updatedData,
+            isFromPolling: isFromPolling, // Also include in deviceData for fallback
+          },
+          recordCount: parsedData.recordCount,
+          rtcValid: parsedData.rtcValid,
+          deviceRTC: parsedData.deviceRTC,
+          isFromPolling: isFromPolling, // Top level for iOS-style extraction
+          dataSource: 'demo',
+          batteryLevel: updatedData.batteryLevel,
+          steps: updatedData.steps,
+          temperature: updatedData.temperature,
+          timestamp: updatedData.timestamp,
+          batteryVoltage: updatedData.batteryVoltage,
+        });
+      } else {
+        // From notification - just update UI, don't trigger auto-sync
+        console.log(`🏷️ DemoTag: Device status update from notification for ${deviceId} - skipping auto-sync (only polling triggers sync)`);
+      }
+
+      // DemoTag: Trigger list update
+      this.scheduleListUpdate();
+    } catch (error) {
+      console.error('🏷️ DemoTag: Error handling device status update:', error);
+    }
+  }
+
+  /**
+   * DemoTag: Handle demo characteristic notification
+   */
+  handleDemoCharacteristicNotification(deviceId, notification) {
+    // ✅ FIX: DemoTag notifications should NOT trigger auto-sync
+    // Only polling should trigger auto-sync (matching original tag behavior)
+    // Notifications are just for UI updates, not for triggering sync
+    // Pass a special flag to indicate this is from notification, not polling
+    this.handleDemoDeviceStatusUpdate(deviceId, notification.data, false, true); // isFromNotification=true
+  }
+
+  /**
+   * DemoTag: Disconnect from demo device
+   */
+  async disconnectFromDemoDevice(deviceId, onConnectionStateChange) {
+    try {
+      const device = this.scannedDevices.get(deviceId);
+      if (!device) return;
+
+      // DemoTag: Stop polling
+      this.stopDemoDevicePolling(deviceId);
+
+      // DemoTag: Stop notifications
+      DemoTagSimulator.stopNotifications(deviceId);
+
+      // DemoTag: Stop monitoring and health checks
+      this.stopMonitoring(deviceId);
+      this.stopHeartbeatMonitoring(deviceId);
+      this.stopRSSIPolling(deviceId);
+      this.stopDeviceStatusPollingFallback(deviceId);
+      this.stopAdaptiveApiCalling(deviceId);
+      this.stopGetApiCalling(deviceId);
+
+      // DemoTag: Disconnect from simulator
+      await DemoTagSimulator.disconnectDevice(deviceId);
+
+      // DemoTag: Update connection state
+      device.connectionState = CONNECTION_STATES.DISCONNECTED;
+      device.lastSeen = Date.now();
+      this.scannedDevices.set(deviceId, device);
+      this.connectedDevices.delete(deviceId);
+
+      // ✅ DemoTag: Log disconnection (matching original tag behavior)
+      this.addConnectionLog(deviceId, 'Disconnected');
+
+      if (onConnectionStateChange) {
+        onConnectionStateChange(deviceId, CONNECTION_STATES.DISCONNECTED);
+      }
+
+      // DemoTag: Trigger device list update
+      this.scheduleListUpdate();
+
+      console.log(`🏷️ DemoTag: Disconnected from ${device.name}`);
+    } catch (error) {
+      console.error('🏷️ DemoTag: Disconnect error:', error);
+      throw error;
+    }
+  }
+
   async disconnectFromDevice(deviceId, onConnectionStateChange) {
     try {
+      // DemoTag: Check if this is a demo device
+      if (DemoTagSimulator.isDemoDevice(deviceId)) {
+        return await this.disconnectFromDemoDevice(deviceId, onConnectionStateChange);
+      }
+
       // ✅ INDUSTRY STANDARD: Upload any pending buffered data before disconnect
       const buffer = this.liveDataBuffers.get(deviceId);
       if (buffer && buffer.length > 0) {
@@ -5081,17 +5785,48 @@ class BLEService {
     // Native code tracks polling reads correctly and sends the flag in the event
     let isFromPolling = parsedData?.isFromPolling;
     
-    // ✅ FALLBACK: If isFromPolling not provided by native code, calculate from timestamps
-    // This is a fallback for older code paths or if native code doesn't send the flag
-    if (isFromPolling === undefined || isFromPolling === null) {
+    // ✅ CRITICAL FIX: For demo tags, ALWAYS override isFromPolling if it's not a manual read
+    // Demo tags use periodic polling, so if not a manual read, it's from polling
+    // This must run BEFORE the fallback logic to ensure demo tags always work
+    const isDemoTag = device?.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
+    // Check both parsedData.dataSource and device.deviceData.dataSource for reliability
+    const isDemoDataSource = parsedData?.dataSource === 'demo' || device?.deviceData?.dataSource === 'demo';
+    if (isDemoTag && isDemoDataSource && !isFromManualRead) {
+      // ✅ CRITICAL FIX: Only override isFromPolling if it's actually from polling
+      // For demo tags, if isFromPolling is explicitly false, it means it's from notification (not polling)
+      // We should NOT override false to true, as notifications should NOT trigger auto-sync
+      // Only override if isFromPolling is undefined/null (meaning it wasn't set)
+      if (isFromPolling === undefined || isFromPolling === null) {
+        // Demo tags use periodic polling, so if not a manual read and isFromPolling not set, assume it's from polling
+        isFromPolling = true;
+        console.log(`🏷️ [AUTO SYNC] Demo tag detected: Setting isFromPolling to true for ${deviceId} (was: ${parsedData?.isFromPolling})`);
+      } else if (isFromPolling === false) {
+        // Explicitly false means it's from notification - don't override, don't trigger auto-sync
+        console.log(`🏷️ [AUTO SYNC] Demo tag detected: isFromPolling is false (from notification) for ${deviceId} - will not trigger auto-sync`);
+      }
+    } else if (isFromPolling === undefined || isFromPolling === null) {
+      // ✅ FALLBACK: If isFromPolling not provided by native code, calculate from timestamps
+      // This is a fallback for older code paths or if native code doesn't send the flag
       // Check if this is from periodic polling (workaround for missing notifications)
-      // Periodic polling happens every ~30 seconds, so if time since last read is ~30s, it's periodic polling
+      // ✅ FIX: Make periodic polling detection dynamic based on actual polling interval
       const lastReadTime = meta.lastDeviceStatusReadTime || 0;
       const timeSinceLastRead = lastReadTime > 0 ? (nowMs - lastReadTime) : 0;
-      const isFromPeriodicPolling = timeSinceLastRead > 25000 && timeSinceLastRead < 35000; // ~30 seconds ± 5s
       
-      // Only skip if it's a manual read, not periodic polling
-      isFromPolling = isFromManualRead && !isFromPeriodicPolling;
+      // Get actual polling interval for demo tags (defaults to 30s if not set)
+      let pollingInterval = 30000; // Default 30 seconds
+      if (isDemoTag) {
+        pollingInterval = DemoTagSimulator.getPollingInterval(deviceId);
+      }
+      
+      // Check if time since last read matches polling interval (±20% tolerance)
+      const pollingIntervalSeconds = pollingInterval / 1000;
+      const tolerance = pollingIntervalSeconds * 0.2; // 20% tolerance
+      const isFromPeriodicPolling = timeSinceLastRead > (pollingIntervalSeconds - tolerance) * 1000 && 
+                                    timeSinceLastRead < (pollingIntervalSeconds + tolerance) * 1000;
+      
+      // For real devices: Only skip if it's a manual read, not periodic polling
+      // ✅ FIX: Logic was inverted - should be: if NOT manual read AND periodic polling, then it's from polling
+      isFromPolling = !isFromManualRead && isFromPeriodicPolling;
     } else {
       // ✅ FIX: Ensure isFromPolling is a boolean (convert truthy/falsy to boolean)
       isFromPolling = isFromPolling === true;
@@ -5974,6 +6709,12 @@ class BLEService {
     const expectedRecordCount = device?.deviceData?.recordCount || 0;
     const actualRecordCount = parsedTransfer.totalRecords || 0;
     
+    // ✅ Log sync start to connection logs (matching original tag behavior)
+    this.addConnectionLog(deviceId, 'Data Sync: Sync Start', {
+      totalRecords: parsedTransfer.totalRecords || actualRecordCount,
+      expectedRecords: actualRecordCount || expectedRecordCount
+    });
+    
     // ✅ FIX ISSUE #3: Track expected records from sync start
     this.syncExpectedRecords.set(deviceId, actualRecordCount || expectedRecordCount);
     
@@ -6033,6 +6774,15 @@ class BLEService {
     }
     
     this.lastSyncCompleteTime.set(deviceId, Date.now());
+    
+    // ✅ Log sync complete to connection logs (matching original tag behavior)
+    this.addConnectionLog(deviceId, 'Data Sync: Sync Complete', {
+      success: parsedTransfer.success,
+      recordsTransmitted: recordsTransmitted,
+      expectedRecords: expectedRecords,
+      receivedRecords: receivedRecords,
+      isIncomplete: isIncomplete
+    });
     
     // ✅ FIX ISSUE #3: Log sync completion with validation
     if (isIncomplete) {
@@ -6117,6 +6867,22 @@ class BLEService {
         latency: syncLatency
       });
       
+      // ✅ DemoTag: Automatically send DATA_SYNC_STOP after sync complete (matching native behavior)
+      // This ensures Demo Tag works exactly like original tag
+      const connectedDevice = this.connectedDevices.get(deviceId);
+      if (connectedDevice && connectedDevice.isDemoTag) {
+        setTimeout(async () => {
+          try {
+            // Send DATA_SYNC_STOP with clearFlashData=true (like native code does after successful sync)
+            const clearFlashData = true;
+            await this.stopDataSync(deviceId, clearFlashData);
+            console.log('🏷️ DemoTag: DATA_SYNC_STOP sent after sync complete');
+          } catch (error) {
+            console.error('🏷️ DemoTag: Failed to send DATA_SYNC_STOP after sync complete:', error);
+          }
+        }, 1000); // Wait 1 second like native code
+      }
+      
     } else {
       this.logStateTransition(deviceId, previousState, 'failed', 'sync failed');
       
@@ -6125,6 +6891,21 @@ class BLEService {
       this.emitUserFeedback(deviceId, 'sync_failed', {
         reason: parsedTransfer.reason || 'sync_failed'
       });
+      
+      // ✅ DemoTag: Send DATA_SYNC_STOP without clearing flash on failure (matching native behavior)
+      const connectedDevice = this.connectedDevices.get(deviceId);
+      if (connectedDevice && connectedDevice.isDemoTag) {
+        setTimeout(async () => {
+          try {
+            // Send DATA_SYNC_STOP with clearFlashData=false (don't clear flash - can retry)
+            const clearFlashData = false;
+            await this.stopDataSync(deviceId, clearFlashData);
+            console.log('🏷️ DemoTag: DATA_SYNC_STOP sent after sync failure (flash NOT cleared)');
+          } catch (error) {
+            console.error('🏷️ DemoTag: Failed to send DATA_SYNC_STOP after sync failure:', error);
+          }
+        }, 1000); // Wait 1 second like native code
+      }
     }
     
     if (this.dataSyncStates && parsedTransfer.success) {
@@ -6175,7 +6956,15 @@ class BLEService {
           // ✅ FIX ISSUE #2: Comprehensive data validation to filter corrupted records
           // Filter out records with invalid data (255°C, 65535 steps, invalid dates)
           
-          const recordTimestamp = record.timestamp || (record.timestampDate ? Math.floor(new Date(record.timestampDate).getTime() / 1000) : null);
+          // DemoTag: Parse timestamp - handle number, Date object, or timestampDate
+          let recordTimestamp = null;
+          if (typeof record.timestamp === 'number') {
+            recordTimestamp = record.timestamp;
+          } else if (record.timestamp instanceof Date) {
+            recordTimestamp = Math.floor(record.timestamp.getTime() / 1000);
+          } else if (record.timestampDate) {
+            recordTimestamp = Math.floor(new Date(record.timestampDate).getTime() / 1000);
+          }
           const currentTimeSeconds = Math.floor(Date.now() / 1000);
           const MIN_VALID_TIMESTAMP = 1577836800; // 2020-01-01 (after Unix epoch)
           const MAX_VALID_TIMESTAMP = currentTimeSeconds + 86400; // Allow 1 day in future for clock drift
@@ -6332,10 +7121,35 @@ class BLEService {
           validCount++;
           
           // ✅ FIX: Update record with adjusted timestamp if it was clamped
+          // ✅ FIX: Ensure timestampDate is always set (create from timestamp if missing)
+          const finalTimestamp = adjustedTimestamp || recordTimestamp;
+          let finalTimestampDate = record.timestampDate;
+          if (!finalTimestampDate && finalTimestamp) {
+            // Create timestampDate string in format "yyyy-MM-dd HH:mm:ss" matching iOS
+            const date = new Date(finalTimestamp * 1000);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            finalTimestampDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+          } else if (timestampAdjusted && finalTimestamp) {
+            // Update timestampDate if timestamp was adjusted
+            const date = new Date(finalTimestamp * 1000);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            finalTimestampDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+          }
+          
           const newRecord = {
             ...record,
-            timestamp: adjustedTimestamp || record.timestamp,
-            timestampDate: timestampAdjusted ? new Date(adjustedTimestamp * 1000).toISOString().replace('T', ' ').substring(0, 19) : record.timestampDate,
+            timestamp: finalTimestamp || record.timestamp,
+            timestampDate: finalTimestampDate || record.timestampDate, // ✅ FIX: Always ensure timestampDate is set
             receivedAt: receivedAt,
             deviceId,
             ...(timestampWarning ? {
@@ -6400,11 +7214,21 @@ class BLEService {
           }
         }
         
+        // ✅ FIX: Include sync progress fields (totalReceived, totalExpected) for UI
+        const syncState = this.dataSyncStates?.get(deviceId);
+        const totalReceived = syncState?.recordsReceived || 0;
+        const totalExpected = syncState?.expectedRecords || syncState?.totalRecords || 0;
+        const recordsReceived = parsedTransfer.recordCount || 0;
+        
         this.emit('deviceDataUpdate', {
           deviceId,
           type: 'sync_records',
           records: parsedTransfer.records,
-          totalRecords: device.syncRecords.length
+          totalRecords: device.syncRecords.length,
+          // ✅ FIX: Add sync progress fields for UI
+          totalReceived: totalReceived,
+          totalExpected: totalExpected,
+          recordsReceived: recordsReceived
         });
       }
     }
@@ -6519,6 +7343,17 @@ class BLEService {
             case SYSTEM_COMMAND_CONSTANTS.CMD.GET_DIAGNOSTICS:
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.SET_DATA_INTERVAL:
+              // ✅ DemoTag: Polling restart is already handled by the callback in DemoTagSimulator
+              // The callback (onPollingIntervalChanged) is called when SET_DATA_INTERVAL is processed,
+              // which triggers stopDemoDevicePolling + startDemoDevicePolling with the new interval.
+              // No need to duplicate the restart here - it would cause race conditions.
+              const connectedDeviceForInterval = this.connectedDevices.get(deviceId);
+              const isDemoTagForInterval = connectedDeviceForInterval?.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
+              if (isDemoTagForInterval) {
+                const newInterval = DemoTagSimulator.getPollingInterval(deviceId);
+                const newIntervalSeconds = newInterval / 1000;
+                console.log(`🏷️ DemoTag: SET_DATA_INTERVAL successful for ${deviceId}, polling should be restarted with new interval ${newIntervalSeconds}s (${newInterval}ms) via callback`);
+              }
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START:
               break;
@@ -6527,19 +7362,35 @@ class BLEService {
               // Only clear if:
               // 1. We tracked that clearFlashData was true when sending the command
               // 2. There's no active sync (to avoid clearing during chunked sync)
+              // 3. Device is NOT a demo tag (demo tags should preserve Redux records even when "flash" is cleared)
               // During chunked sync, records are cleared when sync_complete is received
               const hasActiveSync = this.dataSyncStates?.get(deviceId)?.isActive === true;
-              if (this.pendingFlashClearCommands && this.pendingFlashClearCommands.get(deviceId) && !hasActiveSync) {
+              const connectedDevice = this.connectedDevices.get(deviceId);
+              const isDemoTag = connectedDevice?.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
+              
+              if (this.pendingFlashClearCommands && this.pendingFlashClearCommands.get(deviceId) && !hasActiveSync && !isDemoTag) {
                 // Flash was cleared on device and sync is not active, so clear historical records in Redux
+                // ✅ DEMO TAG FIX: Skip clearing Redux records for demo tags - they should preserve historical data
                 try {
                   const { clearDeviceRecords } = require('../../feature/historicalRecordsSlice/historicalRecordsSlice');
-                  const store = require('../../feature/Store').default;
-                  store.dispatch(clearDeviceRecords({ deviceId }));
-                  console.log(`✅ Cleared Redux historical records for ${deviceId} after flash clear (no active sync)`);
+                  // ✅ FIX: Use named export instead of .default (store is exported as { store }, not default)
+                  const storeModule = require('../../feature/Store');
+                  const storeToUse = storeModule.store || storeModule.default?.store || store;
+                  if (storeToUse && storeToUse.dispatch) {
+                    storeToUse.dispatch(clearDeviceRecords({ deviceId }));
+                    console.log(`✅ Cleared Redux historical records for ${deviceId} after flash clear (no active sync)`);
+                  } else {
+                    console.warn(`⚠️ Redux store not available for clearing records`);
+                  }
                 } catch (error) {
                   console.warn(`⚠️ Failed to clear Redux historical records:`, error);
                 }
                 // Remove the tracking flag
+                this.pendingFlashClearCommands.delete(deviceId);
+              } else if (isDemoTag && this.pendingFlashClearCommands && this.pendingFlashClearCommands.get(deviceId)) {
+                // ✅ DEMO TAG FIX: For demo tags, just remove the tracking flag without clearing Redux
+                // Demo tag's internal "flash" is cleared, but Redux records should persist
+                console.log(`🏷️ DemoTag: Flash cleared on device, but preserving Redux historical records for ${deviceId}`);
                 this.pendingFlashClearCommands.delete(deviceId);
               }
               break;
@@ -6584,6 +7435,11 @@ class BLEService {
 
   async readCharacteristic(deviceId, serviceUUID, characteristicUUID) {
     try {
+      // DemoTag: Check if this is a demo device
+      if (DemoTagSimulator.isDemoDevice(deviceId)) {
+        return await this.readDemoCharacteristic(deviceId, serviceUUID, characteristicUUID);
+      }
+
       return await (this.operationQueue = this.operationQueue.then(async () => {
         if (Platform.OS === 'android') {
           const result = await SampleBridgeAndroid.readCharacteristicForService(
@@ -6618,8 +7474,276 @@ class BLEService {
     }
   }
 
+  /**
+   * DemoTag: Read demo characteristic
+   */
+  async readDemoCharacteristic(deviceId, serviceUUID, characteristicUUID) {
+    try {
+      // ✅ DemoTag: Log characteristic read (matching original tag behavior)
+      // Only log non-data-transfer reads to avoid excessive logging during sync
+      if (characteristicUUID !== BLE_CHARACTERISTICS.DATA_TRANSFER) {
+        const characteristicName = characteristicUUID === BLE_CHARACTERISTICS.DEVICE_STATUS ? 'Device Status' :
+                                   characteristicUUID === BLE_CHARACTERISTICS.BATTERY_LEVEL ? 'Battery Level' :
+                                   characteristicUUID === BLE_CHARACTERISTICS.MANUFACTURER_NAME ? 'Manufacturer Name' :
+                                   characteristicUUID === BLE_CHARACTERISTICS.MODEL_NUMBER ? 'Model Number' :
+                                   characteristicUUID === BLE_CHARACTERISTICS.SERIAL_NUMBER ? 'Serial Number' :
+                                   characteristicUUID === BLE_CHARACTERISTICS.FIRMWARE_REVISION ? 'Firmware Revision' :
+                                   characteristicUUID === BLE_CHARACTERISTICS.HARDWARE_REVISION ? 'Hardware Revision' :
+                                   characteristicUUID;
+        
+        this.addConnectionLog(deviceId, `Read Characteristic: ${characteristicName}`, {
+          characteristicUUID: characteristicUUID,
+          serviceUUID: serviceUUID,
+          source: 'demo_tag'
+        });
+      }
+      
+      // DemoTag: Handle different characteristics
+      if (characteristicUUID === BLE_CHARACTERISTICS.DEVICE_STATUS) {
+        return DemoTagSimulator.readDeviceStatus(deviceId);
+      } else if (characteristicUUID === BLE_CHARACTERISTICS.BATTERY_LEVEL) {
+        const device = DemoTagSimulator.getDemoDevice(deviceId);
+        if (device && device.deviceData) {
+          const batteryLevel = Buffer.from([device.deviceData.batteryLevel]);
+          return batteryLevel.toString('base64');
+        }
+      } else if (characteristicUUID === BLE_CHARACTERISTICS.DATA_TRANSFER) {
+        // DemoTag: Handle data transfer reads (for data sync)
+        return this.readDemoDataTransfer(deviceId);
+      } else if ([
+        BLE_CHARACTERISTICS.MANUFACTURER_NAME,
+        BLE_CHARACTERISTICS.MODEL_NUMBER,
+        BLE_CHARACTERISTICS.SERIAL_NUMBER,
+        BLE_CHARACTERISTICS.FIRMWARE_REVISION,
+        BLE_CHARACTERISTICS.HARDWARE_REVISION,
+      ].includes(characteristicUUID)) {
+        return DemoTagSimulator.readDeviceInfo(deviceId, characteristicUUID);
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('🏷️ DemoTag: Error reading characteristic:', error);
+      return null;
+    }
+  }
+
+  /**
+   * DemoTag: Start data sync flow (simulates native data sync)
+   */
+  async startDemoDataSyncFlow(deviceId) {
+    try {
+      // DemoTag: Get records
+      const records = DemoTagSimulator.historicalRecords.get(deviceId) || [];
+      const recordCount = records.length;
+      
+      if (recordCount === 0) {
+        // DemoTag: No records, send sync_complete with 0 records
+        const syncComplete = DemoTagSimulator.completeDataSync(deviceId, 0);
+        this.handleDataTransfer(deviceId, syncComplete);
+        return;
+      }
+
+      // DemoTag: Send sync_start
+      const syncStart = DemoTagSimulator.startDataSync(deviceId);
+      this.handleDataTransfer(deviceId, syncStart);
+
+      // DemoTag: Send records in batches (2 records per packet, like real device)
+      const sendNextBatch = () => {
+        const syncPosition = DemoTagSimulator.getSyncPosition(deviceId);
+        const remainingRecords = records.slice(syncPosition);
+        
+        if (remainingRecords.length === 0) {
+          // DemoTag: All records sent, send sync_complete
+          DemoTagSimulator.clearSyncPosition(deviceId);
+          const syncComplete = DemoTagSimulator.completeDataSync(deviceId, recordCount);
+          setTimeout(() => {
+            this.handleDataTransfer(deviceId, syncComplete);
+          }, 100);
+          return;
+        }
+
+        // DemoTag: Send next batch (2 records)
+        const recordData = DemoTagSimulator.getNextDataRecords(deviceId, 2, syncPosition);
+        
+        if (recordData) {
+          setTimeout(() => {
+            this.handleDataTransfer(deviceId, recordData);
+            // DemoTag: Update sync position
+            DemoTagSimulator.setSyncPosition(deviceId, syncPosition + 2);
+            // DemoTag: Send next batch after short delay (simulate native read timing)
+            setTimeout(sendNextBatch, 150);
+          }, 50);
+        } else {
+          // DemoTag: No more records, send sync_complete
+          DemoTagSimulator.clearSyncPosition(deviceId);
+          const syncComplete = DemoTagSimulator.completeDataSync(deviceId, recordCount);
+          setTimeout(() => {
+            this.handleDataTransfer(deviceId, syncComplete);
+          }, 100);
+        }
+      };
+
+      // DemoTag: Start sending records after sync_start
+      setTimeout(sendNextBatch, 200);
+    } catch (error) {
+      console.error('🏷️ DemoTag: Error starting data sync:', error);
+    }
+  }
+
+  /**
+   * DemoTag: Read data transfer characteristic (returns next sync data)
+   */
+  readDemoDataTransfer(deviceId) {
+    // DemoTag: Check if sync is active
+    const syncState = this.dataSyncStates?.get(deviceId);
+    if (!syncState || !syncState.isActive) {
+      return null;
+    }
+
+    const syncPosition = DemoTagSimulator.getSyncPosition(deviceId);
+    const records = DemoTagSimulator.historicalRecords.get(deviceId) || [];
+    
+    // DemoTag: If at start, return sync_start
+    if (syncPosition === 0 && syncState.recordsReceived === 0) {
+      const syncStart = DemoTagSimulator.startDataSync(deviceId);
+      return syncStart;
+    }
+
+    // DemoTag: If all records sent, return sync_complete
+    if (syncPosition >= records.length) {
+      DemoTagSimulator.clearSyncPosition(deviceId);
+      const syncComplete = DemoTagSimulator.completeDataSync(deviceId, records.length);
+      return syncComplete;
+    }
+
+    // DemoTag: Return next batch of records
+    const recordData = DemoTagSimulator.getNextDataRecords(deviceId, 2, syncPosition);
+    if (recordData) {
+      // DemoTag: Update sync position for next read
+      DemoTagSimulator.setSyncPosition(deviceId, syncPosition + 2);
+    }
+    
+    return recordData;
+  }
+
+  /**
+   * DemoTag: Write demo characteristic
+   */
+  async writeDemoCharacteristic(deviceId, characteristicUUID, data, withResponse = true) {
+    try {
+      // DemoTag: Convert data to buffer
+      let dataBuffer;
+      if (data instanceof Uint8Array) {
+        dataBuffer = Buffer.from(data);
+      } else if (Array.isArray(data)) {
+        dataBuffer = Buffer.from(data);
+      } else if (typeof data === 'string') {
+        // Assume hex string
+        dataBuffer = Buffer.from(data, 'hex');
+      } else {
+        dataBuffer = Buffer.from(data);
+      }
+
+      // DemoTag: Handle system command
+      if (characteristicUUID === BLE_CHARACTERISTICS.SYSTEM_COMMAND) {
+        // DemoTag: Parse command
+        const requestId = dataBuffer.readUInt8(0);
+        const commandId = dataBuffer.readUInt8(1);
+        const commandLength = dataBuffer.readUInt8(2);
+        const commandData = dataBuffer.slice(3, 3 + commandLength);
+
+        // ✅ DemoTag: Log command sent to connection logs (matching original tag behavior)
+        const commandName = this.getCommandName(commandId);
+        const commandHex = Array.from(dataBuffer).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ');
+        this.addConnectionLog(deviceId, `Command: ${commandName}`, {
+          commandId: `0x${commandId.toString(16).padStart(2, '0')}`,
+          commandName: commandName,
+          commandHex: commandHex,
+          payloadLength: commandLength,
+          source: 'demo_tag'
+        });
+
+        // DemoTag: Handle command
+        const response = await DemoTagSimulator.handleSystemCommand(deviceId, commandId, commandData);
+        
+        // DemoTag: If DATA_SYNC_START, start data sync flow
+        if (commandId === SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START) {
+          // DemoTag: Initialize sync state
+          if (!this.dataSyncStates) {
+            this.dataSyncStates = new Map();
+          }
+          const records = DemoTagSimulator.historicalRecords.get(deviceId) || [];
+          this.dataSyncStates.set(deviceId, {
+            isActive: true,
+            startTime: Date.now(),
+            recordsReceived: 0,
+            totalRecords: records.length,
+            expectedRecords: records.length,
+            lastActivity: Date.now(),
+          });
+          DemoTagSimulator.setSyncPosition(deviceId, 0);
+          
+          // DemoTag: Start sending sync data (simulate native reading DATA_TRANSFER)
+          setTimeout(() => {
+            this.startDemoDataSyncFlow(deviceId);
+          }, 200);
+        }
+        
+        // DemoTag: Simulate response notification
+        if (response) {
+          // DemoTag: Response is base64 string, convert to Buffer first
+          const responseBuffer = Buffer.from(response, 'base64');
+          const responseHex = responseBuffer.toString('hex');
+          const commandIdFromResponse = responseBuffer.readUInt8(1);
+          const responseStatus = responseBuffer.readUInt8(3);
+          
+          setTimeout(() => {
+            this.handleNativeSystemCommandResponse({
+              deviceId: deviceId,
+              commandId: commandIdFromResponse,
+              rawResponse: responseHex,
+              rawData: responseHex,
+              dataLength: responseBuffer.length,
+              responseStatus: responseStatus,
+              status: responseStatus === SYSTEM_COMMAND_CONSTANTS.STATUS.SUCCESS ? 'success' : 'error',
+              commandName: this.getCommandName(commandIdFromResponse),
+              characteristicUUID: BLE_CHARACTERISTICS.SYSTEM_COMMAND,
+            });
+          }, 100);
+        } else {
+          // ✅ DemoTag: Log response even if no response data (for commands that don't return data)
+          const responseCommandName = this.getCommandName(commandId);
+          this.addConnectionLog(deviceId, `Response: ${responseCommandName}`, {
+            commandId: `0x${commandId.toString(16).padStart(2, '0')}`,
+            commandName: responseCommandName,
+            success: true,
+            source: 'demo_tag'
+          });
+        }
+
+        return true;
+      }
+
+      // DemoTag: Handle data transfer (for data sync)
+      if (characteristicUUID === BLE_CHARACTERISTICS.DATA_TRANSFER) {
+        // DemoTag: Data sync is handled separately
+        return true;
+      }
+
+      return true;
+    } catch (error) {
+      console.error('🏷️ DemoTag: Error writing characteristic:', error);
+      throw error;
+    }
+  }
+
   async writeCharacteristic(deviceId, characteristicUUID, data, withResponse = true, serviceUUID = null) {
     try {
+      // DemoTag: Check if this is a demo device
+      if (DemoTagSimulator.isDemoDevice(deviceId)) {
+        return await this.writeDemoCharacteristic(deviceId, characteristicUUID, data, withResponse);
+      }
+
       return await (this.operationQueue = this.operationQueue.then(async () => {
         let dataToSend;
         if (data instanceof Uint8Array) {
@@ -7333,6 +8457,26 @@ class BLEService {
         return { success: false, error: 'Device not connected' };
       }
 
+      // DemoTag: Route system commands to demo handler
+      if (device.isDemoTag) {
+        const packet = new Array(SYSTEM_COMMAND_CONSTANTS.PACKET_SIZE).fill(0);
+        payloadToSend = (Array.isArray(payload) ? payload : []).slice(0);
+        
+        packet[SYSTEM_COMMAND_CONSTANTS.REQUEST_FORMAT.REQUEST_ID_OFFSET] = SYSTEM_COMMAND_CONSTANTS.REQUEST_ID;
+        packet[SYSTEM_COMMAND_CONSTANTS.REQUEST_FORMAT.COMMAND_ID_OFFSET] = command;
+        packet[SYSTEM_COMMAND_CONSTANTS.REQUEST_FORMAT.COMMAND_LENGTH_OFFSET] = payloadToSend.length;
+        
+        for (let i = 0; i < payloadToSend.length && i < 17; i++) {
+          packet[SYSTEM_COMMAND_CONSTANTS.REQUEST_FORMAT.COMMAND_DATA_OFFSET + i] = payloadToSend[i];
+        }
+        
+        // DemoTag: Write to demo characteristic (this will handle the command and emit response)
+        await this.writeDemoCharacteristic(deviceId, BLE_CHARACTERISTICS.SYSTEM_COMMAND, packet, true);
+        
+        const duration = Date.now() - startTime;
+        return { success: true, duration, commandName };
+      }
+
       if (Platform.OS === 'android') {
         const scannedDevice = this.scannedDevices.get(deviceId);
         if (!scannedDevice || !scannedDevice.services || !scannedDevice.characteristics) {
@@ -7801,13 +8945,13 @@ class BLEService {
         };
       }
       
-      const device = this.scannedDevices.get(deviceId);
-      if (device) {
-        device.syncRecordsBeforeSync = device.syncRecords ? device.syncRecords.length : 0;
+      const scannedDevice = this.scannedDevices.get(deviceId);
+      if (scannedDevice) {
+        scannedDevice.syncRecordsBeforeSync = scannedDevice.syncRecords ? scannedDevice.syncRecords.length : 0;
       }
       
       // ✅ FIX ISSUE #3: Track expected record count from device status
-      const expectedRecords = device?.deviceData?.recordCount || 0;
+      const expectedRecords = scannedDevice?.deviceData?.recordCount || 0;
       this.syncExpectedRecords.set(deviceId, expectedRecords);
       
       // ✅ FIX ISSUE #3: Set sync timeout
@@ -7819,6 +8963,34 @@ class BLEService {
         this.handleSyncTimeout(deviceId);
       }, this.SYNC_TIMEOUT_MS);
       this.syncTimeouts.set(deviceId, syncTimeout);
+      
+      // ✅ DEMO TAG FIX: Check if device is a demo tag before calling native bridge
+      const connectedDevice = this.connectedDevices.get(deviceId);
+      const isDemoTag = connectedDevice?.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
+      
+      if (isDemoTag) {
+        // DemoTag: Handle data sync in JavaScript using sendSystemCommand
+        // This will route to writeDemoCharacteristic which handles demo tags
+        console.log(`🏷️ DemoTag: Starting data sync for ${deviceId} (handled in JS)`);
+        
+        // ✅ FIX ISSUE #4 & #5: Use validated command sending
+        const result = await this.sendSystemCommandWithValidation(deviceId, SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START, [0x00]);
+        
+        if (!this.dataSyncStates) {
+          this.dataSyncStates = new Map();
+        }
+        
+        this.dataSyncStates.set(deviceId, {
+          isActive: true,
+          startTime: Date.now(),
+          recordsReceived: 0,
+          totalRecords: expectedRecords, // ✅ FIX ISSUE #3: Track expected records
+          lastActivity: Date.now(),
+          expectedRecords: expectedRecords
+        });
+        
+        return result;
+      }
       
       if (Platform.OS === 'android' && SampleBridgeAndroid) {
         try {
@@ -8779,9 +9951,15 @@ class BLEService {
         const device = this.connectedDevices.get(deviceId);
         if (!device) continue;
 
+        // ✅ DEMO TAG FIX: Check if device is a demo tag before calling native bridge
+        const isDemoTag = device.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
+        
         // Try to read RSSI as a connection health check and measure quality
         let rssi;
-        if (Platform.OS === 'android') {
+        if (isDemoTag) {
+          // DemoTag: Use simulated RSSI from DemoTagSimulator
+          rssi = DemoTagSimulator.updateRSSI(deviceId);
+        } else if (Platform.OS === 'android') {
           // Use native Android RSSI reading for health check
           try {
             const result = await SampleBridgeAndroid.readDeviceRSSI(deviceId);
@@ -9605,6 +10783,31 @@ class BLEService {
     }
   }
 
+  /**
+   * ✅ Handle polling started events from native code
+   * Logs when polling starts for original tags
+   */
+  handlePollingStarted(eventData) {
+    try {
+      const { deviceId, intervalSeconds, pollInterval } = eventData;
+      
+      if (!deviceId) {
+        return;
+      }
+      
+      const interval = intervalSeconds || pollInterval || 'Unknown';
+      
+      this.addConnectionLog(deviceId, 'Polling Started', {
+        intervalSeconds: interval,
+        pollInterval: typeof interval === 'number' ? interval * 1000 : interval,
+        source: 'native',
+        isFromPolling: false
+      });
+    } catch (error) {
+      console.error('Error handling polling started event:', error);
+    }
+  }
+
   handleNativeSystemCommandResponse(eventData) {
     const { type, deviceId, commandId, rawData, rawResponse, dataLength, responseStatus, status, commandName, firmwareVersion, hardwareVersion } = eventData;
     
@@ -9918,10 +11121,35 @@ class BLEService {
               validRecordsCount++;
               
               // ✅ FIX: Update record with adjusted timestamp if it was clamped
+              // ✅ FIX: Ensure timestampDate is always set (create from timestamp if missing)
+              const finalTimestamp = adjustedTimestamp || recordTimestamp;
+              let finalTimestampDate = record.timestampDate;
+              if (!finalTimestampDate && finalTimestamp) {
+                // Create timestampDate string in format "yyyy-MM-dd HH:mm:ss" matching iOS
+                const date = new Date(finalTimestamp * 1000);
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                const hours = String(date.getHours()).padStart(2, '0');
+                const minutes = String(date.getMinutes()).padStart(2, '0');
+                const seconds = String(date.getSeconds()).padStart(2, '0');
+                finalTimestampDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+              } else if (timestampAdjusted && finalTimestamp) {
+                // Update timestampDate if timestamp was adjusted
+                const date = new Date(finalTimestamp * 1000);
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                const hours = String(date.getHours()).padStart(2, '0');
+                const minutes = String(date.getMinutes()).padStart(2, '0');
+                const seconds = String(date.getSeconds()).padStart(2, '0');
+                finalTimestampDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+              }
+              
               const newRecord = {
                 ...record,
-                timestamp: adjustedTimestamp || record.timestamp,
-                timestampDate: timestampAdjusted ? new Date(adjustedTimestamp * 1000).toISOString().replace('T', ' ').substring(0, 19) : record.timestampDate,
+                timestamp: finalTimestamp || record.timestamp,
+                timestampDate: finalTimestampDate || record.timestampDate, // ✅ FIX: Always ensure timestampDate is set
                 temperature: record.temperature,
                 steps: record.steps,
                 receivedAt: receivedAt,

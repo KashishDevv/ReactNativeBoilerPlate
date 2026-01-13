@@ -24,6 +24,7 @@ import android.os.ParcelUuid;
 import android.util.Log;
 import androidx.core.app.ActivityCompat;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,6 +56,7 @@ public class BLEConnectionManager {
     
     // Connection management
     private Map<String, BluetoothGatt> connectedGatts = new ConcurrentHashMap<>();
+    private final Object gattLock = new Object(); // ✅ FIX #2: Synchronization lock for connectedGatts
     private Map<String, DeviceConnectionState> deviceStates = new ConcurrentHashMap<>();
     private Map<String, List<BLEOperation>> operationQueues = new ConcurrentHashMap<>();
     private Map<String, AtomicReference<BLEOperation>> pendingOperations = new ConcurrentHashMap<>();
@@ -143,27 +145,30 @@ public class BLEConnectionManager {
             Log.e(TAG, "Bluetooth adapter not available");
         }
         
-        setupBackgroundScan();
+        // ✅ REMOVED: Background scan setup - BLEBackgroundReceiver removed
+        // setupBackgroundScan();
     }
     
-    private void setupBackgroundScan() {
-        Log.d(TAG, "🔧 Setting up background scan with PendingIntent");
-        
-        // Create intent for background scan results
-        scanIntent = new Intent(context, BLEBackgroundReceiver.class);
-        scanIntent.setAction("com.reactnativeboilerplate.BLE_SCAN_RESULT");
-        // Explicitly scope to our package to satisfy ContextMap lookups
-        scanIntent.setPackage(context.getPackageName());
-        
-        // Create PendingIntent for background scanning
-        int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? 
-                   android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE :
-                   android.app.PendingIntent.FLAG_UPDATE_CURRENT;
-        
-        pendingIntent = android.app.PendingIntent.getBroadcast(context, 0, scanIntent, flags);
-        
-        Log.d(TAG, "✅ Background scan setup complete");
-    }
+    // ✅ REMOVED: setupBackgroundScan() - BLEBackgroundReceiver removed
+    // Background scanning now handled by foreground service only
+    // private void setupBackgroundScan() {
+    //     Log.d(TAG, "🔧 Setting up background scan with PendingIntent");
+    //     
+    //     // Create intent for background scan results
+    //     scanIntent = new Intent(context, BLEBackgroundReceiver.class);
+    //     scanIntent.setAction("com.reactnativeboilerplate.BLE_SCAN_RESULT");
+    //     // Explicitly scope to our package to satisfy ContextMap lookups
+    //     scanIntent.setPackage(context.getPackageName());
+    //     
+    //     // Create PendingIntent for background scanning
+    //     int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? 
+    //                android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE :
+    //                android.app.PendingIntent.FLAG_UPDATE_CURRENT;
+    //     
+    //     pendingIntent = android.app.PendingIntent.getBroadcast(context, 0, scanIntent, flags);
+    //     
+    //     Log.d(TAG, "✅ Background scan setup complete");
+    // }
     
     public void setForegroundService(BLEForegroundService service) {
         this.foregroundService = service;
@@ -321,6 +326,41 @@ public class BLEConnectionManager {
         return state != null && state.state == ConnectionState.CONNECTED;
     }
     
+    // ✅ Get GATT connection for a device
+    public BluetoothGatt getGatt(String deviceId) {
+        synchronized(gattLock) {
+            return connectedGatts.get(deviceId);
+        }
+    }
+    
+    // ✅ FIX #1: Single source of truth - Public accessors for connected devices
+    /**
+     * Get the count of connected devices (for health checks)
+     */
+    public int getConnectedDeviceCount() {
+        synchronized(gattLock) {
+            return connectedGatts.size();
+        }
+    }
+    
+    /**
+     * Get all connected device IDs
+     */
+    public Set<String> getConnectedDeviceIds() {
+        synchronized(gattLock) {
+            return new HashSet<>(connectedGatts.keySet());
+        }
+    }
+    
+    /**
+     * Check if device is in connected map (for idempotency checks)
+     */
+    public boolean isDeviceInConnectedMap(String deviceId) {
+        synchronized(gattLock) {
+            return connectedGatts.containsKey(deviceId);
+        }
+    }
+    
     private boolean isSmartTagDevice(BluetoothDevice device) {
         // Check if device has Smart Tag service UUID in its advertised services
         // This is a simplified check - in practice, you'd need to scan for the device first
@@ -350,8 +390,14 @@ public class BLEConnectionManager {
             deviceStates.put(deviceId, state);
         }
         
-        if (state.state == ConnectionState.CONNECTED || state.state == ConnectionState.CONNECTING) {
-            Log.w(TAG, "Device " + deviceId + " already connected or connecting");
+        // ✅ FIX #5: Enhanced connection check - check both state AND actual connected map
+        boolean isInConnectedMap = isDeviceInConnectedMap(deviceId);
+        if ((state.state == ConnectionState.CONNECTED || state.state == ConnectionState.CONNECTING) || isInConnectedMap) {
+            if (isInConnectedMap) {
+                Log.w(TAG, "Device " + deviceId + " already in connected map - skipping duplicate connection");
+            } else {
+                Log.w(TAG, "Device " + deviceId + " already connected or connecting");
+            }
             return;
         }
         
@@ -383,7 +429,15 @@ public class BLEConnectionManager {
                     deviceState.lastConnectionTime = System.currentTimeMillis();
                     deviceState.reconnectAttempts = 0;
                     
-                    connectedGatts.put(deviceId, gatt);
+                    // ✅ FIX #2 & #4: Synchronized write with duplicate guard
+                    synchronized(gattLock) {
+                        if (!connectedGatts.containsKey(deviceId)) {
+                            connectedGatts.put(deviceId, gatt);
+                            Log.d(TAG, "✅ Added device to connected devices map: " + deviceId);
+                        } else {
+                            Log.w(TAG, "⚠️ Device already in connected map, skipping duplicate add: " + deviceId);
+                        }
+                    }
                     
                     // Notify foreground service
                     if (foregroundService != null) {
@@ -401,7 +455,11 @@ public class BLEConnectionManager {
                     deviceState.state = ConnectionState.DISCONNECTED;
                     deviceState.gatt = null;
                     
-                    connectedGatts.remove(deviceId);
+                    // ✅ FIX #2: Synchronized removal
+                    synchronized(gattLock) {
+                        connectedGatts.remove(deviceId);
+                        Log.d(TAG, "✅ Removed device from connected devices map: " + deviceId);
+                    }
                     
                     // Notify foreground service
                     if (foregroundService != null) {
@@ -415,6 +473,13 @@ public class BLEConnectionManager {
                     
                     // Enhanced reconnection logic for companion devices
                     if (!deviceState.isManualDisconnect) {
+                        // ✅ CRITICAL FIX: Trigger immediate presence scan when device disconnects
+                        // This helps detect if device is still in range but connection was lost
+                        if (companionService != null) {
+                            Log.d(TAG, "🔍 Triggering immediate presence scan for disconnected device: " + deviceId);
+                            companionService.onDeviceDisconnected(deviceId);
+                        }
+                        
                         if (companionService != null && companionService.isDeviceInRange(deviceId)) {
                             // Device is in range but disconnected - immediate reconnection
                             Log.d(TAG, "🔄 Device in range but disconnected, attempting immediate reconnection: " + deviceId);
@@ -425,6 +490,11 @@ public class BLEConnectionManager {
                             scheduleReconnection(deviceId, device, 0); // Use exponential backoff
                         } else {
                             Log.d(TAG, "❌ Max reconnection attempts reached for device: " + deviceId);
+                            // ✅ CRITICAL FIX: Even after max attempts, continue monitoring for device coming back in range
+                            // The CompanionService will detect when device comes back and trigger reconnection
+                            if (companionService != null) {
+                                Log.d(TAG, "👁️ Max attempts reached, but continuing to monitor device presence: " + deviceId);
+                            }
                         }
                     }
                 }
@@ -508,7 +578,10 @@ public class BLEConnectionManager {
         gatt.close();
         
         // Clean up
-        connectedGatts.remove(deviceId);
+        // ✅ FIX #2: Synchronized removal
+        synchronized(gattLock) {
+            connectedGatts.remove(deviceId);
+        }
         connectionCallbacks.remove(deviceId);
         dataCallbacks.remove(deviceId);
         operationQueues.remove(deviceId);
@@ -541,14 +614,41 @@ public class BLEConnectionManager {
         Log.d(TAG, "Scheduling reconnection for " + deviceId + " in " + delay + "ms (attempt " + state.reconnectAttempts + ")");
         
         mainHandler.postDelayed(() -> {
-            if (!state.isManualDisconnect && state.state == ConnectionState.DISCONNECTED) {
-                // Check if device is still in range before attempting reconnection
-                if (companionService == null || companionService.isDeviceInRange(deviceId)) {
-                    Log.d(TAG, "🔄 Attempting reconnection to device: " + deviceId);
-                    connectToDevice(deviceId, device, connectionCallbacks.get(deviceId));
-                } else {
-                    Log.d(TAG, "⏸️ Device not in range, skipping reconnection: " + deviceId);
-                }
+            // Re-check state in case it changed during delay
+            DeviceConnectionState currentState = deviceStates.get(deviceId);
+            if (currentState == null || currentState.isManualDisconnect || currentState.state != ConnectionState.DISCONNECTED) {
+                Log.d(TAG, "⏸️ Skipping reconnection - state changed: " + deviceId);
+                return;
+            }
+            
+            // ✅ CRITICAL FIX: Before attempting reconnection, trigger a fresh presence scan
+            // This ensures we have the latest device presence status
+            if (companionService != null) {
+                Log.d(TAG, "🔍 Triggering presence scan before reconnection attempt: " + deviceId);
+                companionService.performImmediatePresenceScan(deviceId);
+                
+                // Wait a bit for scan to complete, then check presence
+                mainHandler.postDelayed(() -> {
+                    // Re-check state again after scan delay
+                    DeviceConnectionState stateAfterScan = deviceStates.get(deviceId);
+                    if (stateAfterScan == null || stateAfterScan.isManualDisconnect || stateAfterScan.state != ConnectionState.DISCONNECTED) {
+                        Log.d(TAG, "⏸️ Skipping reconnection after scan - state changed: " + deviceId);
+                        return;
+                    }
+                    
+                    if (companionService.isDeviceInRange(deviceId)) {
+                        Log.d(TAG, "🔄 Device confirmed in range, attempting reconnection: " + deviceId);
+                        connectToDevice(deviceId, device, connectionCallbacks.get(deviceId));
+                    } else {
+                        Log.d(TAG, "⏸️ Device not in range, skipping reconnection: " + deviceId);
+                        // Don't schedule another attempt here - let CompanionService detect when device comes back
+                        // The periodic scan will detect device presence and trigger onDevicePresenceChanged
+                    }
+                }, 1500); // Wait 1.5 seconds for scan to complete
+            } else {
+                // No companion service, attempt reconnection anyway
+                Log.d(TAG, "🔄 Attempting reconnection to device (no companion service): " + deviceId);
+                connectToDevice(deviceId, device, connectionCallbacks.get(deviceId));
             }
         }, delay);
     }
@@ -641,7 +741,85 @@ public class BLEConnectionManager {
         Log.d(TAG, "📡 Device presence changed: " + deviceId + " in range: " + inRange);
         
         DeviceConnectionState state = deviceStates.get(deviceId);
-        if (state == null) return;
+        
+        // ✅ CRITICAL FIX: Handle case where device state might not exist yet
+        // This can happen if device was bonded but never connected, or if state was cleared
+        if (state == null) {
+            // Check if this is a bonded device that should be reconnected
+            if (inRange) {
+                Set<BluetoothDevice> bondedDevices = bluetoothAdapter.getBondedDevices();
+                for (BluetoothDevice bondedDevice : bondedDevices) {
+                    if (bondedDevice.getAddress().equals(deviceId)) {
+                        Log.d(TAG, "🔄 Device came back in range but no state exists, creating state and reconnecting: " + deviceId);
+                        // Create a new state for this device (constructor requires deviceId)
+                        state = new DeviceConnectionState(deviceId);
+                        state.state = ConnectionState.DISCONNECTED;
+                        state.isManualDisconnect = false;
+                        state.reconnectAttempts = 0;
+                        deviceStates.put(deviceId, state);
+                        
+                        // Get callback if it exists, otherwise create a default one for auto-reconnection
+                        BLEConnectionCallback callback = connectionCallbacks.get(deviceId);
+                        if (callback == null) {
+                            Log.d(TAG, "📝 Creating default callback for auto-reconnection: " + deviceId);
+                            // ✅ CRITICAL FIX: Default callback should delegate to companion service
+                            // This ensures the callback chain reaches SampleBridgeAndroid
+                            callback = new BLEConnectionCallback() {
+                                @Override
+                                public void onConnectionStateChanged(String deviceId, ConnectionState state) {
+                                    Log.d(TAG, "🔗 Auto-reconnect state changed: " + deviceId + " = " + state);
+                                    // ✅ Delegate to companion service which will notify SampleBridgeAndroid
+                                    if (companionService != null) {
+                                        Log.d(TAG, "📢 Delegating to companionService.notifyConnectionStateChanged()");
+                                        companionService.notifyConnectionStateChanged(deviceId, state);
+                                    } else {
+                                        Log.w(TAG, "⚠️ companionService is null, cannot delegate connection state change");
+                                    }
+                                }
+                                
+                                @Override
+                                public void onServicesDiscovered(String deviceId, List<BluetoothGattService> services) {
+                                    Log.d(TAG, "✅ Auto-reconnect services discovered: " + deviceId);
+                                    // ✅ Delegate to companion service to trigger device info reading
+                                    if (companionService != null) {
+                                        Log.d(TAG, "📢 Delegating onServicesDiscovered to companionService");
+                                        companionService.notifyServicesDiscovered(deviceId);
+                                    } else {
+                                        Log.w(TAG, "⚠️ companionService is null, cannot delegate services discovered");
+                                    }
+                                }
+                                
+                                @Override
+                                public void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+                                    // ✅ Forward to companionService for auto-connected devices
+                                    if (companionService != null) {
+                                        Log.d(TAG, "📢 Delegating onCharacteristicRead to companionService for: " + deviceId);
+                                        companionService.notifyCharacteristicRead(deviceId, characteristic, status);
+                                    } else {
+                                        Log.w(TAG, "⚠️ companionService is null, cannot delegate characteristic read");
+                                    }
+                                }
+                                
+                                @Override
+                                public void onCharacteristicWrite(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+                                    // Handle characteristic writes if needed
+                                }
+                                
+                                @Override
+                                public void onCharacteristicChanged(String deviceId, BluetoothGattCharacteristic characteristic) {
+                                    Log.d(TAG, "📡 Auto-reconnect characteristic changed: " + deviceId);
+                                }
+                            };
+                            // Store the callback for future use
+                            connectionCallbacks.put(deviceId, callback);
+                        }
+                        connectToDevice(deviceId, bondedDevice, callback);
+                        return;
+                    }
+                }
+            }
+            return;
+        }
         
         if (inRange && state.state == ConnectionState.DISCONNECTED && !state.isManualDisconnect) {
             // Device came back in range and we're not manually disconnected
@@ -658,12 +836,51 @@ public class BLEConnectionManager {
             }
             
             if (device != null) {
-                // Reset reconnection attempts since device is back in range
+                // ✅ CRITICAL FIX: Reset reconnection attempts since device is back in range
+                // This allows reconnection even if max attempts were previously reached
                 state.reconnectAttempts = 0;
-                connectToDevice(deviceId, device, connectionCallbacks.get(deviceId));
+                
+                // Get callback - if it doesn't exist, create a default one for auto-reconnection
+                BLEConnectionCallback callback = connectionCallbacks.get(deviceId);
+                if (callback == null) {
+                    Log.d(TAG, "📝 Creating default callback for auto-reconnection: " + deviceId);
+                    // Create a default callback for auto-reconnection
+                    callback = new BLEConnectionCallback() {
+                        @Override
+                        public void onConnectionStateChanged(String deviceId, ConnectionState state) {
+                            Log.d(TAG, "🔗 Auto-reconnect state changed: " + deviceId + " = " + state);
+                        }
+                        
+                        @Override
+                        public void onServicesDiscovered(String deviceId, List<BluetoothGattService> services) {
+                            Log.d(TAG, "✅ Auto-reconnect services discovered: " + deviceId);
+                        }
+                        
+                        @Override
+                        public void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+                            // Handle characteristic reads if needed
+                        }
+                        
+                        @Override
+                        public void onCharacteristicWrite(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+                            // Handle characteristic writes if needed
+                        }
+                        
+                        @Override
+                        public void onCharacteristicChanged(String deviceId, BluetoothGattCharacteristic characteristic) {
+                            Log.d(TAG, "📡 Auto-reconnect characteristic changed: " + deviceId);
+                        }
+                    };
+                    // Store the callback for future use
+                    connectionCallbacks.put(deviceId, callback);
+                }
+                Log.d(TAG, "✅ Reconnecting to device: " + deviceId);
+                connectToDevice(deviceId, device, callback);
             } else {
                 Log.w(TAG, "⚠️ Device not found in bonded devices: " + deviceId);
             }
+        } else if (inRange && state.state == ConnectionState.DISCONNECTED && state.isManualDisconnect) {
+            Log.d(TAG, "⏸️ Device came back in range but was manually disconnected, skipping auto-reconnect: " + deviceId);
         }
     }
     

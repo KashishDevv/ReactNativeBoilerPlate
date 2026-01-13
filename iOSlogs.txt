@@ -1,82 +1,390 @@
-Action | TIME/DATE RECORDED (Connection logs)
----------------------------------------------------
-Response: DATA_SYNC_STOP 17:16:52.614 19 Dec 2025
- Response: BB 09 00 00
-Command Sent: Data Sync Stop 17:16:52.193 19 Dec 2025
- Command: AA 09 01 01
-4 Records Synced 17:16:51.183 19 Dec 2025
-Response: DATA_SYNC_START 17:16:50.993 19 Dec 2025
- Response: BB 08 00 00
-Command Sent: Data Sync Start 17:16:50.763 19 Dec 2025
- Command: AA 08 01 00
-Response: DATA_SYNC_STOP 17:16:22.914 19 Dec 2025
- Response: BB 09 00 00
-Command Sent: Data Sync Stop 17:16:22.341 19 Dec 2025
- Command: AA 09 01 01
-3 Records Synced 17:16:21.292 19 Dec 2025
-Response: DATA_SYNC_START 17:16:21.175 19 Dec 2025
- Response: BB 08 00 00
-Command Sent: Data Sync Start 17:16:20.924 19 Dec 2025
- Command: AA 08 01 00
-Response: DATA_SYNC_STOP 17:15:53.349 19 Dec 2025
- Response: BB 09 00 00
-Command Sent: Data Sync Stop 17:15:52.916 19 Dec 2025
- Command: AA 09 01 01
-19 Records Synced 17:15:51.874 19 Dec 2025
-Response: DATA_SYNC_START 17:15:51.459 19 Dec 2025
- Response: BB 08 00 00
-Command Sent: Data Sync Start 17:15:51.233 19 Dec 2025
- Command: AA 08 01 00
-RTC Check: Device Status Read Complete 17:15:51.198 19 Dec 2025
-Response: SET_DATA_ACQUISITION_INTERVAL 17:15:20.545 19 Dec 2025
- Response: BB 04 00 00
-Command Sent: Set Data Interval 17:15:20.029 19 Dec 2025
- Command: AA 04 04 30 75 00 00
-RTC Check: Device Status Read Complete 17:14:54.352 19 Dec 2025
-RTC Check: Reading Device Status Characteristic 17:14:54.217 19 Dec 2025
-Characteristics Discovered 17:14:54.214 19 Dec 2025
-Characteristics Discovered 17:14:54.212 19 Dec 2025
-Characteristics Discovered 17:14:54.210 19 Dec 2025
-Characteristics Discovered 17:14:54.208 19 Dec 2025
-Services Discovered 17:14:54.205 19 Dec 2025
-Skipping time sync, proceeding with data operations 17:14:23.695 19 Dec 2025
-RTC Check: Device Status Read Complete 17:14:23.689 19 Dec 2025
-RTC Check: Reading Device Status Characteristic 17:14:22.607 19 Dec 2025
-Auto-connected 17:14:22.603 19 Dec 2025
-Characteristics Discovered 17:14:22.561 19 Dec 2025
-Characteristics Discovered 17:14:22.557 19 Dec 2025
-Characteristics Discovered 17:14:22.553 19 Dec 2025
-Characteristics Discovered 17:14:22.548 19 Dec 2025
-Services Discovered 17:14:22.543 19 Dec 2025
+warning: (arm64) /Users/kashish/Library/Developer/Xcode/DerivedData/ReactNativeBoilerPlate-bdbedraqbyczueaozbrkvdnnqecb/Build/Products/Debug-iphoneos/ReactNativeBoilerPlate.app/ReactNativeBoilerPlate empty dSYM file detected, dSYM was created with an executable with no debug info.
+`UIScene` lifecycle will soon be required. Failure to adopt will result in an assert in the future.
+Connection 1: received failure notification
+Connection 1: failed to connect 1:50, reason -1
+Connection 1: encountered error(1:50)
+Task <CC0FA092-2A40-44F7-96C3-1C0C6327F29E>.<1> HTTP load failed, 0/0 bytes (error code: -1009 [1:50])
+Task <CC0FA092-2A40-44F7-96C3-1C0C6327F29E>.<1> finished with error [-1009] Error Domain=NSURLErrorDomain Code=-1009 "The Internet connection appears to be offline." UserInfo={_kCFStreamErrorCodeKey=50, NSUnderlyingError=0x1042aee80 {Error Domain=kCFErrorDomainCFNetwork Code=-1009 "(null)" UserInfo={_NSURLErrorNWPathKey=unsatisfied (Local network prohibited), interface: en0[802.11], ipv4, ipv6, uses wifi, LQM: moderate, _kCFStreamErrorCodeKey=50, _kCFStreamErrorDomainKey=1}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <CC0FA092-2A40-44F7-96C3-1C0C6327F29E>.<1>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalDataTask <CC0FA092-2A40-44F7-96C3-1C0C6327F29E>.<1>"
+), NSLocalizedDescription=The Internet connection appears to be offline., NSErrorFailingURLStringKey=http://192.168.1.4:8081/status, NSErrorFailingURLKey=http://192.168.1.4:8081/status, _kCFStreamErrorDomainKey=1}
+Connection 2: received failure notification
+Connection 2: failed to connect 1:50, reason -1
+Connection 2: encountered error(1:50)
+Task <8AC2FDF0-CFAD-4829-A097-C6EDC2DC54C6>.<2> HTTP load failed, 0/0 bytes (error code: -1009 [1:50])
+Task <8AC2FDF0-CFAD-4829-A097-C6EDC2DC54C6>.<2> finished with error [-1009] Error Domain=NSURLErrorDomain Code=-1009 "The Internet connection appears to be offline." UserInfo={_kCFStreamErrorCodeKey=50, NSUnderlyingError=0x104059110 {Error Domain=kCFErrorDomainCFNetwork Code=-1009 "(null)" UserInfo={_NSURLErrorNWPathKey=unsatisfied (Local network prohibited), interface: en0[802.11], ipv4, ipv6, uses wifi, LQM: moderate, _kCFStreamErrorCodeKey=50, _kCFStreamErrorDomainKey=1}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <8AC2FDF0-CFAD-4829-A097-C6EDC2DC54C6>.<2>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalDataTask <8AC2FDF0-CFAD-4829-A097-C6EDC2DC54C6>.<2>"
+), NSLocalizedDescription=The Internet connection appears to be offline., NSErrorFailingURLStringKey=http://192.168.1.4:8081/status, NSErrorFailingURLKey=http://192.168.1.4:8081/status, _kCFStreamErrorDomainKey=1}
+nw_socket_handle_socket_event [C3.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_socket_handle_socket_event [C4.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C3.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C4.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C3.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_path_necp_check_for_updates Failed to copy updated result (22)
+nw_endpoint_flow_failed_with_error [C3.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C3.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C3] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1041af980 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C4.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C4.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C4.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C4] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1041afca0 Failed : error 0:61 [61]
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+W0112 18:08:16.684031 4129530368 InspectorPackagerConnection.cpp:245] Couldn't connect to packager, will silently retry
+nw_socket_handle_socket_event [C5.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C5.1.1 ::1.8097 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C5.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C5.1.2 127.0.0.1:8097 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C5.1.2 127.0.0.1:8097 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C5] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105478000 Failed : error 0:61 [61]
+📡 iOS Auto-connect event listeners set up with NativeEventEmitter
+🚀 AutoConnectService initialized
+📞 Added device connected callback
+📞 Added device disconnected callback
+Manifest does not exist - creating a new one.
 
-
-
-
-STEPS,TIME RECORDED,TEMPERATURE,TIME RECEIVED (Live Data)
-
-52, 19th Dec 2025 Time 17:16:47, 25°C, 19th Dec 2025 Time 17:16:51
-0, 19th Dec 2025 Time 17:16:47, 25°C, 19th Dec 2025 Time 17:16:51
-5, 19th Dec 2025 Time 17:16:19, 25°C, 19th Dec 2025 Time 17:16:51
-0, 19th Dec 2025 Time 17:16:19, 25°C, 19th Dec 2025 Time 17:16:51
-56, 19th Dec 2025 Time 17:16:17, 26°C, 19th Dec 2025 Time 17:16:21
-0, 19th Dec 2025 Time 17:16:17, 26°C, 19th Dec 2025 Time 17:16:21
-0, 19th Dec 2025 Time 17:15:49, 26°C, 19th Dec 2025 Time 17:16:21
-0, 19th Dec 2025 Time 17:15:47, 26°C, 19th Dec 2025 Time 17:15:51
-7, 19th Dec 2025 Time 17:15:17, 26°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:14:48, 26°C, 19th Dec 2025 Time 17:15:51
-16, 19th Dec 2025 Time 17:14:18, 26°C, 19th Dec 2025 Time 17:15:51
-58, 19th Dec 2025 Time 17:13:48, 26°C, 19th Dec 2025 Time 17:15:51
-37, 19th Dec 2025 Time 17:13:18, 26°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:12:48, 26°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:12:42, 26°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:12:12, 27°C, 19th Dec 2025 Time 17:15:51
-21, 19th Dec 2025 Time 17:11:42, 26°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:11:12, 25°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:10:42, 24°C, 19th Dec 2025 Time 17:15:51
-19, 19th Dec 2025 Time 17:10:12, 24°C, 19th Dec 2025 Time 17:15:51
-21, 19th Dec 2025 Time 17:09:42, 23°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:09:12, 22°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:08:42, 22°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:08:12, 22°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:07:42, 22°C, 19th Dec 2025 Time 17:15:51
-0, 19th Dec 2025 Time 17:07:12, 22°C, 19th Dec 2025 Time 17:15:51
+(null)
+Unbalanced calls start/end for tag 20
+Unbalanced calls start/end for tag 19
+Running "ReactNativeBoilerPlate" with {"rootTag":1,"initialProps":null,"fabric":true}
+📱 iOS detected - notification permissions handled by native code
+┐ %c action %cpersist/PERSIST %c@ 18:08:16.735
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: { recordsByDevice: {} },
+  connectionLogs: { logsByDevice: {} } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'persist/PERSIST',
+  register: [Function: register],
+  rehydrate: [Function: rehydrate] }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: { recordsByDevice: {} },
+  connectionLogs: { logsByDevice: {} },
+  _persist: { version: -1, rehydrated: false } }
+┘
+┐ %c action %cpersist/REHYDRATE %c@ 18:08:16.736
+│ '%c prev state', 'color: #9E9E9E; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: { recordsByDevice: {} },
+  connectionLogs: { logsByDevice: {} },
+  _persist: { version: -1, rehydrated: false } }
+│ '%c action    ', 'color: #03A9F4; font-weight: bold', { type: 'persist/REHYDRATE',
+  payload: undefined,
+  err: undefined,
+  key: 'root' }
+│ '%c next state', 'color: #4CAF50; font-weight: bold', { counterReducer: { value: 0 },
+  fetchReducer: 
+   { loading: false,
+     data: 
+      { success: false,
+        data: 
+         { rows: [],
+           meta: { currentPage: 0, count: 0, pageCount: 0, pageSize: 0 } } },
+     error: '' },
+  historicalRecords: { recordsByDevice: {} },
+  connectionLogs: { logsByDevice: {} },
+  _persist: { version: -1, rehydrated: true } }
+┘
+📞 [Modern] Device list update callback registered
+📞 [Modern] Power profile change listener registered
+📞 [Modern] Device disconnection listener registered
+📞 [Modern] Device found event listener registered
+📞 [Modern] Device connected event listener registered
+📞 [Modern] Device data update event listener registered
+📞 [Modern] Device data update callback registered for live notifications
+📡 RSSI cycle management now handled by BLEService power profiles
+'📱 Battery level loaded:', 80
+'🔗 [Modern] Loaded connected devices:', 0
+'🔗 [Modern] Focus refresh connected devices:', 0
+🔗 Ensuring callbacks are registered...
+✅ Callbacks are automatically registered via event listeners
+nw_socket_handle_socket_event [C6.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C6.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C6.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C6.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C6.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C6] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105760320 Failed : error 0:61 [61]
+'📊 Auto-connect status:', { isScanning: false,
+  enabled: false,
+  centralManagerState: 5,
+  bondedDevices: [],
+  bondedDevicesCount: 0,
+  connectedDevicesCount: 0 }
+🚀 Starting auto-connect...
+'📱 Bonded devices:', []
+⏸️ Skipping auto-connect start: no bonded devices available
+'📊 Auto-connect status:', { isScanning: false,
+  enabled: false,
+  centralManagerState: 5,
+  bondedDevices: [],
+  bondedDevicesCount: 0,
+  connectedDevicesCount: 0 }
+nw_socket_handle_socket_event [C7.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C7.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C7.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C7.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C7.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C7] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105760960 Failed : error 0:61 [61]
+🔍 Starting scan while preserving existing devices...
+'📱 Bonded devices:', []
+🔍 [iOS] Starting BLE scan...
+   - Scan mode: LowLatency
+   - Allow duplicates: true
+   - Duration: 15000ms
+   - Looking for: DyreID, Health Tag, or Service UUID 0f0e0d0c-0b0a-0908-0706-050403020100
+   - Or Manufacturer ID: 0x1234
+nw_socket_handle_socket_event [C8.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C8.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C8.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C8.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C8.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C8] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+🔍 [iOS] Discovered: Unknown | ID: 1E965DBA-7E99-4E9A-8D63-6001A4604FFB | RSSI: -95
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+nw_socket_handle_socket_event [C9.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C9.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C9.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C9.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C9.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C9] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C10.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C10.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C10.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C10.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C10.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C10] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C11.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C11.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C11.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C11.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C11.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C11] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C12.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C12.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C12.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C12.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C12.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C12] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+🔍 [iOS] Discovered: Unknown | ID: B0168873-1530-2CEF-AC82-7CCD86BD3BA7 | RSSI: -92
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+🔍 [iOS] Discovered: Unknown | ID: B0168873-1530-2CEF-AC82-7CCD86BD3BA7 | RSSI: -92
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+nw_socket_handle_socket_event [C13.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C13.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C13.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C13.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C13.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C13] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+nw_socket_connect [C14.1.1:1] connectx(11, [srcif=0, srcaddr=<NULL>, dstaddr=::1.8081], SAE_ASSOCID_ANY, 0, NULL, 0, NULL, SAE_CONNID_ANY) failed: [61: Connection refused]
+nw_socket_connect [C14.1.1:1] connectx failed (fd 11) [61: Connection refused]
+nw_socket_connect connectx failed [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C14.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C14.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C14.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C14.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C14] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+⏰ Auto-stopping scan after 15 seconds (industry standard)
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C15.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C15.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C15.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C15.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C15.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C15] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761540 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C16.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C16.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C16.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C16.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C16.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C16] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761720 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C17.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C17.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C17.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C17.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C17.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C17] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761720 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C18.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C18.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C18.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C18.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C18.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C18] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761720 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C19.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C19.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C19.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C19.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C19.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C19] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761720 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+nw_socket_handle_socket_event [C20.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C20.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C20.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C20.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C20.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C20] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x105761720 Failed : error 0:61 [61]
+🔍 Starting scan while preserving existing devices...
+'📱 Bonded devices:', []
+🔍 [iOS] Starting BLE scan...
+   - Scan mode: LowLatency
+   - Allow duplicates: true
+   - Duration: 15000ms
+   - Looking for: DyreID, Health Tag, or Service UUID 0f0e0d0c-0b0a-0908-0706-050403020100
+   - Or Manufacturer ID: 0x1234
+nw_socket_handle_socket_event [C21.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C21.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C21.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C21.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C21.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C21] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1057617c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C22.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C22.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C22.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C22.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C22.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C22] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1057617c0 Failed : error 0:61 [61]
+🔍 [iOS] Discovered: Unknown | ID: 0D613892-C768-ECA1-7935-0D3E9198CB61 | RSSI: -44
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+nw_socket_handle_socket_event [C23.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C23.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C23.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C23.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C23.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C23] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1057617c0 Failed : error 0:61 [61]
+nw_socket_handle_socket_event [C24.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C24.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C24.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C24.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C24.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C24] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1057617c0 Failed : error 0:61 [61]
+🔄 Periodic refresh - Profile: default, Battery: 80%
+🔍 [iOS] Discovered: DyreID | ID: D4F24A32-376A-7267-F293-B74FC14C10C8 | RSSI: -53
+   - Is DyreID device: true
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: true
+   - Manufacturer data: 34 12 08 00 03 35 FF 7B CD E5 C1 15 00
+   ✅ Device ACCEPTED - Reason: Valid manufacturer ID (0x1234) with proper data structure
+   Will attempt to parse with available data
+🔍 RAW MANUFACTURER DATA (SDD v1.3): 34 12 08 00 03 35 FF 7B CD E5 C1 15 00
+   ✅ Parsed Values (SDD v1.3):
+      Company ID: 0x1234
+      Version: 8
+      Device Peripheral Status: Good
+      Device Status Bits: Connect=true, TimeSet=true, FactoryDefaults=false
+      📍 MAC Address: C1:E5:CD:7B:FF:35
+      Record Count: 21
+📊 Device DyreID has 21 records available
+📊 Device D4F24A32-376A-7267-F293-B74FC14C10C8 has 21 records available
+'🔍 [Modern] Device found event received:', 'DyreID', 'D4F24A32-376A-7267-F293-B74FC14C10C8'
+🔍 [iOS] Discovered: JODU51741245506 | ID: A25E2E59-82C2-6626-FD5F-9DF54685A715 | RSSI: -96
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+🔍 [iOS] Discovered: JODU51741245506 | ID: A25E2E59-82C2-6626-FD5F-9DF54685A715 | RSSI: -97
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+🔍 [iOS] Discovered: Unknown | ID: 1E965DBA-7E99-4E9A-8D63-6001A4604FFB | RSSI: -90
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+🔍 [iOS] Discovered: Unknown | ID: 1E965DBA-7E99-4E9A-8D63-6001A4604FFB | RSSI: -89
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+nw_socket_handle_socket_event [C25.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C25.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C25.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C25.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C25.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C25] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1057619a0 Failed : error 0:61 [61]
+🔍 [iOS] Discovered: Unknown | ID: 929EAEBA-22C7-323F-077F-FEB6202D1089 | RSSI: -95
+   - Is DyreID device: false
+   - Has correct service UUID: false
+   - Service UUIDs: []
+   - Has valid manufacturer ID: false
+   - Manufacturer data: NONE
+   ❌ Device rejected - does not match any filter criteria
+🔍 Scan stopped, fresh discovery flags will clear in 3 seconds
+nw_socket_handle_socket_event [C26.1.1:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C26.1.1 ::1.8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_socket_handle_socket_event [C26.1.2:1] Socket SO_ERROR [61: Connection refused]
+nw_endpoint_flow_failed_with_error [C26.1.2 127.0.0.1:8081 in_progress socket-flow (satisfied (Path is satisfied), viable, interface: lo0)] already failing, returning
+nw_endpoint_flow_failed_with_error [C26.1.2 127.0.0.1:8081 cancelled socket-flow ((null))] already failing, returning
+nw_connection_get_connected_socket_block_invoke [C26] Client called nw_connection_get_connected_socket on unconnected nw_connection
+TCP Conn 0x1057617c0 Failed : error 0:61 [61]

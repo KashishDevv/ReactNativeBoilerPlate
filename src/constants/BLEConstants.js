@@ -266,3 +266,12 @@ export const ERROR_TYPES = {
   PERMANENT: 'PERMANENT',      // Cannot retry (device not found, pairing failed)
   USER_ACTION: 'USER_ACTION'   // Requires user action (permissions, pairing)
 };
+
+// DemoTag: Demo Tag Configuration Constants
+// TODO: Remove all DemoTag constants before production release
+export const DEMO_TAG_CONFIG = {
+  DEFAULT_DEVICE_ID: 'DEMO-TAG-00000000-0000-0000-0000-000000000001',
+  DEFAULT_DEVICE_NAME: 'Demo Smart Tag',
+  ENABLED_STORAGE_KEY: '@demo_tag_enabled',
+  DEVICE_PREFIX: 'DEMO-TAG-',
+};

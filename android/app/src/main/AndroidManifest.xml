@@ -70,15 +70,5 @@
         android:exported="false"
         android:foregroundServiceType="connectedDevice"
         android:stopWithTask="false" />
-      
-      <!-- BLE Background Receiver -->
-      <receiver
-        android:name=".BLEBackgroundReceiver"
-        android:enabled="true"
-        android:exported="false">
-        <intent-filter>
-          <action android:name="com.reactnativeboilerplate.BLE_SCAN_RESULT" />
-        </intent-filter>
-      </receiver>
     </application>
 </manifest>

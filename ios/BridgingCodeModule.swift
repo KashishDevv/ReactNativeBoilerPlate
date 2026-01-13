@@ -106,6 +106,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       "AutoConnectDeviceConnected",
       "AutoConnectDeviceDisconnected",
       "NativeCommandSent",
+      "PollingStarted",
       "DataTransfer",
       "SystemCommandResponse",
       "DeviceDisconnected",
@@ -163,6 +164,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     case TRANSIENT = "TRANSIENT"      // Can retry (timeout, temporary disconnection)
     case PERMANENT = "PERMANENT"      // Cannot retry (device not found, pairing failed)
     case USER_ACTION = "USER_ACTION"   // Requires user action (permissions, pairing)
+  }
+  
+  // ✅ REFINEMENT 1: Explicit connection state tracking
+  enum ConnectionState: String {
+    case CONNECTED = "CONNECTED"           // Physical connection established
+    case SERVICES_READY = "SERVICES_READY"  // Services and characteristics discovered
+    case SECURE_READY = "SECURE_READY"     // Pairing/encryption verified
+    case READY = "READY"                    // Fully ready for communication (notifications enabled)
   }
   
   // Auto-connect properties
@@ -584,22 +593,87 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       }
     }
     
-    // ✅ FIXED: Scan for all devices, then filter by manufacturer ID
-    // Some devices may not advertise service UUID in scan response, so we need broader scanning
-    // Filtering will happen in didDiscover based on manufacturer data or service UUID
-    // This ensures we catch devices even if they're not advertising the service UUID
-    let servicesToScan: [CBUUID]? = nil // Scan all devices for broader discovery
+    // ✅ PERFORMANCE FIX: Two-phase scanning strategy for faster discovery
+    // Phase 1: Fast scan with service UUID filter (5 seconds) - catches most devices quickly
+    // Phase 2: Broad scan without filter (if needed) - catches devices with incomplete advertising
     
-    // Note: iOS optimizes background scanning automatically when app is in background
-    // We filter devices after discovery based on manufacturer data or service UUID
+    // Check if we should use targeted or broad scanning
+    let useTargetedScan = options["useTargetedScan"] as? Bool ?? true
+    let servicesToScan: [CBUUID]?
     
-    // Start scanning with enhanced options (scan all devices)
+    if useTargetedScan {
+      // ⚡ FAST: Scan only for our service UUID (iOS hardware filtering = MUCH faster!)
+      servicesToScan = [smartTagServiceUUID]
+      NSLog("🔍 [iOS] Starting FAST targeted BLE scan...")
+      NSLog("   - Strategy: Service UUID filter (⚡ Fast)")
+      NSLog("   - Service UUID: 0f0e0d0c-0b0a-0908-0706-050403020100")
+    } else {
+      // 🐌 SLOW: Scan all devices (fallback for devices not advertising service UUID)
+      servicesToScan = nil
+      NSLog("🔍 [iOS] Starting BROAD BLE scan...")
+      NSLog("   - Strategy: No filter (🐌 Slower but catches all)")
+    }
+    
+    NSLog("   - Scan mode: \(scanMode)")
+    NSLog("   - Allow duplicates: \(allowDuplicates)")
+    NSLog("   - Duration: \(maxScanDurationMs)ms")
+    NSLog("   - Also looking for: DyreID, Health Tag device name")
+    NSLog("   - Or Manufacturer ID: 0x1234")
+    
+    // ✅ iOS OPTIMIZATION: Retrieve known peripherals before scanning
+    // This can instantly return previously connected devices (0ms!)
+    let knownPeripherals = manager.retrieveConnectedPeripherals(withServices: [smartTagServiceUUID])
+    if !knownPeripherals.isEmpty {
+      NSLog("   ⚡ Found \(knownPeripherals.count) known connected peripheral(s) (instant!)")
+      for peripheral in knownPeripherals {
+        NSLog("      • \(peripheral.name ?? "Unknown") (\(peripheral.identifier.uuidString))")
+      }
+    }
+    
+    // Also try retrieving peripherals by identifier if we have any cached
+    let cachedIds = Array(scannedDevices.keys).compactMap { UUID(uuidString: $0) }
+    if !cachedIds.isEmpty {
+      let retrievedPeripherals = manager.retrievePeripherals(withIdentifiers: cachedIds)
+      NSLog("   📱 Retrieved \(retrievedPeripherals.count) cached peripheral(s) from iOS")
+    }
+    
+    // Start scanning with optimized options
     manager.scanForPeripherals(
       withServices: servicesToScan,
       options: scanOptions
     )
     
     isScanning = true
+    let scanStartTime = Date()
+    let initialDeviceCount = scannedDevices.count
+    
+    // ✅ SMART FALLBACK: If targeted scan finds no devices in 5s, switch to broad scan
+    if useTargetedScan {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+        guard let self = self else { return }
+        
+        // Check if we found any NEW devices
+        let foundNewDevices = self.scannedDevices.count > initialDeviceCount
+        
+        if self.isScanning && !foundNewDevices {
+          NSLog("⚠️ [iOS] No devices found with targeted scan after 5s")
+          NSLog("   🔄 Switching to BROAD scan (no service filter)...")
+          
+          // Stop current scan
+          manager.stopScan()
+          
+          // Start broad scan (fallback)
+          manager.scanForPeripherals(
+            withServices: nil,  // Broad scan
+            options: scanOptions
+          )
+          
+          NSLog("   ✅ Broad scan started (will catch devices not advertising service UUID)")
+        } else if foundNewDevices {
+          NSLog("   ✅ Targeted scan working! Found \(self.scannedDevices.count - initialDeviceCount) device(s)")
+        }
+      }
+    }
     
     // ✅ BEST PRACTICE: Auto-stop scan after power profile duration with weak self
     DispatchQueue.main.asyncAfter(deadline: .now() + Double(maxScanDurationMs) / 1000.0) { [weak self] in
@@ -608,6 +682,26 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       if self.isScanning {
         manager.stopScan()
         self.isScanning = false
+        self.lastScanStopTime = Date()
+        
+        let scanDuration = Date().timeIntervalSince(scanStartTime)
+        let devicesFound = self.scannedDevices.count - initialDeviceCount
+        
+        NSLog("⏹️ [iOS] Scan completed after \(String(format: "%.1f", scanDuration))s")
+        NSLog("   - Devices found this scan: \(devicesFound)")
+        NSLog("   - Total devices in list: \(self.scannedDevices.count)")
+        
+        if devicesFound == 0 {
+          NSLog("   ⚠️ No devices found! Check if:")
+          NSLog("      • Device is powered on and advertising")
+          NSLog("      • Device is within range (< 10m)")
+          NSLog("      • Bluetooth is enabled on iPhone")
+          NSLog("      • Location services are enabled (required for BLE on iOS)")
+          NSLog("      • Device name contains 'DyreID' or 'Health Tag'")
+          NSLog("      • Device advertises Service UUID: 0f0e0d0c-0b0a-0908-0706-050403020100")
+        } else {
+          NSLog("   ✅ Scan successful!")
+        }
       }
     }
     
@@ -1271,6 +1365,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     // Mark as active
     nativePollingActive[deviceId] = true
     
+    // ✅ Send PollingStarted event to JavaScript for connection log tracking
+    DispatchQueue.main.async {
+      self.sendEvent(withName: "PollingStarted", body: [
+        "deviceId": deviceId,
+        "intervalSeconds": intervalSeconds,
+        "pollInterval": intervalSeconds * 1000 // Convert to milliseconds
+      ])
+    }
     
     // ✅ MEMORY SAFETY: Use weak self to prevent retain cycle
     let timer = Timer.scheduledTimer(withTimeInterval: intervalSeconds, repeats: true) { [weak self] _ in
@@ -1521,26 +1623,31 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       // ✅ Store RTC validity for command sequence to check
       deviceRTCValidity[deviceId] = isRTCValid
       
-      // ✅ Log RTC values to connection logs for debugging
-      let currentSystemTime = UInt32(Date().timeIntervalSince1970)
-      let timeDifference = Int64(currentSystemTime) - Int64(timestamp)
-      let formatter = ISO8601DateFormatter()
-      let timeDifferenceHours = Double(timeDifference) / 3600.0
-      
-      self.sendEvent(withName: "RTCRead", body: [
-        "deviceId": deviceId,
-        "type": "rtc_read",
-        "deviceRTC": timestamp,
-        "deviceRTCISO": formatter.string(from: timestampDate),
-        "systemTime": currentSystemTime,
-        "systemTimeISO": formatter.string(from: currentDate),
-        "timeDifference": timeDifference,
-        "rtcValid": isRTCValid,
-        "timeDifferenceFormatted": String(format: "%.2f hours", timeDifferenceHours)
-      ])
-      
       // ✅ SDD v1.4 COMPLIANCE: If this is the initial RTC check (before enabling notifications), handle time sync first
       let isPending = rtcCheckPendingBeforeNotifications[deviceId] == true
+      
+      // ✅ CRITICAL FIX: Only send RTCRead event during INITIAL RTC check (when isPending is true)
+      // Don't send it on every device status notification - that creates too many logs
+      // Keep-alive reads and regular notifications will still update device status, but won't spam RTC logs
+      if isPending {
+        // ✅ Log RTC values to connection logs for debugging (only during initial check)
+        let currentSystemTime = UInt32(Date().timeIntervalSince1970)
+        let timeDifference = Int64(currentSystemTime) - Int64(timestamp)
+        let formatter = ISO8601DateFormatter()
+        let timeDifferenceHours = Double(timeDifference) / 3600.0
+        
+        self.sendEvent(withName: "RTCRead", body: [
+          "deviceId": deviceId,
+          "type": "rtc_read",
+          "deviceRTC": timestamp,
+          "deviceRTCISO": formatter.string(from: timestampDate),
+          "systemTime": currentSystemTime,
+          "systemTimeISO": formatter.string(from: currentDate),
+          "timeDifference": timeDifference,
+          "rtcValid": isRTCValid,
+          "timeDifferenceFormatted": String(format: "%.2f hours", timeDifferenceHours)
+        ])
+      }
       
       if isPending {
         rtcCheckPendingBeforeNotifications.removeValue(forKey: deviceId)
@@ -1559,13 +1666,19 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           sendSetSystemTimeCommand(deviceId: deviceId)
         } else {
           // RTC is valid - enable notifications immediately
-          enableNotificationsAfterRTCCheck(peripheral: peripheral, deviceId: deviceId)
-          
-          // ✅ If pairing verification was pending, confirm connection now that RTC check is done
+          // ✅ CRITICAL FIX: Clear pairing verification flag BEFORE enabling notifications
+          // This ensures enableNotificationsAfterRTCCheck doesn't return early
           if devicesPendingPairingVerification[deviceId] != nil {
             devicesPendingPairingVerification.removeValue(forKey: deviceId)
             confirmConnection(peripheral: peripheral, deviceId: deviceId)
           }
+          
+          // Now enable notifications (pairing verification is complete)
+          enableNotificationsAfterRTCCheck(peripheral: peripheral, deviceId: deviceId)
+          
+          // ✅ CRITICAL FIX: Automatically start data sync after notifications are enabled when RTC is valid
+          // This ensures data sync starts automatically on connection, matching the behavior when RTC is invalid
+          sendDataAcquisitionAndLiveNotifications(deviceId: deviceId)
         }
       }
       
@@ -1757,10 +1870,18 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   /**
    * ✅ SDD v1.4 COMPLIANCE: Enable notifications after RTC check is complete
    * This is called after Device Status is read and RTC validity is confirmed
+   * ✅ REFINEMENT 2: Notifications are enabled AFTER pairing verification
    */
   private func enableNotificationsAfterRTCCheck(peripheral: CBPeripheral, deviceId: String) {
     
     guard let allCharacteristics = deviceCharacteristics[deviceId] else {
+      return
+    }
+    
+    // ✅ REFINEMENT 2: Ensure we don't enable notifications before pairing verification
+    // This should never happen, but defensive check
+    if devicesPendingPairingVerification[deviceId] != nil {
+      NSLog("   ⚠️ [REFINEMENT 2] Attempted to enable notifications before pairing verification - deferring")
       return
     }
     
@@ -1781,6 +1902,12 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         }
       }
     }
+    
+    // ✅ REFINEMENT 1: Set connection state to READY (notifications enabled)
+    deviceConnectionStates[deviceId] = .READY
+    
+    // ✅ REFINEMENT 1: Emit DeviceConnected event ONLY at READY state
+    emitDeviceConnectedEvent(deviceId: deviceId, peripheral: peripheral)
     
     // After notifications are enabled, trigger command sequence via startCommandSequence
     
@@ -1953,8 +2080,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   private func sendDataAcquisitionAndLiveNotifications(deviceId: String) {
     NSLog("   Note: Polling already active with default 120s interval (started after notifications enabled)")
     
-    // Step 1: Send Data Sync Start command (0x08)
-    dataSyncState[deviceId] = "ready"
+    // ✅ CRITICAL FIX: Reset retry count but DON'T set state to "ready" here
+    // The state should remain "idle" so sendDataSyncStartCommand can proceed
+    // sendDataSyncStartCommand will set state to "syncing" when it successfully sends the command
     dataSyncRetryCount[deviceId] = 0
     
     let isAlreadyConnected = connectedPeripherals.contains { $0.identifier.uuidString == deviceId }
@@ -1965,10 +2093,15 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       dataSyncRequested[deviceId] = true
       
       // Attempt data sync
+      // Note: sendDataSyncStartCommand will set state to "syncing" if successful
       let success = sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
       
       if success {
+        NSLog("   ✅ Data sync start command sent successfully")
       } else {
+        NSLog("   ⚠️ Data sync start command failed or was blocked")
+        // Reset state to idle if sync couldn't start
+        dataSyncState[deviceId] = "idle"
       }
     } else {
       // Device not yet connected - wait for device to be ready
@@ -1976,14 +2109,18 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
         guard let self = self else { return }
         
-        self.dataSyncState[deviceId] = "ready"
+        // ✅ CRITICAL FIX: Don't set state to "ready" - let sendDataSyncStartCommand handle it
         self.dataSyncRetryCount[deviceId] = 0
         self.dataSyncRequested[deviceId] = true
         
         let success = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
         
         if success {
+          NSLog("   ✅ Data sync start command sent successfully (delayed)")
         } else {
+          NSLog("   ⚠️ Data sync start command failed or was blocked (delayed)")
+          // Reset state to idle if sync couldn't start
+          self.dataSyncState[deviceId] = "idle"
         }
       }
     }
@@ -2076,7 +2213,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       }
     } else {
       NSLog("❌ Failed to send Data Sync Start command")
-      dataSyncState[deviceId] = "ready"
+      // ✅ CRITICAL FIX: Set state back to "idle" on failure so sync can be retried
+      // Don't set to "ready" as that would block future sync attempts
+      dataSyncState[deviceId] = "idle"
       dataSyncRequested[deviceId] = false // Reset if failed
     }
     
@@ -3556,12 +3695,6 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   @objc(startAutoConnect:rejecter:)
   func startAutoConnect(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
-    // ✅ SYNC WITH ANDROID: Guard - no bonded devices means nothing to auto-connect to
-    if bondedDeviceIDs.isEmpty {
-      resolve(true)
-      return
-    }
-    
     // Ensure we have notification permission so we can surface background connects
     requestNotificationPermissionsIfNeeded()
     
@@ -3573,6 +3706,20 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       ]
       centralManager = CBCentralManager(delegate: self, queue: nil, options: options)
     } else {
+    }
+    
+    // ✅ CRITICAL FIX: Sync system-level bonds before checking if list is empty
+    // This ensures devices bonded at iOS system level are added to our bondedDeviceIDs list
+    if let manager = centralManager, manager.state == .poweredOn {
+      syncSystemBondedDevices()
+    }
+    
+    // ✅ SYNC WITH ANDROID: Guard - no bonded devices means nothing to auto-connect to
+    // But now we've synced system bonds, so this check is more accurate
+    if bondedDeviceIDs.isEmpty {
+      NSLog("⏸️ Skipping auto-connect: no bonded devices (after syncing system bonds)")
+      resolve(["status": "skipped", "reason": "no_bonded_devices"])
+      return
     }
     
     autoConnectEnabled = true
@@ -4292,17 +4439,25 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let hasCorrectService = serviceUUIDs.contains(smartTagServiceUUID)
     let hasManufacturerID = isSmartHealthTag(advertisementData: advertisementData)
 
-    // DEBUG: Log all discovered devices for debugging (disabled for production)
-    // Uncomment below lines for troubleshooting device discovery issues
-    // NSLog("   - Is DyreID device: \(isDyreIDDevice)")
-    // NSLog("   - Has correct service UUID: \(hasCorrectService)")
-    // NSLog("   - Service UUIDs: \(serviceUUIDs.map { $0.uuidString })")
-    // NSLog("   - Has valid manufacturer ID: \(hasManufacturerID)")
+    // ✅ ENABLED: Log ALL discovered devices for debugging iOS scanning issues
+    NSLog("🔍 [iOS] Discovered: \(deviceName) | ID: \(deviceId) | RSSI: \(RSSI)")
+    NSLog("   - Is DyreID device: \(isDyreIDDevice)")
+    NSLog("   - Has correct service UUID: \(hasCorrectService)")
+    NSLog("   - Service UUIDs: \(serviceUUIDs.map { $0.uuidString })")
+    NSLog("   - Has valid manufacturer ID: \(hasManufacturerID)")
+    
+    // Log manufacturer data if present for debugging
+    if let manufacturerData = advertisementData["kCBAdvDataManufacturerData"] as? Data {
+      NSLog("   - Manufacturer data: \(manufacturerData.map { String(format: "%02X", $0) }.joined(separator: " "))")
+    } else {
+      NSLog("   - Manufacturer data: NONE")
+    }
 
-    // ✅ STRICTER FILTERING: Device must meet at least one of these criteria with stricter validation:
+    // ✅ IMPROVED FILTERING: More lenient for iOS to catch devices that may not advertise all data
     // Priority 1: Valid manufacturer ID (0x1234) with proper data structure (most reliable)
-    // Priority 2: Correct service UUID AND valid device name
+    // Priority 2: Correct service UUID (even without name match - iOS may cache wrong name)
     // Priority 3: DyreID/Health Tag device name (for devices not advertising full data)
+    // Priority 4: DyreID name match alone (fallback for iOS caching issues)
     
     var shouldAcceptDevice = false
     var acceptReason = ""
@@ -4311,23 +4466,24 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       // Highest confidence - device has our manufacturer ID with valid structure
       shouldAcceptDevice = true
       acceptReason = "Valid manufacturer ID (0x1234) with proper data structure"
-    } else if hasCorrectService && isDyreIDDevice {
-      // Medium confidence - device has our service UUID AND correct name
+    } else if hasCorrectService {
+      // ✅ IMPROVED: Accept if service UUID matches, even without name (iOS caching fix)
       shouldAcceptDevice = true
-      acceptReason = "Correct service UUID AND DyreID/Health Tag name"
-    } else if isDyreIDDevice && serviceUUIDs.isEmpty {
-      // Lower confidence - only name matches (for devices with minimal advertising)
+      acceptReason = "Correct service UUID (0f0e0d0c-0b0a-0908-0706-050403020100)"
+    } else if isDyreIDDevice {
+      // ✅ IMPROVED: Accept DyreID/Health Tag name alone (iOS may not always send service UUIDs)
       shouldAcceptDevice = true
-      acceptReason = "DyreID/Health Tag name (no service UUIDs advertised)"
+      acceptReason = "DyreID/Health Tag device name"
     }
     
-    guard shouldAcceptDevice else {
-      // Not a DyreID device or our Smart Health Tag - ignore this device silently
+    if !shouldAcceptDevice {
+      // Not a DyreID device - log for debugging and ignore
+      NSLog("   ❌ Device rejected - does not match any filter criteria")
       return
     }
     
-    // Only log accepted devices
-    NSLog("   Reason: \(acceptReason)")
+    // Log accepted devices
+    NSLog("   ✅ Device ACCEPTED - Reason: \(acceptReason)")
     
     // Store in scanned devices - only our Smart Health Tags
     scannedDevices[deviceId] = peripheral
@@ -4552,6 +4708,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   private var devicesPendingPairingVerification: [String: Date] = [:]
   private var pairingVerificationTimers: [String: Timer] = [:]
   
+  // ✅ REFINEMENT 1: Explicit connection state tracking per device
+  private var deviceConnectionStates: [String: ConnectionState] = [:]
+  
+  // ✅ REFINEMENT 3: Track encrypted read retry attempts
+  private var encryptedReadRetryAttempts: [String: Int] = [:] // deviceId -> retry count
+  private let MAX_ENCRYPTED_READ_RETRIES = 1 // Retry once for insufficientEncryption
+  private let ENCRYPTED_READ_RETRY_DELAY: TimeInterval = 1.5 // 1.5 seconds delay
+  
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
     let deviceId = peripheral.identifier.uuidString
     let deviceName = peripheral.name ?? "Unknown"
@@ -4629,6 +4793,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     connectingPeripherals.removeValue(forKey: deviceId)
     connectedPeripherals.append(peripheral)
     
+    // ✅ REFINEMENT 1: Set initial connection state
+    deviceConnectionStates[deviceId] = .CONNECTED
+    
     // ✅ FIX: Cancel connection timeout timer since connection succeeded
     connectionTimeoutTimers[deviceId]?.cancel()
     connectionTimeoutTimers.removeValue(forKey: deviceId)
@@ -4703,6 +4870,36 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     }
   }
   
+  // ✅ REFINEMENT 1: Emit DeviceConnected event only at READY state
+  private func emitDeviceConnectedEvent(deviceId: String, peripheral: CBPeripheral) {
+    // ✅ REFINEMENT 1: Only emit if we're at READY state
+    guard deviceConnectionStates[deviceId] == .READY else {
+      NSLog("   ⚠️ [REFINEMENT 1] Attempted to emit DeviceConnected but state is not READY: \(deviceConnectionStates[deviceId]?.rawValue ?? "nil")")
+      return
+    }
+    
+    let deviceName = peripheral.name ?? getDeviceName(deviceId: deviceId) ?? "Unknown Device"
+    let wasAlreadyBonded = bondedDeviceIDs.contains(deviceId)
+    
+    NSLog("   ✅ REFINEMENT 1: Emitting DeviceConnected at READY state")
+    NSLog("   📱 UI should update device list to show connected state")
+    NSLog("   ⏰ Timestamp: \(Date())")
+    
+    let deviceInfo: [String: Any] = [
+      "deviceId": deviceId,
+      "deviceName": deviceName,
+      "connectionType": autoConnectEnabled ? "auto" : "manual",
+      "pairingVerified": true, // ✅ SDD COMPLIANT: Only sent after successful pairing
+      "isBonded": true, // ✅ Device is bonded after successful pairing
+      "wasAlreadyBonded": wasAlreadyBonded, // ✅ Indicate if this was a re-pair or new pair
+      "connectionState": "READY" // ✅ REFINEMENT 1: Explicit state
+    ]
+    
+    DispatchQueue.main.async {
+      self.sendEvent(withName: "DeviceConnected", body: deviceInfo)
+    }
+  }
+  
   // ✅ NEW: Confirm connection after pairing verification
   private func confirmConnection(peripheral: CBPeripheral, deviceId: String) {
     // ✅ CRITICAL FIX: Create device name immediately on connection if it doesn't exist (matching Android)
@@ -4727,7 +4924,27 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     if !wasAlreadyBonded {
       bondedDeviceIDs.insert(deviceId)
       saveBondedDevices()
+      NSLog("   ✅ Device added to bonded list - bondedDeviceIDs count: \(bondedDeviceIDs.count)")
     } else {
+      NSLog("   ℹ️ Device already in bonded list")
+    }
+    
+    // ✅ FIX: Auto-start auto-connect if not already enabled and we have bonded devices
+    // This ensures devices will auto-reconnect after going out of range
+    if !autoConnectEnabled && !bondedDeviceIDs.isEmpty {
+      NSLog("   📡 Auto-connect not enabled but device is bonded - enabling auto-connect for future reconnections")
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+        self.autoConnectEnabled = true
+        NSLog("   ✅ Auto-connect enabled (will reconnect if device goes out of range)")
+        
+        // Start health monitoring
+        self.startHealthChecks()
+        
+        // Start scanning if Bluetooth is ready (helps with initial background scan setup)
+        if self.centralManager?.state == .poweredOn {
+          self.startScanning()
+        }
+      }
     }
     
     // Resolve connection promise if this was a manual connection
@@ -4749,21 +4966,15 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     } else {
     }
     
-    // Send connection event (ONLY sent after pairing verification succeeds)
-    NSLog("   📱 UI should update device list to show connected state")
-    NSLog("   ⏰ Timestamp: \(Date())")
-    
-    let deviceInfo: [String: Any] = [
-      "deviceId": deviceId,
-      "deviceName": deviceName,
-      "connectionType": autoConnectEnabled ? "auto" : "manual",
-      "pairingVerified": true, // ✅ SDD COMPLIANT: Only sent after successful pairing
-      "isBonded": true, // ✅ Device is bonded after successful pairing
-      "wasAlreadyBonded": wasAlreadyBonded // ✅ Indicate if this was a re-pair or new pair
-    ]
-    
-    DispatchQueue.main.async {
-      self.sendEvent(withName: "DeviceConnected", body: deviceInfo)
+    // ✅ REFINEMENT 1: Do NOT emit DeviceConnected here - wait for READY state
+    // DeviceConnected will be emitted in enableNotificationsAfterRTCCheck when state reaches READY
+    // However, if there's no Device Status characteristic (so RTC check won't run), enable notifications directly
+    if let allCharacteristics = deviceCharacteristics[deviceId],
+       !allCharacteristics.contains(where: { $0.uuid == DEVICE_STATUS_CHAR_UUID }) {
+      NSLog("   ✅ REFINEMENT 1: No Device Status characteristic - enabling notifications directly to reach READY")
+      enableNotificationsAfterRTCCheck(peripheral: peripheral, deviceId: deviceId)
+    } else {
+      NSLog("   ✅ REFINEMENT 1: Connection confirmed (SECURE_READY) - waiting for RTC check and notifications to reach READY")
     }
     
     // ✅ FIXED: Send ServiceDiscoveryComplete event if services were already discovered
@@ -5079,26 +5290,43 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     
     // Handle auto-reconnection for automatic disconnects (background/out-of-range)
     // Only attempt auto-reconnect if this is NOT a manual disconnect
+    NSLog("🔄 Checking if auto-reconnect should run:")
+    NSLog("   - autoConnectEnabled: \(autoConnectEnabled)")
+    NSLog("   - Device in bonded list: \(bondedDeviceIDs.contains(deviceId))")
+    NSLog("   - Bonded devices count: \(bondedDeviceIDs.count)")
+    
     if autoConnectEnabled && bondedDeviceIDs.contains(deviceId) {
       // Check if this was a manual disconnect
       let isManualDisconnect = manualDisconnectInProgress.contains(deviceId)
+      NSLog("   - Is manual disconnect: \(isManualDisconnect)")
       
       if isManualDisconnect {
         // This was a manual disconnect - keep tracking and don't auto-reconnect
         // Don't remove from manualDisconnectInProgress here - only remove when manual connection is made
+        NSLog("🚫 Manual disconnect detected - skipping auto-reconnect for: \(deviceId)")
       } else {
         // This was an automatic disconnect (background/out-of-range) - attempt auto-reconnect
+        NSLog("🔄 Automatic disconnect detected - scheduling auto-reconnection for: \(deviceId)")
         
         // ✅ SYNC WITH ANDROID: Use improved reconnection logic with max attempts and RSSI check
         // Reset attempt counter for new reconnection cycle
         reconnectAttempts[deviceId] = 0
         
         // Start scanning for the device
+        NSLog("   📡 Starting scan to find device...")
         startScanning()
         
         // ✅ SYNC WITH ANDROID: Use exponential backoff with max attempts
         // Schedule first reconnection attempt with proper backoff
+        NSLog("   ⏰ Scheduling reconnection attempts with exponential backoff...")
         scheduleReconnection(deviceId: deviceId)
+      }
+    } else {
+      if !autoConnectEnabled {
+        NSLog("⚠️ Auto-reconnect SKIPPED - Auto-connect is DISABLED")
+        NSLog("   💡 Enable auto-connect by calling startAutoConnect() or connecting to a device")
+      } else if !bondedDeviceIDs.contains(deviceId) {
+        NSLog("⚠️ Auto-reconnect SKIPPED - Device \(deviceId) not in bonded list")
       }
     }
     
@@ -5212,7 +5440,16 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       let deviceName = peripheral.name ?? "Unknown"
       
       
-      // Check if this device is in our bonded list
+      // ✅ CRITICAL FIX: If device is connected at system level but not in our bonded list,
+      // it might be bonded at iOS system level. Add it to our list first.
+      // This handles the case where device was bonded outside the app or app was reinstalled
+      if !bondedDeviceIDs.contains(deviceId) && !forgottenDeviceIDs.contains(deviceId) {
+        NSLog("   ✅ Syncing system-connected device to bondedDeviceIDs: \(deviceId)")
+        bondedDeviceIDs.insert(deviceId)
+        saveBondedDevices()
+      }
+      
+      // Check if this device is in our bonded list (now it should be after sync above)
       if bondedDeviceIDs.contains(deviceId) {
         
         // Check if we already have it tracked
@@ -5224,8 +5461,76 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         // ✅ CRITICAL: Peripheral is connected at system level but not in our app
         // Attach to existing connection without disconnect/reconnect
         attachToSystemConnectedPeripheral(peripheral)
-      } else {
       }
+    }
+  }
+  
+  /**
+   * ✅ CRITICAL FIX: Sync system-level bonded devices with app's bondedDeviceIDs list
+   * 
+   * iOS Limitations (per Apple's privacy design):
+   * - iOS does NOT provide API to list all system-bonded devices
+   * - iOS does NOT allow checking if a device is already paired
+   * 
+   * What iOS DOES allow:
+   * - retrieveConnectedPeripherals(withServices:) - gets currently connected devices
+   * - retrievePeripherals(withIdentifiers:) - gets previously known peripherals by UUID
+   * 
+   * Strategy:
+   * 1. Check currently connected peripherals (system may have connected them)
+   * 2. For devices in our bondedDeviceIDs list, verify iOS can retrieve them
+   *    (if iOS can retrieve by UUID, it means iOS knows about them = system-bonded)
+   * 3. Add any system-connected devices not in our list
+   * 
+   * Note: This is the best we can do on iOS - we cannot discover all system bonds,
+   * but we can detect devices that iOS knows about when we try to retrieve them.
+   */
+  private func syncSystemBondedDevices() {
+    guard let manager = centralManager else { return }
+    guard manager.state == .poweredOn else { return }
+    
+    var syncedCount = 0
+    
+    // Method 1: Check currently connected peripherals
+    // iOS allows retrieving peripherals that are currently connected
+    let serviceUUIDs: [CBUUID] = [
+      SMART_TAG_SERVICE_UUID,
+      BATTERY_SERVICE_UUID,
+      DEVICE_INFO_SERVICE_UUID
+    ]
+    
+    let systemConnected = manager.retrieveConnectedPeripherals(withServices: serviceUUIDs)
+    
+    for peripheral in systemConnected {
+      let deviceId = peripheral.identifier.uuidString
+      
+      // If device is connected at system level but not in our list (and not forgotten),
+      // it's likely bonded at system level - add it to our list
+      if !bondedDeviceIDs.contains(deviceId) && !forgottenDeviceIDs.contains(deviceId) {
+        NSLog("   ✅ Syncing system-connected device to bondedDeviceIDs: \(deviceId)")
+        bondedDeviceIDs.insert(deviceId)
+        syncedCount += 1
+      }
+    }
+    
+    // Method 2: Verify devices in our list can be retrieved by iOS
+    // If iOS can retrieve a peripheral by UUID, it means iOS knows about it (system-bonded)
+    // This helps catch cases where device was bonded outside our app
+    let currentBondedList = Array(bondedDeviceIDs)
+    if !currentBondedList.isEmpty {
+      let uuids = currentBondedList.compactMap { UUID(uuidString: $0) }
+      let retrievablePeripherals = manager.retrievePeripherals(withIdentifiers: uuids)
+      
+      // All devices that iOS can retrieve are confirmed to be known to iOS
+      // (This is just verification - we already have them in our list)
+      NSLog("   📋 Verified \(retrievablePeripherals.count) of \(currentBondedList.count) bonded devices are known to iOS")
+    }
+    
+    if syncedCount > 0 {
+      saveBondedDevices()
+      NSLog("   ✅ Synced \(syncedCount) system-bonded device(s) to app's bondedDeviceIDs list")
+    } else {
+      NSLog("   ℹ️ No new system-bonded devices found to sync")
     }
   }
   
@@ -5496,6 +5801,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       // ✅ IMPORTANT: Don't set flag until event is actually sent (fixes pairing verification flow)
       if pendingServices.isEmpty && self.discoveryCompleteEventSent[deviceId] != true {
         
+        // ✅ REFINEMENT 1: Update connection state to SERVICES_READY
+        self.deviceConnectionStates[deviceId] = .SERVICES_READY
+        
         // Collect all characteristics to check what we have
         let allCharacteristics = self.deviceCharacteristics[deviceId] ?? []
         let hasSystemCommand = allCharacteristics.contains { $0.uuid == self.SYSTEM_COMMAND_CHAR_UUID }
@@ -5585,6 +5893,44 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       let errorDomain = (error as NSError).domain
       let errorDescription = error.localizedDescription.lowercased()
       
+      // ✅ REFINEMENT 3: Check for insufficientEncryption error (user may be entering passkey slowly)
+      let isInsufficientEncryption = errorCode == 15 || // CBError.insufficientEncryption
+                                     errorDescription.contains("insufficient encryption") ||
+                                     errorDescription.contains("insufficientencryption")
+      
+      // ✅ REFINEMENT 3: Retry encrypted read once if insufficientEncryption and pairing verification pending
+      if isInsufficientEncryption && devicesPendingPairingVerification[deviceId] != nil {
+        let retryCount = encryptedReadRetryAttempts[deviceId] ?? 0
+        
+        if retryCount < MAX_ENCRYPTED_READ_RETRIES {
+          encryptedReadRetryAttempts[deviceId] = retryCount + 1
+          NSLog("   ⚠️ [ENCRYPTED READ RETRY] insufficientEncryption error - retrying (\(retryCount + 1)/\(MAX_ENCRYPTED_READ_RETRIES)) after \(ENCRYPTED_READ_RETRY_DELAY)s")
+          NSLog("   💡 User may still be entering passkey - giving more time")
+          
+          // Retry after delay
+          DispatchQueue.main.asyncAfter(deadline: .now() + ENCRYPTED_READ_RETRY_DELAY) { [weak self] in
+            guard let self = self else { return }
+            
+            // Check if still pending pairing verification
+            if self.devicesPendingPairingVerification[deviceId] != nil,
+               let deviceStatusChar = self.deviceCharacteristics[deviceId]?.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) {
+              NSLog("   🔄 Retrying encrypted read for pairing verification...")
+              peripheral.readValue(for: deviceStatusChar)
+            } else {
+              NSLog("   ⚠️ Cannot retry - device no longer pending pairing verification")
+              self.encryptedReadRetryAttempts.removeValue(forKey: deviceId)
+            }
+          }
+          return
+        } else {
+          // Max retries reached - treat as pairing failure
+          NSLog("   ❌ [ENCRYPTED READ] Max retries reached - pairing likely failed")
+          encryptedReadRetryAttempts.removeValue(forKey: deviceId)
+          handlePairingFailure(deviceId: deviceId, peripheral: peripheral)
+          return
+        }
+      }
+      
       // iOS CBError codes that indicate pairing/authentication issues
       let isPairingError = errorCode == 10 || // CBError.attributeNotFound
                            errorCode == 6 ||   // CBError.connectionTimeout
@@ -5595,6 +5941,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       
       if isPairingError && devicesPendingPairingVerification[deviceId] != nil {
         NSLog("   Error code: \(errorCode), Domain: \(errorDomain)")
+        encryptedReadRetryAttempts.removeValue(forKey: deviceId) // Clean up retry tracking
         handlePairingFailure(deviceId: deviceId, peripheral: peripheral)
         return
       }
@@ -5624,6 +5971,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         NSLog("   ⚠️ iOS reused existing bond - passkey was NOT verified")
         NSLog("   ⚠️ If wrong PIN was entered previously, iOS may still allow connection")
         NSLog("   💡 To verify passkey: Forget device in iOS Settings, then reconnect")
+        
+        // ✅ CRITICAL FIX: Add system-bonded device to our list if not already there
+        // This ensures auto-connect will work on next app launch
+        if !isAlreadyBonded && isSystemBonded {
+          NSLog("   ✅ Adding system-bonded device to app's bondedDeviceIDs list")
+          bondedDeviceIDs.insert(deviceId)
+          saveBondedDevices()
+        }
       } else {
         NSLog("   ✅ Fresh pairing succeeded - passkey was verified by iOS")
         NSLog("   ✅ If passkey was wrong, pairing would have FAILED")
@@ -5636,6 +5991,12 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       
       pairingVerificationTimers[deviceId]?.invalidate()
       pairingVerificationTimers.removeValue(forKey: deviceId)
+      
+      // ✅ REFINEMENT 1: Update connection state to SECURE_READY (pairing verified)
+      deviceConnectionStates[deviceId] = .SECURE_READY
+      
+      // ✅ REFINEMENT 3: Clear encrypted read retry attempts on success
+      encryptedReadRetryAttempts.removeValue(forKey: deviceId)
       
       // ✅ SDD v1.4: If this is a Device Status read, use it for RTC check before confirming connection
       if characteristicUuid == DEVICE_STATUS_CHAR_UUID.uuidString, let data = characteristic.value {

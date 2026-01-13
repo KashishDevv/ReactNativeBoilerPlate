@@ -62,6 +62,8 @@ const ModernBLEManager = ({ navigation }) => {
   const [phoneBatteryLevel, setPhoneBatteryLevel] = useState(null);
   const [bleState, setBleState] = useState(BLE_STATES.UNKNOWN);
   const [refreshing, setRefreshing] = useState(false);
+  // DemoTag: Demo mode state
+  const [demoModeEnabled, setDemoModeEnabled] = useState(false);
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
   const rssiScanTimerRef = React.useRef(null);
@@ -110,6 +112,17 @@ const ModernBLEManager = ({ navigation }) => {
       }
     };
     requestPermissionsEarly();
+
+    // DemoTag: Load demo mode state
+    const loadDemoModeState = async () => {
+      try {
+        const enabled = BLEService.isDemoModeEnabled();
+        setDemoModeEnabled(enabled);
+      } catch (error) {
+        console.log('Could not load demo mode state:', error);
+      }
+    };
+    loadDemoModeState();
     
     // Load connected devices on mount
     (async () => {
@@ -350,18 +363,22 @@ const ModernBLEManager = ({ navigation }) => {
           const existingDeviceData = existingDevice.deviceData || {};
           const newDeviceData = deviceData.deviceData || {};
           
-          // ✅ CRITICAL FIX: Don't overwrite deviceData with 0 values after auto-connect
-          // Preserve existing values if they're not null/undefined, and don't overwrite with 0
+          // ✅ SMART MERGE: Prioritize meaningful values, don't let 0 overwrite good data
+          // Priority: new non-zero > existing non-zero > fallback to whatever is available
           const mergedDeviceData = {
             ...existingDeviceData,
-            // Only update steps if new value is meaningful (not 0) or if existing is null/undefined
-            steps: (existingDeviceData.steps !== null && existingDeviceData.steps !== undefined)
-              ? existingDeviceData.steps  // Preserve existing non-null value
-              : ((newDeviceData.steps !== undefined && newDeviceData.steps !== 0) ? newDeviceData.steps : null),
-            // Only update temperature if new value is meaningful (not 0) or if existing is null/undefined
-            temperature: (existingDeviceData.temperature !== null && existingDeviceData.temperature !== undefined)
-              ? existingDeviceData.temperature  // Preserve existing non-null value
-              : ((newDeviceData.temperature !== undefined && newDeviceData.temperature !== 0) ? newDeviceData.temperature : null),
+            // Steps: Prefer new non-zero, then existing non-zero, then whatever is available
+            steps: (newDeviceData.steps !== undefined && newDeviceData.steps !== 0) 
+              ? newDeviceData.steps  // New has meaningful value, use it (fresher data)
+              : (existingDeviceData.steps !== undefined && existingDeviceData.steps !== 0)
+                ? existingDeviceData.steps  // Existing has meaningful value, keep it (don't overwrite with 0)
+                : (newDeviceData.steps !== undefined ? newDeviceData.steps : existingDeviceData.steps),  // Use whatever is available
+            // Temperature: Prefer new non-zero, then existing non-zero, then whatever is available
+            temperature: (newDeviceData.temperature !== undefined && newDeviceData.temperature !== 0)
+              ? newDeviceData.temperature  // New has meaningful value, use it (fresher data)
+              : (existingDeviceData.temperature !== undefined && existingDeviceData.temperature !== 0)
+                ? existingDeviceData.temperature  // Existing has meaningful value, keep it (don't overwrite with 0)
+                : (newDeviceData.temperature !== undefined ? newDeviceData.temperature : existingDeviceData.temperature),  // Use whatever is available
             // Update other fields normally
             totalSteps: newDeviceData.totalSteps !== undefined ? newDeviceData.totalSteps : existingDeviceData.totalSteps,
             batteryLevel: newDeviceData.batteryLevel !== undefined ? newDeviceData.batteryLevel : existingDeviceData.batteryLevel,
@@ -434,12 +451,22 @@ const ModernBLEManager = ({ navigation }) => {
         setDevices(prevDevices => {
           return prevDevices.map(d => {
             if (d.id === eventData.deviceId) {
+              // ✅ CRITICAL: Preserve totalSteps, steps, and temperature
+              // Use values from eventData first (if provided), otherwise preserve from existing deviceData
+              const preservedTotalSteps = eventData.totalSteps !== undefined ? eventData.totalSteps : d.deviceData?.totalSteps;
+              const preservedSteps = eventData.steps !== undefined ? eventData.steps : d.deviceData?.steps;
+              const preservedTemperature = eventData.temperature !== undefined ? eventData.temperature : d.deviceData?.temperature;
+              
               return {
                 ...d,
                 deviceData: {
                   ...d.deviceData,
                   ...eventData.deviceData,
                   recordCount: 0, // Always 0 after sync complete
+                  // ✅ Preserve totalSteps, steps, and temperature (from event or existing)
+                  totalSteps: preservedTotalSteps,
+                  steps: preservedSteps,
+                  temperature: preservedTemperature,
                 },
                 manufacturerData: d.manufacturerData ? {
                   ...d.manufacturerData,
@@ -1351,6 +1378,13 @@ const ModernBLEManager = ({ navigation }) => {
         </View>
       </View>
 
+      {/* DemoTag: Demo device badge */}
+      {item.isDemoTag && (
+        <View style={styles.demoBadge}>
+          <Text style={styles.demoBadgeText}>🏷️ DEMO</Text>
+        </View>
+      )}
+
       {/* Data Row - Live/Synced Data */}
       {(item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined || 
         item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined || 
@@ -1618,6 +1652,29 @@ const ModernBLEManager = ({ navigation }) => {
         
         <View style={styles.headerButtons}>
           
+          {/* DemoTag: Demo mode toggle button */}
+          <TouchableOpacity
+            style={[styles.demoButton, demoModeEnabled && styles.demoButtonActive]}
+            onPress={async () => {
+              try {
+                const newState = !demoModeEnabled;
+                await BLEService.setDemoModeEnabled(newState);
+                setDemoModeEnabled(newState);
+                // Refresh device list
+                const allKnownDevices = BLEService.getScannedDevices();
+                setDevices(Array.from(allKnownDevices.values()));
+              } catch (error) {
+                console.error('Error toggling demo mode:', error);
+                Alert.alert('Error', 'Failed to toggle demo mode');
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.demoButtonText}>
+              {demoModeEnabled ? '🏷️ Demo ON' : '🏷️ Demo'}
+            </Text>
+          </TouchableOpacity>
+          
           {/* <TouchableOpacity
             style={[styles.refreshButton, { backgroundColor: Colors.error }]}
             onPress={checkPermissions}
@@ -1782,6 +1839,25 @@ const styles = StyleSheet.create({
   scanButtonText: {
     color: Colors.white,
     fontSize: Fonts.size.medium,
+  },
+  // DemoTag: Demo button styles
+  demoButton: {
+    backgroundColor: Colors.lightGray,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 25,
+    minWidth: 80,
+    marginRight: Metrics.smallMargin,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  demoButtonActive: {
+    backgroundColor: Colors.warning,
+  },
+  demoButtonText: {
+    color: Colors.white,
+    fontSize: Fonts.size.small,
+    fontFamily: Fonts.type.bold,
     fontFamily: Fonts.type.bold,
   },
   headerButtons: {
@@ -1939,6 +2015,20 @@ const styles = StyleSheet.create({
   },
   freshDiscoveryText: {
     color: Colors.primary,
+    fontSize: Fonts.size.tiny,
+    fontFamily: Fonts.type.bold,
+  },
+  // DemoTag: Demo badge styles
+  demoBadge: {
+    backgroundColor: Colors.warning,
+    paddingHorizontal: Metrics.smallMargin,
+    paddingVertical: 4,
+    borderRadius: 12,
+    alignSelf: 'flex-start',
+    marginBottom: Metrics.smallMargin,
+  },
+  demoBadgeText: {
+    color: Colors.white,
     fontSize: Fonts.size.tiny,
     fontFamily: Fonts.type.bold,
   },

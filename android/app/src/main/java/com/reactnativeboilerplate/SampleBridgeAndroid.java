@@ -152,12 +152,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     // ✅ Manufacturer ID for Smart Health Tag (matching iOS)
     private static final int SMART_TAG_MANUFACTURER_ID = 0x1234;
     
-    // ✅ OPTIMIZATION: Connection and Reconnection Constants (Industry Standard)
-    private static final int MAX_RECONNECT_ATTEMPTS = 5; // Max reconnection attempts before giving up
-    private static final long INITIAL_RECONNECT_BACKOFF_MS = 1000; // 1 second initial backoff
-    private static final long MAX_RECONNECT_BACKOFF_MS = 60000; // 60 seconds max backoff
-    private static final long RECONNECT_JITTER_MS = 1000; // 0-1 second random jitter to prevent thundering herd
-    private static final int MIN_RSSI_FOR_RECONNECTION = -90; // Minimum RSSI (dBm) to attempt reconnection
+    // ✅ REMOVED: Legacy reconnection constants - now handled by BLECompanionDeviceService
+    // MAX_RECONNECT_ATTEMPTS, INITIAL_RECONNECT_BACKOFF_MS, MAX_RECONNECT_BACKOFF_MS, etc.
+    // are now defined in BLECompanionDeviceService where they're used
     
     // ✅ OPTIMIZATION: Device Management Constants
     private static final int MAX_DEVICE_MAP_SIZE = 50; // Maximum devices in map to prevent memory bloat
@@ -301,57 +298,77 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     // ✅ If device was waiting for bonding, now proceed with GATT connection
                     BluetoothDevice waitingDevice = devicesWaitingForBonding.remove(deviceId);
                     if (waitingDevice != null) {
-                        // Proceed with GATT connection now that bonding is complete
-                        proceedWithGattConnection(waitingDevice, deviceId);
+                        // ✅ CRITICAL FIX: Add delay after bonding completes before attempting GATT connection
+                        // This prevents immediate disconnection that can occur if connection is attempted too quickly
+                        // The delay allows Android BLE stack to fully complete the bonding process
+                        Log.d(TAG, "✅ Bonding completed for device: " + deviceId + " - waiting 800ms before GATT connection");
                         
-                        // ✅ CRITICAL FIX: Set connection timeout after bonding completes
-                        // Now that pairing is done, set normal connection timeout
+                        // Store promise key for timeout setup
                         String promiseKey = "connect_" + deviceId;
                         long timeoutMs = 12000; // Increased to 12 seconds to match default timeout
-                        ScheduledFuture<?> timeoutTimer = executorService.schedule(() -> {
-                            // ✅ CRITICAL FIX: Check if device is actually connected before timing out
-                            // This prevents race condition where timeout fires after STATE_CONNECTED
-                            synchronized(gattLock) {
-                                BluetoothGatt gatt = connectedGatts.get(deviceId);
-                                if (gatt != null) {
-                                    // Device is connected - check actual connection state
-                                    try {
-                                        int connectionState = bluetoothManager.getConnectionState(gatt.getDevice(), BluetoothProfile.GATT);
-                                        if (connectionState == BluetoothProfile.STATE_CONNECTED) {
-                                            Log.d(TAG, "✅ Timeout fired but device is connected (after bonding) - ignoring timeout for: " + deviceId);
-                                            connectionTimeoutTimers.remove(deviceId);
-                                            return; // Device is connected, don't timeout
-                                        }
-                                    } catch (Exception e) {
-                                        Log.e(TAG, "❌ Error checking connection state in timeout (after bonding): " + e.getMessage());
-                                    }
-                                }
-                            }
-                            
-                            Promise pendingPromise = pendingConnectionPromises.remove(promiseKey);
-                            if (pendingPromise != null) {
-                                pendingPromise.reject("CONNECTION_TIMEOUT", "Connection timeout after " + (timeoutMs/1000) + "s");
-                                Log.w(TAG, "⏱️ Connection timeout for device (after bonding): " + deviceId);
-                                
-                                // Clean up GATT connection
-                                synchronized(gattLock) {
-                                    BluetoothGatt gatt = connectedGatts.remove(deviceId);
-                                    if (gatt != null) {
-                                        try {
-                                            gatt.disconnect();
-                                            gatt.close();
-                                        } catch (Exception e) {
-                                            Log.e(TAG, "❌ Error cleaning up after timeout: " + e.getMessage());
-                                        }
-                                    }
-                                }
-                            }
-                            connectionTimeoutTimers.remove(deviceId);
-                        }, timeoutMs, TimeUnit.MILLISECONDS);
                         
-                        // ✅ CRITICAL FIX: Track timeout timer so it can be cancelled when STATE_CONNECTED is received
-                        connectionTimeoutTimers.put(deviceId, timeoutTimer);
-                        Log.d(TAG, "✅ Connection timeout set after bonding: " + (timeoutMs/1000) + "s");
+                        // ✅ CRITICAL FIX: Delay GATT connection after bonding to prevent immediate disconnection
+                        mainHandler.postDelayed(() -> {
+                            // Double-check bond state before connecting (bonding might have been cancelled)
+                            int currentBondState = waitingDevice.getBondState();
+                            if (currentBondState == BluetoothDevice.BOND_BONDED) {
+                                Log.d(TAG, "✅ Proceeding with GATT connection after bonding delay for: " + deviceId);
+                                proceedWithGattConnection(waitingDevice, deviceId);
+                                
+                                // ✅ CRITICAL FIX: Set connection timeout after bonding completes
+                                // Now that pairing is done, set normal connection timeout
+                                ScheduledFuture<?> timeoutTimer = executorService.schedule(() -> {
+                                    // ✅ CRITICAL FIX: Check if device is actually connected before timing out
+                                    // This prevents race condition where timeout fires after STATE_CONNECTED
+                                    synchronized(gattLock) {
+                                        BluetoothGatt gatt = connectedGatts.get(deviceId);
+                                        if (gatt != null) {
+                                            // Device is connected - check actual connection state
+                                            try {
+                                                int connectionState = bluetoothManager.getConnectionState(gatt.getDevice(), BluetoothProfile.GATT);
+                                                if (connectionState == BluetoothProfile.STATE_CONNECTED) {
+                                                    Log.d(TAG, "✅ Timeout fired but device is connected (after bonding) - ignoring timeout for: " + deviceId);
+                                                    connectionTimeoutTimers.remove(deviceId);
+                                                    return; // Device is connected, don't timeout
+                                                }
+                                            } catch (Exception e) {
+                                                Log.e(TAG, "❌ Error checking connection state in timeout (after bonding): " + e.getMessage());
+                                            }
+                                        }
+                                    }
+                                    
+                                    Promise pendingPromise = pendingConnectionPromises.remove(promiseKey);
+                                    if (pendingPromise != null) {
+                                        pendingPromise.reject("CONNECTION_TIMEOUT", "Connection timeout after " + (timeoutMs/1000) + "s");
+                                        Log.w(TAG, "⏱️ Connection timeout for device (after bonding): " + deviceId);
+                                        
+                                        // Clean up GATT connection
+                                        synchronized(gattLock) {
+                                            BluetoothGatt gatt = connectedGatts.remove(deviceId);
+                                            if (gatt != null) {
+                                                try {
+                                                    gatt.disconnect();
+                                                    gatt.close();
+                                                } catch (Exception e) {
+                                                    Log.e(TAG, "❌ Error cleaning up after timeout: " + e.getMessage());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    connectionTimeoutTimers.remove(deviceId);
+                                }, timeoutMs, TimeUnit.MILLISECONDS);
+                                
+                                // ✅ CRITICAL FIX: Track timeout timer so it can be cancelled when STATE_CONNECTED is received
+                                connectionTimeoutTimers.put(deviceId, timeoutTimer);
+                                Log.d(TAG, "✅ Connection timeout set after bonding: " + (timeoutMs/1000) + "s");
+                            } else {
+                                Log.w(TAG, "⚠️ Bond state changed to " + currentBondState + " during delay - connection cancelled for: " + deviceId);
+                                Promise pendingPromise = pendingConnectionPromises.remove(promiseKey);
+                                if (pendingPromise != null) {
+                                    pendingPromise.reject("BONDING_CANCELLED", "Bonding was cancelled or failed");
+                                }
+                            }
+                        }, 800); // 800ms delay to allow bonding to fully complete
                     } else {
                         
                         // ✅ CRITICAL FIX: If device is pending pairing verification and just became bonded,
@@ -524,6 +541,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     private Set<String> bondedDeviceIds = Collections.synchronizedSet(new HashSet<>());
     private Set<String> forgottenDeviceIds = Collections.synchronizedSet(new HashSet<>()); // ✅ Track forgotten devices (matching iOS)
     private Set<String> devicesPendingUnbond = Collections.synchronizedSet(new HashSet<>()); // ✅ Track devices that need removeBond() called after disconnect
+    // ✅ FIX #1 & #3: connectedGatts synchronization architecture
+    // - BLEConnectionManager is the authoritative source (owns actual GATT connections)
+    // - SampleBridgeAndroid maintains this map for backward compatibility and metadata
+    // - Use BLEConnectionManager.getConnectedDeviceCount() for health checks
+    // - ALL writes to this map MUST use synchronized(gattLock)
     private Map<String, BluetoothGatt> connectedGatts = new ConcurrentHashMap<>();
     private Map<String, DeviceData> deviceDataMap = new ConcurrentHashMap<>();
     private Map<String, BluetoothDevice> devicesWaitingForBonding = new ConcurrentHashMap<>(); // ✅ Track devices waiting for bonding
@@ -579,16 +601,18 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     private HandlerThread bleHandlerThread;
     private Handler bleHandler;
     
-    // Reconnection
-    private Map<String, Runnable> reconnectTasks = new ConcurrentHashMap<>();
-    private Map<String, Integer> reconnectAttempts = new ConcurrentHashMap<>();
-    private Map<String, Long> reconnectBackoff = new ConcurrentHashMap<>();
+    // ✅ REMOVED: Legacy reconnection maps - now handled by BLECompanionDeviceService
+    // reconnectTasks, reconnectAttempts, reconnectBackoff are no longer needed
+    
+    // RSSI monitoring tasks (separate from reconnection)
+    // ✅ REMOVED: Duplicate declaration - now defined at line 615 with correct type ScheduledFuture<?>
     
     // ✅ SYNC WITH iOS: Retry attempts tracking for read operations (matching iOS retryAttempts)
     private Map<String, Integer> readRetryAttempts = new ConcurrentHashMap<>();
     
     // Health Data API Monitoring
     private Map<String, ScheduledFuture<?>> healthApiTasks = new ConcurrentHashMap<>();
+    private Map<String, ScheduledFuture<?>> rssiMonitoringTasks = new ConcurrentHashMap<>(); // Track RSSI monitoring tasks per device
     
     // ✅ Data Sync State Management (matching iOS implementation)
     private Map<String, String> dataSyncState = new ConcurrentHashMap<>(); // Track sync state: "idle", "time_syncing", "ready", "syncing", "complete"
@@ -635,6 +659,39 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     // ✅ FIX: Track polling reads to mark them in device status events
     private Map<String, Long> pollingReadTimestamps = new ConcurrentHashMap<>(); // deviceId -> timestamp when polling read was initiated
     private static final long POLLING_READ_WINDOW_MS = 2000; // 2 seconds - if read happened within this window, it's from polling
+    
+    // ✅ DEFENSIVE REFINEMENT #1: MTU tracking - never assume 512, track negotiated MTU
+    private Map<String, Integer> negotiatedMtuMap = new ConcurrentHashMap<>(); // deviceId -> negotiated MTU
+    private static final int DEFAULT_MTU = 23; // BLE minimum MTU
+    private static final int REQUESTED_MTU = 512; // Request 512, but accept what we get
+    private static final int MTU_NEGOTIATION_TIMEOUT_MS = 5000; // 5 seconds timeout for MTU negotiation
+    private Map<String, ScheduledFuture<?>> mtuNegotiationTimeouts = new ConcurrentHashMap<>(); // Track MTU negotiation timeouts
+    
+    // ✅ DEFENSIVE REFINEMENT #2: CCC retry tracking - retry notification enable after encryption
+    private Map<String, Integer> cccRetryAttempts = new ConcurrentHashMap<>(); // deviceId -> retry count for CCC writes
+    private Map<String, Long> firstNotificationTimestamp = new ConcurrentHashMap<>(); // deviceId -> timestamp when first notification received
+    private Map<String, ScheduledFuture<?>> cccRetryTimers = new ConcurrentHashMap<>(); // deviceId -> timer for CCC retry
+    private static final int MAX_CCC_RETRY_ATTEMPTS = 2; // Retry CCC write up to 2 times
+    private static final long CCC_RETRY_DELAY_MS = 2000; // 2 seconds delay before retrying CCC
+    
+    // ✅ DEFENSIVE REFINEMENT #3: SECURE_READY state tracking
+    private Map<String, SecureReadyState> secureReadyStates = new ConcurrentHashMap<>(); // deviceId -> readiness state
+    private enum SecureReadyState {
+        CONNECTING,      // GATT connected, but not ready
+        MTU_NEGOTIATING, // MTU negotiation in progress
+        SERVICES_DISCOVERING, // Service discovery in progress
+        NOTIFICATIONS_ENABLING, // Notifications being enabled
+        PAIRING_VERIFYING, // Pairing verification in progress
+        SECURE_READY     // All checks passed, ready for operations
+    }
+    
+    // ✅ DEFENSIVE REFINEMENT #4: Delay polling until first successful read/notify
+    private Map<String, Boolean> firstReadSuccessful = new ConcurrentHashMap<>(); // deviceId -> true if first read succeeded
+    private Map<String, Boolean> firstNotificationReceived = new ConcurrentHashMap<>(); // deviceId -> true if first notification received
+    private Map<String, ScheduledFuture<?>> pollingStartDelays = new ConcurrentHashMap<>(); // deviceId -> delayed polling start timer
+    
+    // ✅ DEFENSIVE REFINEMENT #5: Handle disconnection during pairing gracefully
+    private Map<String, Boolean> disconnectionDuringPairing = new ConcurrentHashMap<>(); // deviceId -> true if disconnected during pairing
     
     // ✅ NEW: Service discovery timeout tracking (matching iOS)
     private Map<String, ScheduledFuture<?>> serviceDiscoveryTimeouts = new ConcurrentHashMap<>();
@@ -911,17 +968,21 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     }
     
     private void performHealthChecks() {
-        Log.d(TAG, "⚡ Performing health checks for " + connectedGatts.size() + " connected devices");
+        // ✅ FIX #1: Use BLEConnectionManager as single source of truth
+        int connectedCount = connectionManager.getConnectedDeviceCount();
+        Log.d(TAG, "⚡ Performing health checks for " + connectedCount + " connected devices (from BLEConnectionManager)");
         
-        if (connectedGatts.isEmpty()) {
+        if (connectedCount == 0) {
             Log.d(TAG, "⚡ No connected devices for health check");
             return;
         }
         
+        // Get connected devices from the authoritative source
+        Set<String> connectedDeviceIds = connectionManager.getConnectedDeviceIds();
+        
         // Check each connected device
-        for (Map.Entry<String, BluetoothGatt> entry : connectedGatts.entrySet()) {
-            String deviceId = entry.getKey();
-            BluetoothGatt gatt = entry.getValue();
+        for (String deviceId : connectedDeviceIds) {
+            BluetoothGatt gatt = connectionManager.getGatt(deviceId);
             
             try {
                 Log.d(TAG, "⚡ Health checking device: " + deviceId);
@@ -1024,10 +1085,49 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         initBLEHandlerThread();
         
         // Initialize Connection Manager
-        connectionManager = new BLEConnectionManager(reactContext);
+        // ✅ CRITICAL FIX: Use singleton instance to ensure all components use the same instance
+        connectionManager = BLEConnectionManager.getInstance(reactContext);
         
         // Start Companion Device Service for reliable auto-connection
         companionService = new BLECompanionDeviceService(reactContext);
+        
+        // ✅ Set up callback to receive auto-connection notifications
+        companionService.setAutoConnectionCallback(new BLECompanionDeviceService.AutoConnectionCallback() {
+            @Override
+            public void onAutoConnected(String deviceId, BluetoothGatt gatt) {
+                Log.d(TAG, "📢 Received auto-connection notification: " + deviceId);
+                handleAutoConnectedDevice(deviceId, gatt);
+            }
+            
+            @Override
+            public void onAutoDisconnected(String deviceId) {
+                Log.d(TAG, "📢 Received auto-disconnection notification: " + deviceId);
+                handleAutoDisconnectedDevice(deviceId);
+            }
+            
+            @Override
+            public void onServicesDiscovered(String deviceId, BluetoothGatt gatt) {
+                Log.d(TAG, "📢 Received services discovered notification for auto-connected device: " + deviceId);
+                // ✅ Process services to read device info, version, characteristics, etc.
+                handleServicesDiscovered(gatt);
+            }
+            
+            @Override
+            public void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+                Log.d(TAG, "📢 Received characteristic read notification for auto-connected device: " + deviceId + " - " + characteristic.getUuid());
+                
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    // ✅ Process the characteristic read using the same handler as manual connections
+                    // This ensures auto-connections process data (temperature, steps, battery, etc.) identically
+                    handleCharacteristicData(deviceId, characteristic);
+                } else {
+                    Log.e(TAG, "❌ Characteristic read failed for auto-connected device: " + deviceId + " - Status: " + status);
+                }
+            }
+        });
+        
+        // Link connection manager to companion service
+        companionService.setConnectionManager(connectionManager);
         
         // Request notification permissions (like iOS)
         requestNotificationPermissionsIfNeeded();
@@ -1036,6 +1136,22 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         loadBondedDevices();
         loadForgottenDevices(); // ✅ Load forgotten devices (matching iOS)
         loadDevicePasskeys(); // ✅ Load stored device passkeys
+        
+        // ✅ CRITICAL FIX: Initialize companion service with all bonded devices immediately
+        // This ensures iOS-style aggressive reconnection works even if app never goes to background
+        if (companionService != null && !bondedDeviceIds.isEmpty()) {
+            Log.d(TAG, "🔄 Initializing companion service with " + bondedDeviceIds.size() + " bonded devices");
+            for (String deviceId : bondedDeviceIds) {
+                BluetoothDevice device = bondedDevices.get(deviceId);
+                if (device != null) {
+                    Log.d(TAG, "  → Adding device to companion monitoring: " + deviceId);
+                    companionService.addCompanionDevice(deviceId, device);
+                } else {
+                    Log.w(TAG, "  ⚠️ Device not found in bondedDevices map: " + deviceId);
+                }
+            }
+            Log.d(TAG, "✅ Companion service initialized with bonded devices");
+        }
         
         // Auto-initialize if we have bonded devices (like iOS)
         if (!bondedDeviceIds.isEmpty()) {
@@ -1152,7 +1268,18 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     Log.d(TAG, "🔄 Restoring system-connected device in app: " + deviceId);
                     restoreSystemConnectedDevice(deviceId, device);
                 } else {
-                    Log.d(TAG, "ℹ️ System-connected device is not bonded: " + deviceId + " - ignoring");
+                    // ✅ CRITICAL FIX: If device is connected at system level but not in our bonded list,
+                    // it might be bonded at Android system level. Check and sync it.
+                    if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                        Log.d(TAG, "✅ System-connected device is bonded at system level: " + deviceId);
+                        // Add to our bonded list if not forgotten
+                        if (!forgottenDeviceIds.contains(deviceId)) {
+                            Log.d(TAG, "   ✅ Syncing system-bonded device to bondedDeviceIds: " + deviceId);
+                            addToBondedDevices(deviceId, device);
+                        }
+                    } else {
+                        Log.d(TAG, "ℹ️ System-connected device is not bonded: " + deviceId + " - ignoring");
+                    }
                 }
             }
             
@@ -1160,6 +1287,73 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Log.e(TAG, "❌ Security exception querying system devices: " + e.getMessage());
         } catch (Exception e) {
             Log.e(TAG, "❌ Error querying system-connected devices: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * ✅ CRITICAL FIX: Sync system-level bonded devices with app's bondedDeviceIds list
+     * 
+     * Android Capabilities:
+     * - Android ALLOWS apps to access system-bonded (paired) BLE devices
+     * - getBondedDevices() returns all devices paired at system level
+     * - Apps can check bond state, reconnect without passkey, etc.
+     * 
+     * Limitations (Android 12+):
+     * - Requires proper Bluetooth permissions
+     * - User must grant nearby device access
+     * - Cannot read passkey (security)
+     * - Cannot trigger pairing silently in all cases
+     * 
+     * What we do:
+     * 1. Get all system-bonded devices via getBondedDevices()
+     * 2. Add any system-bonded devices not in our app's list
+     * 3. This ensures auto-connect works even if device was bonded outside our app
+     * 
+     * Called when starting auto-connect to ensure we have accurate bonded device list
+     */
+    private void syncSystemBondedDevices() {
+        try {
+            if (bluetoothAdapter == null) {
+                Log.w(TAG, "⚠️ BluetoothAdapter is null - cannot sync system bonds");
+                return;
+            }
+            
+            // ✅ Android allows direct access to all system-bonded devices
+            Set<BluetoothDevice> systemBondedDevices = bluetoothAdapter.getBondedDevices();
+            Log.d(TAG, "📋 System reports " + systemBondedDevices.size() + " bonded device(s)");
+            
+            if (systemBondedDevices.isEmpty()) {
+                Log.d(TAG, "   ℹ️ No system-bonded devices found");
+                return;
+            }
+            
+            int syncedCount = 0;
+            for (BluetoothDevice device : systemBondedDevices) {
+                String deviceId = device.getAddress();
+                
+                // Check if this is a Smart Tag device (optional - you may want to filter)
+                // For now, we'll sync all bonded devices
+                
+                // If device is bonded at system level but not in our list (and not forgotten),
+                // add it to our list
+                if (!bondedDeviceIds.contains(deviceId) && !forgottenDeviceIds.contains(deviceId)) {
+                    Log.d(TAG, "   ✅ Syncing system-bonded device to bondedDeviceIds: " + deviceId);
+                    addToBondedDevices(deviceId, device);
+                    syncedCount++;
+                }
+            }
+            
+            if (syncedCount > 0) {
+                Log.d(TAG, "   ✅ Synced " + syncedCount + " system-bonded device(s) to app's bondedDeviceIds list");
+            } else {
+                Log.d(TAG, "   ℹ️ All system-bonded devices already in app's list");
+            }
+            
+        } catch (SecurityException e) {
+            Log.e(TAG, "❌ Security exception syncing system bonds: " + e.getMessage());
+            Log.e(TAG, "   💡 Ensure app has BLUETOOTH_CONNECT permission (Android 12+)");
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error syncing system-bonded devices: " + e.getMessage());
         }
     }
     
@@ -1214,7 +1408,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         
                         if (newState == BluetoothProfile.STATE_CONNECTED) {
                             Log.d(TAG, "✅ System-restored device connected successfully: " + deviceId);
-                            connectedGatts.put(deviceId, gatt);
+                            // ✅ FIX #3: Add synchronization
+                            synchronized(gattLock) {
+                                connectedGatts.put(deviceId, gatt);
+                            }
                             connectingDevices.remove(deviceId); // Remove from connecting set once connected
                             
                             // Request connection parameters
@@ -1378,9 +1575,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     // Get the device and attempt reconnection
                     BluetoothDevice device = bondedDevices.get(deviceId);
                     if (device != null) {
-                        // Reset any reconnection attempt counters
-                        reconnectAttempts.remove(deviceId);
-                        reconnectTasks.remove(deviceId);
+                        // ✅ REMOVED: Legacy reconnection counters no longer needed
+                        // reconnectAttempts.remove(deviceId);
+                        // reconnectTasks.remove(deviceId);
                         
                         Log.d(TAG, "  🚀 Attempting to restore connection to: " + deviceId);
                         reconnectAttemptsCount++;
@@ -1443,7 +1640,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             Log.d(TAG, "✅ State restoration successful: " + deviceId);
                             // Remove from connecting set
                             connectingDevices.remove(deviceId);
-                            connectedGatts.put(deviceId, gatt);
+                            // ✅ FIX #3: Add synchronization
+                            synchronized(gattLock) {
+                                connectedGatts.put(deviceId, gatt);
+                            }
                             
                             // ✅ CRITICAL FIX: Create DeviceData immediately on connection if it doesn't exist
                             DeviceData deviceData = deviceDataMap.get(deviceId);
@@ -1724,8 +1924,16 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             return;
         }
         
+        // ✅ CRITICAL FIX: Cancel any existing RSSI monitoring task to prevent duplicates
+        ScheduledFuture<?> existingTask = rssiMonitoringTasks.get(deviceId);
+        if (existingTask != null && !existingTask.isCancelled()) {
+            Log.d(TAG, "🛑 Cancelling existing RSSI monitoring task for: " + deviceId);
+            existingTask.cancel(false);
+            rssiMonitoringTasks.remove(deviceId);
+        }
+        
         // Start periodic RSSI reads (like iOS)
-        executorService.scheduleAtFixedRate(() -> {
+        ScheduledFuture<?> rssiTask = executorService.scheduleAtFixedRate(() -> {
             try {
                 // ✅ FIX: Check if device is still connected before reading RSSI
                 if (!connectedGatts.containsKey(deviceId)) {
@@ -1775,14 +1983,25 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             }
         }, 0, 30, TimeUnit.SECONDS); // Read RSSI every 30 seconds (like iOS)
         
-        Log.d(TAG, "✅ RSSI monitoring started for auto-connected device: " + deviceId);
+        // ✅ Store the task so it can be cancelled later
+        rssiMonitoringTasks.put(deviceId, rssiTask);
+        
+        Log.d(TAG, "✅ RSSI monitoring started for device: " + deviceId);
     }
     
     private void startHealthDataApiMonitoringForDevice(String deviceId) {
         Log.d(TAG, "📊 Starting health data API monitoring for device: " + deviceId);
         
+        // ✅ CRITICAL FIX: Cancel any existing health API task to prevent duplicates
+        ScheduledFuture<?> existingTask = healthApiTasks.get(deviceId);
+        if (existingTask != null && !existingTask.isCancelled()) {
+            Log.d(TAG, "🛑 Cancelling existing health API monitoring task for: " + deviceId);
+            existingTask.cancel(false);
+            healthApiTasks.remove(deviceId);
+        }
+        
         // Start periodic health data API calls (like iOS)
-        executorService.scheduleAtFixedRate(() -> {
+        ScheduledFuture<?> healthTask = executorService.scheduleAtFixedRate(() -> {
             try {
                 if (connectedGatts.containsKey(deviceId)) {
                     DeviceData deviceData = deviceDataMap.get(deviceId);
@@ -1796,7 +2015,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             }
         }, 0, 60, TimeUnit.SECONDS); // Send health data every 60 seconds (like iOS)
         
-        Log.d(TAG, "✅ Health data API monitoring started for auto-connected device: " + deviceId);
+        // ✅ Store the task so it can be cancelled later
+        healthApiTasks.put(deviceId, healthTask);
+        
+        Log.d(TAG, "✅ Health data API monitoring started for device: " + deviceId);
     }
 
     @Override
@@ -1816,6 +2038,123 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             if (companionService != null) {
                 companionService.addCompanionDevice(deviceId, device);
             }
+        }
+    }
+    
+    /**
+     * ✅ Handle auto-connected device from BLECompanionDeviceService
+     * This is called when a bonded device auto-reconnects in the background
+     */
+    private void handleAutoConnectedDevice(String deviceId, BluetoothGatt gatt) {
+        Log.d(TAG, "🔗 Handling auto-connected device: " + deviceId);
+        
+        // ✅ FIX #4: Idempotency guard - prevent duplicate processing
+        synchronized(gattLock) {
+            if (connectedGatts.containsKey(deviceId)) {
+                Log.w(TAG, "⚠️ Device already in connected map, skipping duplicate handleAutoConnectedDevice: " + deviceId);
+                return;
+            }
+        }
+        
+        try {
+            // Add GATT to connected devices map
+            synchronized(gattLock) {
+                connectedGatts.put(deviceId, gatt);
+                Log.d(TAG, "✅ Added device to SampleBridgeAndroid connected map: " + deviceId);
+            }
+            
+            // Get or create DeviceData
+            DeviceData deviceData = deviceDataMap.get(deviceId);
+            if (deviceData == null) {
+                String deviceName = gatt.getDevice().getName();
+                if (deviceName == null || deviceName.isEmpty()) {
+                    deviceName = getDeviceName(deviceId);
+                    if (deviceName == null || deviceName.isEmpty()) {
+                        deviceName = "Unknown Device";
+                    }
+                }
+                deviceData = new DeviceData(deviceId, deviceName);
+                deviceDataMap.put(deviceId, deviceData);
+                Log.d(TAG, "✅ Created DeviceData for auto-connected device: " + deviceId + " (" + deviceName + ")");
+            }
+            
+            // Update device state
+            deviceData.connectionState = "connected";
+            deviceData.timestamp = System.currentTimeMillis();
+            
+            // Mark as auto-connection for event tracking
+            deviceConnectionType.put(deviceId, true); // true = auto connection
+            
+            // ✅ FIXED: Don't send event yet - wait for services to be discovered and device data to be read
+            // This matches the manual connection flow where DeviceConnected is sent AFTER handleServicesDiscovered
+            // Event will be sent at the end of handleServicesDiscovered for auto-connected devices
+            
+            // ✅ CRITICAL FIX: Trigger service discovery handling to read device info
+            // Check if services are already discovered, if so, process them immediately
+            List<BluetoothGattService> services = gatt.getServices();
+            if (services != null && !services.isEmpty()) {
+                Log.d(TAG, "📊 Services already discovered for auto-connected device, processing now: " + deviceId);
+                handleServicesDiscovered(gatt);
+            } else {
+                Log.d(TAG, "⏳ Services not yet discovered for auto-connected device, will process when ready: " + deviceId);
+                // handleServicesDiscovered will be called when onServicesDiscovered callback fires
+            }
+            
+            // Start RSSI reading immediately
+            boolean rssiReadInitiated = gatt.readRemoteRssi();
+            if (!rssiReadInitiated) {
+                Log.w(TAG, "⚠️ Failed to initiate RSSI read for auto-connected device: " + deviceId);
+            }
+            
+            // ✅ CRITICAL FIX: Start continuous RSSI monitoring for auto-connected devices
+            // This ensures RSSI updates regularly and doesn't show as "NA"
+            startRSSIMonitoringForDevice(deviceId);
+            
+            // Clear manual disconnect tracking if it was set
+            manualDisconnectInProgress.remove(deviceId);
+            
+            // Update device list tracking
+            activeScannedDevices.add(deviceId);
+            deviceLastSeen.put(deviceId, System.currentTimeMillis());
+            
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error handling auto-connected device: " + deviceId, e);
+        }
+    }
+    
+    /**
+     * ✅ Handle auto-disconnected device from BLECompanionDeviceService
+     * This is called when an auto-connected device disconnects
+     */
+    private void handleAutoDisconnectedDevice(String deviceId) {
+        Log.d(TAG, "🔌 Handling auto-disconnected device: " + deviceId);
+        
+        try {
+            // Remove from connected devices
+            synchronized(gattLock) {
+                BluetoothGatt gatt = connectedGatts.remove(deviceId);
+                if (gatt != null) {
+                    gatt.close();
+                }
+            }
+            
+            // Update device data
+            DeviceData deviceData = deviceDataMap.get(deviceId);
+            if (deviceData != null) {
+                deviceData.connectionState = "disconnected";
+                deviceData.timestamp = System.currentTimeMillis();
+                
+                // Send DeviceDisconnected event to React Native
+                WritableMap deviceInfo = createDeviceInfoMap(deviceData);
+                sendEvent("DeviceDisconnected", deviceInfo);
+                Log.d(TAG, "📢 Sent DeviceDisconnected event for auto-disconnected device: " + deviceId);
+            }
+            
+            // Clean up device resources
+            cleanupDeviceResources(deviceId);
+            
+        } catch (Exception e) {
+            Log.e(TAG, "❌ Error handling auto-disconnected device: " + deviceId, e);
         }
     }
     
@@ -2312,12 +2651,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             connectedGatts.remove(deviceId);
         }
         
-        // Cancel reconnect task
-        Runnable reconnectTask = reconnectTasks.remove(deviceId);
-        if (reconnectTask != null) {
-            // ScheduledExecutorService doesn't have remove method, we'll just remove from our map
-            // The task will complete naturally or be cancelled by timeout
-        }
+        // ✅ REMOVED: Legacy reconnect task - now handled by BLECompanionDeviceService
+        // Runnable reconnectTask = reconnectTasks.remove(deviceId);
+        // Companion service manages its own reconnection tasks
+        Log.d(TAG, "   Reconnection managed by BLECompanionDeviceService: " + deviceId);
     }
     
     /**
@@ -2326,111 +2663,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
      * - Checks RSSI before reconnecting (skips if device is out of range)
      * - Uses exponential backoff with jitter to prevent thundering herd problem
      */
-    private void scheduleReconnection(String deviceId) {
-        if (reconnectTasks.containsKey(deviceId)) {
-            return; // Already scheduled
-        }
-        
-        int attempts = reconnectAttempts.getOrDefault(deviceId, 0);
-        
-        // ✅ OPTIMIZATION: Check max attempts (Industry Standard)
-        if (attempts >= MAX_RECONNECT_ATTEMPTS) {
-            Log.d(TAG, "🛑 Max reconnection attempts (" + MAX_RECONNECT_ATTEMPTS + ") reached for: " + deviceId);
-            reconnectAttempts.remove(deviceId);
-            return;
-        }
-        
-        // ✅ OPTIMIZATION: Check RSSI before reconnecting (Industry Standard)
-        // Don't attempt reconnection if device is too far away (RSSI < -90 dBm)
-        DeviceData deviceData = deviceDataMap.get(deviceId);
-        if (deviceData != null) {
-            int rssi = deviceData.rssi;
-            // Only check RSSI if it's a valid value (not 0, which might indicate it hasn't been set)
-            if (rssi != 0 && rssi < MIN_RSSI_FOR_RECONNECTION) {
-                Log.d(TAG, "📶 Device RSSI too weak (" + rssi + " dBm < " + MIN_RSSI_FOR_RECONNECTION + " dBm) - skipping reconnection");
-                reconnectAttempts.remove(deviceId); // Don't count this as an attempt
-                return;
-            }
-            if (rssi != 0) {
-                Log.d(TAG, "📶 Device RSSI: " + rssi + " dBm - proceeding with reconnection");
-            }
-        }
-        
-        // ✅ OPTIMIZATION: Exponential backoff with jitter (Industry Standard)
-        // Jitter prevents multiple devices from reconnecting simultaneously (thundering herd problem)
-        long baseBackoff = Math.min(INITIAL_RECONNECT_BACKOFF_MS * (1L << attempts), MAX_RECONNECT_BACKOFF_MS);
-        long jitter = (long)(Math.random() * RECONNECT_JITTER_MS); // 0-1 second random jitter
-        long backoffMs = baseBackoff + jitter;
-        
-        Log.d(TAG, "🔄 Scheduling reconnection attempt " + (attempts + 1) + "/" + MAX_RECONNECT_ATTEMPTS + " in " + backoffMs + "ms (base: " + baseBackoff + "ms + jitter: " + jitter + "ms)");
-        
-        Runnable reconnectTask = () -> {
-            Log.d("SampleBridgeAndroid", "🔄 Attempting reconnection to " + deviceId + " (attempt " + (attempts + 1) + ")");
-            
-            try {
-                BluetoothDevice device = bluetoothAdapter.getRemoteDevice(deviceId);
-                if (device != null) {
-                    // Attempt reconnection
-                    BluetoothGatt gatt = device.connectGatt(
-                        getReactApplicationContext(),
-                        false,
-                        new BluetoothGattCallback() {
-                            @Override
-                            public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
-                                if (newState == BluetoothProfile.STATE_CONNECTED) {
-                                    Log.d("SampleBridgeAndroid", "✅ Reconnected to: " + deviceId);
-                                    reconnectAttempts.remove(deviceId);
-                                    reconnectTasks.remove(deviceId);
-                                    
-                                    // ✅ CRITICAL FIX: Create DeviceData immediately on connection if it doesn't exist
-                                    DeviceData deviceData = deviceDataMap.get(deviceId);
-                                    if (deviceData == null) {
-                                        String deviceName = gatt.getDevice().getName();
-                                        if (deviceName == null || deviceName.isEmpty()) {
-                                            deviceName = getDeviceName(deviceId); // Try to get saved name
-                                            if (deviceName == null || deviceName.isEmpty()) {
-                                                deviceName = "Unknown Device";
-                                            }
-                                        }
-                                        deviceData = new DeviceData(deviceId, deviceName);
-                                        deviceDataMap.put(deviceId, deviceData);
-                                        Log.d(TAG, "✅ Created DeviceData for reconnected device: " + deviceId + " (" + deviceName + ")");
-                                    }
-                                    
-                                    // Update device state
-                                    deviceData.connectionState = "connected";
-                                    sendEvent("DeviceReconnected", createDeviceInfoMap(deviceData));
-                                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                                    Log.d("SampleBridgeAndroid", "❌ Reconnection failed for: " + deviceId);
-                                    
-                                    // ✅ Clean up all resources (matching iOS)
-                                    cleanupDeviceResources(deviceId);
-                                    
-                                    reconnectAttempts.put(deviceId, attempts + 1);
-                                    
-                                    // ✅ OPTIMIZATION: Use constant for max attempts
-                                    reconnectAttempts.put(deviceId, attempts + 1);
-                                    if (attempts + 1 < MAX_RECONNECT_ATTEMPTS) {
-                                        scheduleReconnection(deviceId);
-                                    } else {
-                                        Log.d("SampleBridgeAndroid", "🛑 Max reconnection attempts (" + MAX_RECONNECT_ATTEMPTS + ") reached for: " + deviceId);
-                                        reconnectAttempts.remove(deviceId);
-                                        reconnectTasks.remove(deviceId);
-                                    }
-                                }
-                            }
-                        }
-                    );
-                    connectedGatts.put(deviceId, gatt);
-                }
-            } catch (Exception e) {
-                Log.e("SampleBridgeAndroid", "Reconnection error: " + e.getMessage());
-            }
-        };
-        
-        reconnectTasks.put(deviceId, reconnectTask);
-        executorService.schedule(reconnectTask, backoffMs, TimeUnit.MILLISECONDS);
-    }
+    // ✅ REMOVED: Legacy manual reconnection - now handled by BLECompanionDeviceService
+    // The companion service provides iOS-style aggressive reconnection with:
+    // - Continuous scanning (every 3 seconds)
+    // - Direct connection attempts with exponential backoff
+    // - Better device presence detection
     
     private void handleServicesDiscovered(BluetoothGatt gatt) {
         String deviceId = gatt.getDevice().getAddress();
@@ -2485,6 +2722,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Integer existingCompleted = completedNotificationEnables.get(deviceId);
         }
         
+        // ✅ CRITICAL FIX: Check if this is a Smart Tag BEFORE RTC check
+        // This MUST be set before the RTC check below, otherwise isSmartTag will be false
+        deviceData.isSmartTag = deviceData.services.containsKey(SMART_TAG_SERVICE_UUID);
+        Log.d(TAG, "🏷️ Device " + deviceId + " isSmartTag: " + deviceData.isSmartTag);
+        
         // ✅ SDD v1.4 COMPLIANCE: Check RTC validity BEFORE enabling notifications
         // Flow: Read Device Status → Check RTC → Sync time if needed → THEN enable notifications
         // Reference: SDD 6.7 "Synchronize RTC through BLE connection" and 6.12.3 "Data Synchronization"
@@ -2492,7 +2734,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         // Step 1: Read Device Status characteristic ONCE to check RTC validity
         BluetoothGattCharacteristic deviceStatusChar = findCharacteristic(gatt, DEVICE_STATUS_CHAR_UUID);
         if (deviceStatusChar != null && deviceData.isSmartTag) {
+            Log.d(TAG, "📊 [RTC CHECK] Reading Device Status characteristic for RTC validity check: " + deviceId);
             boolean readSuccess = gatt.readCharacteristic(deviceStatusChar);
+            Log.d(TAG, "📊 [RTC CHECK] Device Status read initiated: " + readSuccess);
                             if (readSuccess) {
                 // RTC check and time sync will happen in onCharacteristicRead callback
                 // After SET_TIME response (or if RTC already valid), we'll enable notifications
@@ -2505,12 +2749,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             }
                             } else {
             // Not a Smart Tag or Device Status not available - proceed with notifications
+            Log.d(TAG, "⏭️ [RTC CHECK] Skipping RTC check - not a Smart Tag or Device Status not available");
             enableNotificationsAfterRTCCheck(gatt, deviceId, services, notificationsToEnable);
         }
-        
-        // Check if this is a Smart Tag
-        deviceData.isSmartTag = deviceData.services.containsKey(SMART_TAG_SERVICE_UUID);
-        Log.d(TAG, "🏷️ Device " + deviceId + " isSmartTag: " + deviceData.isSmartTag);
         
         // Log all discovered services for debugging
         Log.d(TAG, "📋 All discovered services for device " + deviceId + ":");
@@ -2551,6 +2792,32 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         // Request initial data immediately since services are now discovered
         Log.d(TAG, "📊 Service discovery complete, requesting device data for: " + deviceId);
         requestDeviceData(deviceId);
+        
+        // ✅ CRITICAL FIX: Send AutoConnectDeviceConnected event for auto-connected devices
+        // This matches manual connection flow where DeviceConnected is sent AFTER service discovery
+        Boolean isAutoConnection = deviceConnectionType.get(deviceId);
+        if (isAutoConnection != null && isAutoConnection) {
+            Log.d(TAG, "📢 Preparing to send AutoConnectDeviceConnected event after service discovery for: " + deviceId);
+            WritableMap deviceInfo = createDeviceInfoMap(deviceData);
+            
+            // ✅ CRITICAL FIX: Don't send 0 values for temperature/steps - Device Status read is async
+            // Send null instead so React Native SMART MERGE doesn't overwrite existing good data with 0
+            // Real values will come via DeviceDataUpdated event when characteristic read completes
+            if (deviceData.temperature == 0) {
+                deviceInfo.putNull("temperature");
+            }
+            if (deviceData.steps == 0) {
+                deviceInfo.putNull("steps");
+            }
+            
+            deviceInfo.putBoolean("pairingVerified", true);
+            deviceInfo.putBoolean("isBonded", bondedDeviceIds.contains(deviceId));
+            deviceInfo.putString("connectionType", "auto");
+            deviceInfo.putBoolean("wasAlreadyBonded", true);
+            
+            sendEvent("AutoConnectDeviceConnected", deviceInfo);
+            Log.d(TAG, "📢 Sent AutoConnectDeviceConnected event for auto-connected device: " + deviceId + " (temp/steps sent as null if 0)");
+        }
     }
     
     private void requestDeviceData(String deviceId) {
@@ -2602,18 +2869,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         // Read Smart Tag specific characteristics
         if (deviceData.isSmartTag) {
-            BluetoothGattCharacteristic deviceStatusChar = deviceData.characteristics.get(DEVICE_STATUS_CHAR_UUID);
-            if (deviceStatusChar != null) {
-                Log.d(TAG, "📊 Reading device status for Smart Tag: " + deviceId + " - UUID: " + DEVICE_STATUS_CHAR_UUID);
-                boolean readResult = gatt.readCharacteristic(deviceStatusChar);
-                Log.d(TAG, "📊 Device status read initiated: " + readResult);
-            } else {
-                Log.w(TAG, "⚠️ Device status characteristic not found for Smart Tag: " + deviceId);
-                Log.d(TAG, "📋 Available characteristics:");
-                for (String charUuid : deviceData.characteristics.keySet()) {
-                    Log.d(TAG, "📋   - " + charUuid);
-                }
-            }
+            // ✅ CRITICAL FIX: Don't read Device Status here - it's already read during RTC check in handleServicesDiscovered
+            // Reading it here causes a race condition since BLE can only do one operation at a time
+            // The Device Status data (temperature, steps, battery, etc.) will be processed in onCharacteristicRead callback
+            Log.d(TAG, "📊 Skipping Device Status read - already read during RTC check for: " + deviceId);
             
             BluetoothGattCharacteristic dataTransferChar = deviceData.characteristics.get(DATA_TRANSFER_CHAR_UUID);
             if (dataTransferChar != null) {
@@ -2780,10 +3039,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         // ✅ All notifications enabled - trigger command sequence!
         if (completed >= pending) {
             
-            // ✅ CRITICAL: Start polling immediately with default 120s interval
-            // This matches firmware default timing and works without SET_DATA_ACQUISITION_INTERVAL command
+            // ✅ DEFENSIVE REFINEMENT #4: Delay polling until first successful read/notify
+            // This prevents polling with stale cached data
             // Interval will be adjusted dynamically if SET_DATA_ACQUISITION_INTERVAL is sent later
-            startDeviceStatusPolling(deviceId, 120); // 120 seconds default
+            startDeviceStatusPollingWhenReady(deviceId, 120); // 120 seconds default
             
             // ✅ CRITICAL FIX: Increased delay to 1200ms to ensure descriptor writes complete
             // Per Punch Through guide: Android BLE needs time between operations
@@ -4665,9 +4924,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             
                             // Clean up connecting state and timers
                             devicesWaitingForBonding.remove(deviceIdToUnpair);
-                            reconnectTasks.remove(deviceIdToUnpair);
-                            reconnectAttempts.remove(deviceIdToUnpair);
-                            reconnectBackoff.remove(deviceIdToUnpair);
+                            // ✅ REMOVED: Legacy reconnection maps
+                            // reconnectTasks.remove(deviceIdToUnpair);
+                            // reconnectAttempts.remove(deviceIdToUnpair);
+                            // reconnectBackoff.remove(deviceIdToUnpair);
                             pairingVerificationTimers.remove(deviceIdToUnpair);
                             devicesPendingPairingVerification.remove(deviceIdToUnpair);
                             
@@ -4859,9 +5119,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             
                             // Clean up connecting state and timers
                             devicesWaitingForBonding.remove(deviceIdToRepair);
-                            reconnectTasks.remove(deviceIdToRepair);
-                            reconnectAttempts.remove(deviceIdToRepair);
-                            reconnectBackoff.remove(deviceIdToRepair);
+                            // ✅ REMOVED: Legacy reconnection maps
+                            // reconnectTasks.remove(deviceIdToRepair);
+                            // reconnectAttempts.remove(deviceIdToRepair);
+                            // reconnectBackoff.remove(deviceIdToRepair);
                             pairingVerificationTimers.remove(deviceIdToRepair);
                             devicesPendingPairingVerification.remove(deviceIdToRepair);
                             
@@ -5416,8 +5677,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         Log.d(TAG, "📅 Scheduling background work");
         
         try {
-            // Schedule periodic background scan
-            BLEWorkManager.schedulePeriodicScan(getReactApplicationContext());
+            // ✅ REMOVED: BLEWorkManager - redundant with foreground service
+            // BLEWorkManager.schedulePeriodicScan(getReactApplicationContext());
             
             // Connect to bonded devices
             if (connectionManager != null) {
@@ -5623,7 +5884,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             Log.d(TAG, "✅ Direct connection successful: " + deviceId);
                             // Remove from connecting set
                             connectingDevices.remove(deviceId);
-                            connectedGatts.put(deviceId, gatt);
+                            // ✅ FIX #3: Add synchronization
+                            synchronized(gattLock) {
+                                connectedGatts.put(deviceId, gatt);
+                            }
                             
                             // Request connection parameters based on power profile
                             requestConnectionParameters(gatt, deviceId);
@@ -5746,7 +6010,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         
                         if (status == BluetoothGatt.GATT_SUCCESS) {
                             // Ensure the GATT is properly stored in connectedGatts
-                            connectedGatts.put(deviceId, gatt);
+                            // ✅ FIX #3: Add synchronization
+                            synchronized(gattLock) {
+                                connectedGatts.put(deviceId, gatt);
+                            }
                             
                             // Handle service discovery (this will trigger data reading)
                             handleServicesDiscovered(gatt);
@@ -5839,8 +6106,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         Log.d(TAG, "📅 Scheduling auto-connect to bonded devices");
         
         try {
-            // Schedule immediate auto-connect work
-            BLEWorkManager.scheduleOneTimeConnect(getReactApplicationContext(), "bonded_devices");
+            // ✅ REMOVED: BLEWorkManager - redundant with foreground service
+            // BLEWorkManager.scheduleOneTimeConnect(getReactApplicationContext(), "bonded_devices");
             
             // Also start auto-connect immediately
             if (connectionManager != null) {
@@ -6558,8 +6825,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             if (scannedDevice != null && scannedDevice.rssi != 0) {
                 // RSSI of 0 typically means it hasn't been set yet, so skip check in that case
                 int rssi = scannedDevice.rssi;
-                if (rssi < MIN_RSSI_FOR_RECONNECTION) {
-                    Log.w(TAG, "⚠️ Device RSSI is weak (" + rssi + " dBm < " + MIN_RSSI_FOR_RECONNECTION + " dBm) - connection may fail");
+                final int MIN_RSSI = -90; // Minimum RSSI (dBm) for connection warning
+                if (rssi < MIN_RSSI) {
+                    Log.w(TAG, "⚠️ Device RSSI is weak (" + rssi + " dBm < " + MIN_RSSI + " dBm) - connection may fail");
                     Log.w(TAG, "   Device may be out of range or signal is weak");
                 } else {
                     Log.d(TAG, "✅ Device RSSI is good (" + rssi + " dBm) - should be in range");
@@ -6785,12 +7053,19 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             // This fixes the issue where pairing dialog doesn't appear if device firmware has keys stored
             // but Android doesn't have a bond (user removed bonding from system settings)
             int bondState = device.getBondState();
+            Log.d(TAG, "🔍 [BONDING CHECK] Device " + deviceId + " bond state: " + 
+                  (bondState == BluetoothDevice.BOND_NONE ? "BOND_NONE" : 
+                   bondState == BluetoothDevice.BOND_BONDING ? "BOND_BONDING" : 
+                   bondState == BluetoothDevice.BOND_BONDED ? "BOND_BONDED" : "UNKNOWN"));
+            
             if (bondState == BluetoothDevice.BOND_NONE) {
                 // Device is not bonded - we need to pair first
+                Log.d(TAG, "   💡 Device is not bonded - initiating pairing before GATT connection");
                 Log.d(TAG, "   💡 This ensures pairing dialog appears even if device firmware has keys stored");
                 
                 // Check if we're already waiting for bonding (avoid duplicate calls)
                 if (devicesWaitingForBonding.containsKey(deviceId)) {
+                    Log.d(TAG, "   ⏳ Already waiting for bonding - skipping duplicate createBond() call");
                     return;
                 }
                 
@@ -6820,6 +7095,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         }
                         
                         if (bondResult) {
+                            Log.d(TAG, "   ✅ createBond() returned true - pairing dialog should appear");
                             Log.d(TAG, "   ✅ User can enter passkey: " + passkey + " in the dialog");
                             Log.d(TAG, "   ✅ After bonding completes, GATT connection will proceed automatically");
                             // Connection will proceed after bonding completes (handled in ACTION_BOND_STATE_CHANGED)
@@ -6827,9 +7103,14 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         } else {
                             Log.e(TAG, "❌ [PRE-CONNECTION] createBond() returned false - pairing dialog may not appear");
                             Log.e(TAG, "   ⚠️ This may happen if device is already in bonding state or pairing was cancelled");
+                            Log.e(TAG, "   ⚠️ Will attempt GATT connection anyway - may fail with STATUS 133 if bonding is required");
                             devicesWaitingForBonding.remove(deviceId);
                             // Fall through to attempt GATT connection anyway (may work if device accepts connection)
                         }
+                    } else {
+                        Log.e(TAG, "❌ [PRE-CONNECTION] BLUETOOTH_CONNECT permission not granted");
+                        devicesWaitingForBonding.remove(deviceId);
+                        // Fall through to attempt GATT connection anyway
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "❌ [PRE-CONNECTION] Error calling createBond(): " + e.getMessage(), e);
@@ -6838,12 +7119,14 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 }
             } else if (bondState == BluetoothDevice.BOND_BONDING) {
                 // Device is currently bonding - wait for it to complete
+                Log.d(TAG, "   ⏳ Device is currently bonding - waiting for completion");
                 if (!devicesWaitingForBonding.containsKey(deviceId)) {
                     devicesWaitingForBonding.put(deviceId, device);
                 }
                 return; // Wait for bonding to complete
             } else {
                 // Device is already bonded - proceed with GATT connection
+                Log.d(TAG, "   ✅ Device is already bonded - proceeding with GATT connection");
             }
             
             synchronized(gattLock) {
@@ -7099,7 +7382,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                     // But mark that connection is established
                                 }
                                 
-                                connectedGatts.put(deviceId, gatt);
+                                // ✅ FIX #3: Add synchronization
+                                synchronized(gattLock) {
+                                    connectedGatts.put(deviceId, gatt);
+                                }
                                 
                                 // ✅ IMPROVEMENT: Clear retry attempts on successful connection
                                 connectionRetryAttempts.remove(deviceId);
@@ -7145,10 +7431,35 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                 pendingNotificationEnables.remove(deviceId);
                                 completedNotificationEnables.remove(deviceId);
                                 
+                                // ✅ DEFENSIVE REFINEMENT #1: Request MTU with timeout fallback
                                 // Following Punch Through guide: Perform operations serially
                                 // First request MTU, then discover services
                                 Log.d(TAG, "📡 Requesting MTU for device: " + deviceId);
-                                gatt.requestMtu(512);
+                                
+                                // Initialize SECURE_READY state
+                                secureReadyStates.put(deviceId, SecureReadyState.MTU_NEGOTIATING);
+                                
+                                // Request MTU (may negotiate to less than 512)
+                                gatt.requestMtu(REQUESTED_MTU);
+                                
+                                // ✅ Set timeout for MTU negotiation (fallback to DEFAULT_MTU if timeout)
+                                ScheduledFuture<?> mtuTimeout = executorService.schedule(() -> {
+                                    if (!negotiatedMtuMap.containsKey(deviceId)) {
+                                        // MTU negotiation timed out - use default
+                                        negotiatedMtuMap.put(deviceId, DEFAULT_MTU);
+                                        Log.w(TAG, "⚠️ MTU negotiation timeout for " + deviceId + " - using default MTU: " + DEFAULT_MTU);
+                                        updateSecureReadyState(deviceId, SecureReadyState.SERVICES_DISCOVERING);
+                                        
+                                        // Proceed with service discovery even if MTU timed out
+                                        List<BluetoothGattService> existingServices = gatt.getServices();
+                                        if (existingServices != null && existingServices.size() > 0) {
+                                            handleServicesDiscovered(gatt);
+                                        } else {
+                                            gatt.discoverServices();
+                                        }
+                                    }
+                                }, MTU_NEGOTIATION_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                                mtuNegotiationTimeouts.put(deviceId, mtuTimeout);
                                 
                                 // ✅ FIXED: Start pairing verification timer (matching iOS)
                                 // Android pairing typically completes within 3-5 seconds
@@ -7347,10 +7658,16 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                     sendEvent("DeviceDisconnected", createDeviceInfoMap(deviceData));
                                 }
                                 
-                                // Schedule reconnection if auto-connect is enabled (but not if pairing failed)
-                                if (autoConnectEnabled.get() && !wasPendingPairing) {
-                                    scheduleReconnection(deviceId);
+                                // ✅ CRITICAL FIX: Notify companion service for iOS-style aggressive reconnection
+                                // This should happen regardless of autoConnectEnabled, as companion service manages its own devices
+                                boolean isManualDisconnect = manualDisconnectInProgress.contains(deviceId);
+                                if (!isManualDisconnect && !wasPendingPairing && companionService != null) {
+                                    Log.d(TAG, "🔍 Notifying companion service of disconnect for aggressive reconnection: " + deviceId);
+                                    companionService.onDeviceDisconnected(deviceId);
                                 }
+                                
+                                // ✅ REMOVED: Legacy manual scheduleReconnection() - now handled by BLECompanionDeviceService
+                                // The companion service handles all reconnection logic with iOS-style behavior
                             }
                         }
                         
@@ -7461,6 +7778,32 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                             String characteristicUuid = characteristic.getUuid().toString();
                             
                             byte[] data = characteristic.getValue();
+                            
+                            // ✅ DEFENSIVE REFINEMENT #2 & #4: Mark first notification received
+                            if (!firstNotificationReceived.containsKey(deviceId)) {
+                                firstNotificationReceived.put(deviceId, true);
+                                firstNotificationTimestamp.put(deviceId, System.currentTimeMillis());
+                                Log.d(TAG, "✅ [FIRST NOTIFY] First notification received for " + deviceId + " - encryption is active");
+                                
+                                // Cancel CCC retry timer if waiting
+                                ScheduledFuture<?> cccRetryTimer = cccRetryTimers.remove(deviceId);
+                                if (cccRetryTimer != null) {
+                                    cccRetryTimer.cancel(false);
+                                }
+                                
+                                // Cancel polling delay timer if waiting
+                                ScheduledFuture<?> delayTimer = pollingStartDelays.remove(deviceId);
+                                if (delayTimer != null) {
+                                    delayTimer.cancel(false);
+                                    // Start polling now that first notification succeeded
+                                    Integer interval = requestedDataAcquisitionIntervals.get(deviceId);
+                                    if (interval != null) {
+                                        startDeviceStatusPolling(deviceId, interval / 1000);
+                                    } else {
+                                        startDeviceStatusPolling(deviceId, 120); // Default 120s
+                                    }
+                                }
+                            }
                             
                             // ✅ CRITICAL: Handle Device Status notifications for live updates
                             if (characteristicUuid.equals(DEVICE_STATUS_CHAR_UUID)) {
@@ -7681,8 +8024,21 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         @Override
                         public void onMtuChanged(BluetoothGatt gatt, int mtu, int status) {
                             String deviceId = gatt.getDevice().getAddress();
+                            
+                            // ✅ DEFENSIVE REFINEMENT #1: Always accept negotiated MTU, never assume 512
                             if (status == BluetoothGatt.GATT_SUCCESS) {
-                                Log.d(TAG, "✅ MTU changed to: " + mtu + " for device: " + deviceId);
+                                // Store negotiated MTU (may be less than requested 512)
+                                negotiatedMtuMap.put(deviceId, mtu);
+                                Log.d(TAG, "✅ MTU negotiated: " + mtu + " for device: " + deviceId + " (requested: " + REQUESTED_MTU + ", payload: " + (mtu - 3) + " bytes)");
+                                
+                                // Cancel MTU negotiation timeout
+                                ScheduledFuture<?> mtuTimeout = mtuNegotiationTimeouts.remove(deviceId);
+                                if (mtuTimeout != null) {
+                                    mtuTimeout.cancel(false);
+                                }
+                                
+                                // Update SECURE_READY state - MTU negotiation complete
+                                updateSecureReadyState(deviceId, SecureReadyState.SERVICES_DISCOVERING);
                                 
                                 // ✅ CRITICAL FIX: Check if services are already discovered (cached by Android)
                                 // On reconnection, Android may cache services and not call onServicesDiscovered
@@ -7712,7 +8068,19 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                     }, 1000); // 1 second delay to allow onServicesDiscovered to fire
                                 }
                             } else {
-                                Log.e(TAG, "❌ MTU change failed for device " + deviceId + ": " + status);
+                                // MTU negotiation failed - use default MTU
+                                negotiatedMtuMap.put(deviceId, DEFAULT_MTU);
+                                Log.w(TAG, "⚠️ MTU change failed for device " + deviceId + ": " + status + " - using default MTU: " + DEFAULT_MTU);
+                                
+                                // Cancel MTU negotiation timeout
+                                ScheduledFuture<?> mtuTimeout = mtuNegotiationTimeouts.remove(deviceId);
+                                if (mtuTimeout != null) {
+                                    mtuTimeout.cancel(false);
+                                }
+                                
+                                // Update SECURE_READY state - MTU negotiation complete (with fallback)
+                                updateSecureReadyState(deviceId, SecureReadyState.SERVICES_DISCOVERING);
+                                
                                 // Still try to discover services even if MTU failed
                                 Log.d(TAG, "🔍 Attempting service discovery despite MTU failure for device: " + deviceId);
                                 boolean discoverResult = gatt.discoverServices();
@@ -7797,7 +8165,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 );
                 
                 // Store the GATT connection
-                connectedGatts.put(deviceId, gatt);
+                // ✅ FIX #3: Add synchronization
+                synchronized(gattLock) {
+                    connectedGatts.put(deviceId, gatt);
+                }
                 
                 // Note: Promise is resolved when connection state changes to STATE_CONNECTED
                 // Don't resolve here - wait for actual connection establishment
@@ -8823,8 +9194,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         stopDeviceStatusPolling(deviceId);
         systemCommandsSent.remove(deviceId);
         dataSyncState.remove(deviceId);
-        reconnectAttempts.remove(deviceId);
-        reconnectTasks.remove(deviceId);
+        // ✅ REMOVED: Legacy reconnection maps - now handled by BLECompanionDeviceService
+        // reconnectAttempts.remove(deviceId);
+        // reconnectTasks.remove(deviceId);
     }
     
     // ✅ CENTRALIZED CLEANUP: Clean up all device resources (matching iOS cleanupDeviceResources)
@@ -8882,6 +9254,20 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         }
         setTimeRetryAttempts.remove(deviceId);
         setTimeResponseReceived.remove(deviceId);
+        
+        // ✅ CRITICAL FIX: Cancel RSSI monitoring task to prevent duplicate logging
+        ScheduledFuture<?> rssiTask = rssiMonitoringTasks.remove(deviceId);
+        if (rssiTask != null && !rssiTask.isCancelled()) {
+            Log.d(TAG, "🛑 Cancelling RSSI monitoring task for: " + deviceId);
+            rssiTask.cancel(false);
+        }
+        
+        // ✅ CRITICAL FIX: Cancel health API monitoring task to prevent duplicate logging
+        ScheduledFuture<?> healthTask = healthApiTasks.remove(deviceId);
+        if (healthTask != null && !healthTask.isCancelled()) {
+            Log.d(TAG, "🛑 Cancelling health API monitoring task for: " + deviceId);
+            healthTask.cancel(false);
+        }
         
         // ✅ Clean up health check failures
         healthCheckFailures.remove(deviceId);
@@ -9828,6 +10214,119 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         }
         
         return writeResult;
+    }
+    
+    /**
+     * ✅ DEFENSIVE REFINEMENT #1: Get negotiated MTU with fallback
+     * Never assume 512 - use negotiated value or default
+     */
+    private int getNegotiatedMtu(String deviceId) {
+        Integer mtu = negotiatedMtuMap.get(deviceId);
+        if (mtu != null && mtu > 0) {
+            return mtu;
+        }
+        // Fallback to default if not negotiated yet
+        return DEFAULT_MTU;
+    }
+    
+    /**
+     * ✅ DEFENSIVE REFINEMENT #1: Get payload size (MTU - 3)
+     * Use this for all write operations instead of assuming 512
+     */
+    private int getPayloadSize(String deviceId) {
+        return getNegotiatedMtu(deviceId) - 3;
+    }
+    
+    /**
+     * ✅ DEFENSIVE REFINEMENT #3: Update SECURE_READY state
+     * Tracks connection readiness through all stages
+     */
+    private void updateSecureReadyState(String deviceId, SecureReadyState newState) {
+        SecureReadyState oldState = secureReadyStates.get(deviceId);
+        secureReadyStates.put(deviceId, newState);
+        Log.d(TAG, "🔒 [SECURE_READY] " + deviceId + ": " + 
+              (oldState != null ? oldState.name() : "null") + " → " + newState.name());
+        
+        // Check if we've reached SECURE_READY
+        if (newState == SecureReadyState.SECURE_READY) {
+            checkAndEmitDeviceConnected(deviceId);
+        }
+    }
+    
+    /**
+     * ✅ DEFENSIVE REFINEMENT #3: Check if device is SECURE_READY and emit DeviceConnected
+     * Only emit when ALL conditions are met:
+     * - Bonded (or bonding not required)
+     * - MTU negotiated (or timeout)
+     * - Services discovered
+     * - Notifications enabled
+     * - Pairing verified
+     */
+    private void checkAndEmitDeviceConnected(String deviceId) {
+        SecureReadyState state = secureReadyStates.get(deviceId);
+        if (state != SecureReadyState.SECURE_READY) {
+            return; // Not ready yet
+        }
+        
+        BluetoothGatt gatt = connectedGatts.get(deviceId);
+        if (gatt == null) {
+            return; // Not connected
+        }
+        
+        DeviceData deviceData = deviceDataMap.get(deviceId);
+        if (deviceData == null) {
+            return; // No device data
+        }
+        
+        // Check if we've already emitted DeviceConnected
+        if ("connected".equals(deviceData.connectionState)) {
+            return; // Already connected
+        }
+        
+        // All checks passed - emit DeviceConnected
+        Log.d(TAG, "✅ [SECURE_READY] Device " + deviceId + " is fully ready - emitting DeviceConnected");
+        deviceData.connectionState = "connected";
+        sendEvent("DeviceConnected", createDeviceInfoMap(deviceData));
+        
+        // Resolve connection promise
+        String promiseKey = "connect_" + deviceId;
+        Promise pendingPromise = pendingConnectionPromises.remove(promiseKey);
+        if (pendingPromise != null) {
+            WritableMap result = Arguments.createMap();
+            result.putString("status", "connected");
+            result.putString("deviceId", deviceId);
+            pendingPromise.resolve(result);
+        }
+    }
+    
+    /**
+     * ✅ DEFENSIVE REFINEMENT #4: Start polling only after first successful read/notify
+     * Prevents polling with stale cached data
+     */
+    private void startDeviceStatusPollingWhenReady(String deviceId, int intervalSeconds) {
+        // Check if first read or notification has been received
+        if (firstReadSuccessful.containsKey(deviceId) || firstNotificationReceived.containsKey(deviceId)) {
+            // First read/notify succeeded - start polling
+            startDeviceStatusPolling(deviceId, intervalSeconds);
+        } else {
+            // Wait for first read/notify - delay polling start
+            Log.d(TAG, "⏳ [POLLING] Waiting for first read/notify before starting polling for " + deviceId);
+            
+            // Cancel any existing delay timer
+            ScheduledFuture<?> existingDelay = pollingStartDelays.remove(deviceId);
+            if (existingDelay != null) {
+                existingDelay.cancel(false);
+            }
+            
+            // Set timeout - if no read/notify in 10 seconds, start polling anyway
+            ScheduledFuture<?> delayTimer = executorService.schedule(() -> {
+                if (!firstReadSuccessful.containsKey(deviceId) && !firstNotificationReceived.containsKey(deviceId)) {
+                    Log.w(TAG, "⚠️ [POLLING] No first read/notify received within timeout - starting polling anyway for " + deviceId);
+                    startDeviceStatusPolling(deviceId, intervalSeconds);
+                }
+            }, 10, TimeUnit.SECONDS);
+            pollingStartDelays.put(deviceId, delayTimer);
+        }
     }
     
     /**
@@ -10797,11 +11296,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 }
             };
             
-            // Schedule periodic RSSI readings
-            executorService.scheduleAtFixedRate(rssiTask, 0, intervalMs, TimeUnit.MILLISECONDS);
+            // Schedule periodic RSSI readings and store the ScheduledFuture for cancellation
+            ScheduledFuture<?> scheduledTask = executorService.scheduleAtFixedRate(rssiTask, 0, intervalMs, TimeUnit.MILLISECONDS);
             
             // Store the task for later cancellation
-            reconnectTasks.put(deviceId + "_rssi", rssiTask);
+            rssiMonitoringTasks.put(deviceId + "_rssi", scheduledTask);
             
             promise.resolve(true);
             
@@ -10817,7 +11316,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Log.d(TAG, "📡 Stopping RSSI monitoring for device: " + deviceId);
             
             // Remove the RSSI monitoring task
-            reconnectTasks.remove(deviceId + "_rssi");
+            rssiMonitoringTasks.remove(deviceId + "_rssi");
             
             promise.resolve(true);
             
@@ -10834,9 +11333,14 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         try {
             Log.d(TAG, "🚀 Starting Android auto-connect functionality");
 
+            // ✅ CRITICAL FIX: Sync system-level bonds before checking if list is empty
+            // This ensures devices bonded at Android system level are added to our bondedDeviceIds list
+            syncSystemBondedDevices();
+            
             // Guard: no bonded devices means nothing to auto-connect to
+            // But now we've synced system bonds, so this check is more accurate
             if (bondedDeviceIds.isEmpty()) {
-                Log.d(TAG, "⏸️ Skipping auto-connect start - no bonded devices available");
+                Log.d(TAG, "⏸️ Skipping auto-connect start - no bonded devices available (after syncing system bonds)");
                 promise.resolve(true);
                 return;
             }
@@ -11055,9 +11559,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     pendingServiceDiscoveryPromises.remove(deviceId);
                     
                     // ✅ MATCHING iOS: Cancel any reconnect timer for this device
-                    reconnectTasks.remove(deviceId);
-                    reconnectAttempts.remove(deviceId);
-                    reconnectBackoff.remove(deviceId);
+                    // ✅ REMOVED: Legacy reconnection maps - now handled by BLECompanionDeviceService
+                    // reconnectTasks.remove(deviceId);
+                    // reconnectAttempts.remove(deviceId);
+                    // reconnectBackoff.remove(deviceId);
                     
                     // ✅ MATCHING iOS: Clean up pairing verification timers
                     ScheduledFuture<?> pairingTimer = pairingVerificationTimers.remove(deviceId);
@@ -11110,8 +11615,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     connectedGatts.remove(deviceId);
                     
                     // Cancel any reconnect timer for this device
-                    reconnectTasks.remove(deviceId);
-                    reconnectAttempts.remove(deviceId);
+                    // ✅ REMOVED: Legacy reconnection maps - now handled by BLECompanionDeviceService
+                    // reconnectTasks.remove(deviceId);
+                    // reconnectAttempts.remove(deviceId);
                     
                     // Clean up device resources
                     stopDeviceStatusPolling(deviceId);
@@ -11439,7 +11945,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             // Active timers
             WritableMap activeTimers = Arguments.createMap();
             activeTimers.putInt("serviceDiscovery", serviceDiscoveryTimeouts.size());
-            activeTimers.putInt("reconnect", reconnectTasks.size());
+            activeTimers.putInt("reconnect", 0); // Reconnection now handled by BLECompanionDeviceService
             activeTimers.putInt("dataSync", dataSyncTimers.size());
             activeTimers.putInt("devicePolling", 0); // Not tracked separately in current implementation
             status.putMap("activeTimers", activeTimers);
@@ -11486,7 +11992,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     
     private void stopRSSIMonitoring(String deviceId) {
         try {
-            reconnectTasks.remove(deviceId + "_rssi");
+            rssiMonitoringTasks.remove(deviceId + "_rssi");
         } catch (Exception e) {
             Log.e(TAG, "Error stopping RSSI monitoring: " + e.getMessage());
         }
@@ -11940,9 +12446,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         deviceDataMap.clear();
         deviceCharacteristics.clear();
         bondedDevices.clear();
-        reconnectTasks.clear();
-        reconnectAttempts.clear();
-        reconnectBackoff.clear();
+        rssiMonitoringTasks.clear();
+        // ✅ REMOVED: Legacy reconnection maps - now handled by BLECompanionDeviceService
+        // reconnectTasks.clear();
+        // reconnectAttempts.clear();
+        // reconnectBackoff.clear();
         
         // Call original cleanup
         cleanup();

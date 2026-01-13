@@ -51,6 +51,7 @@ RCT_EXTERN_METHOD(forceScanForBondedDevices:(RCTPromiseResolveBlock)resolve reje
 RCT_EXTERN_METHOD(debugConnectionStatus:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(connectToKnownPeripherals:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 RCT_EXTERN_METHOD(disconnectFromNative:(NSString*)deviceId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
+RCT_EXTERN_METHOD(getResourceStatus:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)
 
 // DFU (Device Firmware Update) methods
 RCT_EXTERN_METHOD(enterDFUMode:(NSString*)deviceId resolver:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject)

@@ -45,16 +45,33 @@ public class BLECompanionDeviceService {
     private static final String TAG = "BLECompanionDeviceService";
     private static final String SMART_TAG_SERVICE_UUID = "0f0e0d0c-0b0a-0908-0706-050403020100";
     
+    // ✅ Callback interface to notify parent about auto-connection events
+    public interface AutoConnectionCallback {
+        void onAutoConnected(String deviceId, BluetoothGatt gatt);
+        void onAutoDisconnected(String deviceId);
+        void onServicesDiscovered(String deviceId, BluetoothGatt gatt);
+        void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status);
+    }
+    
     private Context context;
     private BLEConnectionManager connectionManager;
+    private AutoConnectionCallback autoConnectionCallback; // ✅ Callback to SampleBridgeAndroid
     private Map<String, BluetoothDevice> companionDevices = new ConcurrentHashMap<>();
     private Map<String, Boolean> devicePresence = new ConcurrentHashMap<>();
     private Map<String, Handler> presenceCheckHandlers = new ConcurrentHashMap<>();
+    private Map<String, Handler> continuousScanHandlers = new ConcurrentHashMap<>(); // For continuous scanning when disconnected
+    private Map<String, Handler> directConnectionHandlers = new ConcurrentHashMap<>(); // For direct connection attempts
+    private Map<String, Integer> reconnectAttempts = new ConcurrentHashMap<>(); // Track reconnection attempts
     
     // BLE components for device monitoring
     private BluetoothManager bluetoothManager;
     private BluetoothAdapter bluetoothAdapter;
     private BluetoothLeScanner bluetoothLeScanner;
+    
+    // Reconnection constants (matching iOS)
+    private static final int MAX_RECONNECT_ATTEMPTS = 10;
+    private static final long INITIAL_RECONNECT_DELAY_MS = 2000; // 2 seconds
+    private static final long MAX_RECONNECT_DELAY_MS = 30000; // 30 seconds
     
     // Scan callback for device presence detection
     private ScanCallback presenceScanCallback = new ScanCallback() {
@@ -105,6 +122,12 @@ public class BLECompanionDeviceService {
         
         devicePresence.put(deviceId, true);
         
+        // Stop continuous reconnection attempts since device is detected
+        stopContinuousReconnection(deviceId);
+        
+        // Reset reconnection attempts since device is back
+        reconnectAttempts.remove(deviceId);
+        
         // Notify connection manager about device presence change
         if (connectionManager != null) {
             connectionManager.onDevicePresenceChanged(deviceId, true);
@@ -131,7 +154,160 @@ public class BLECompanionDeviceService {
         }
         
         // Device is out of range, but keep monitoring for reconnection
-        Log.d(TAG, "👁️ Device " + deviceId + " out of range, continuing to monitor");
+        // Ensure we continue monitoring this device even after it disappears
+        if (companionDevices.containsKey(deviceId)) {
+            Log.d(TAG, "👁️ Device " + deviceId + " out of range, continuing to monitor for reconnection");
+            // The periodic presence check will continue via startObservingDevicePresence
+        }
+    }
+    
+    /**
+     * Triggered when a device disconnects - start aggressive reconnection strategy
+     * Similar to iOS: continuous scanning + direct connection attempts
+     */
+    public void onDeviceDisconnected(String deviceId) {
+        Log.d(TAG, "🔍 Device disconnected, starting aggressive reconnection for: " + deviceId);
+        
+        // If device is still in our companion devices list, start reconnection process
+        if (companionDevices.containsKey(deviceId)) {
+            // Reset reconnection attempts
+            reconnectAttempts.put(deviceId, 0);
+            
+            // Stop any existing continuous scanning/connection attempts
+            stopContinuousReconnection(deviceId);
+            
+            // Start continuous scanning (like iOS continuous scanning)
+            startContinuousScanning(deviceId);
+            
+            // Start direct connection attempts (like iOS connectToKnownPeripheralsNative)
+            startDirectConnectionAttempts(deviceId);
+            
+            // Also ensure periodic monitoring continues
+            if (!presenceCheckHandlers.containsKey(deviceId)) {
+                Log.d(TAG, "🔄 Restarting presence monitoring for disconnected device: " + deviceId);
+                startObservingDevicePresence(deviceId);
+            }
+        }
+    }
+    
+    /**
+     * Start continuous scanning for a disconnected device (like iOS continuous scanning)
+     */
+    private void startContinuousScanning(String deviceId) {
+        Log.d(TAG, "🔍 Starting continuous scanning for: " + deviceId);
+        
+        Handler handler = new Handler(Looper.getMainLooper());
+        continuousScanHandlers.put(deviceId, handler);
+        
+        Runnable scanRunnable = new Runnable() {
+            @Override
+            public void run() {
+                // Check if device is still disconnected and we should continue scanning
+                if (companionDevices.containsKey(deviceId) && 
+                    connectionManager != null && 
+                    !connectionManager.isDeviceConnected(deviceId)) {
+                    
+                    // Perform a scan (longer duration for better detection)
+                    performPresenceScan(deviceId, 5000); // 5 second scan
+                    
+                    // Schedule next scan in 3 seconds (more frequent than periodic)
+                    handler.postDelayed(this, 3000);
+                } else {
+                    // Device connected or removed, stop continuous scanning
+                    Log.d(TAG, "🛑 Stopping continuous scanning for: " + deviceId);
+                    continuousScanHandlers.remove(deviceId);
+                }
+            }
+        };
+        
+        // Start immediately
+        handler.post(scanRunnable);
+    }
+    
+    /**
+     * Start direct connection attempts (like iOS connectToKnownPeripheralsNative)
+     * Tries to connect directly even without scan results
+     */
+    private void startDirectConnectionAttempts(String deviceId) {
+        Log.d(TAG, "🔗 Starting direct connection attempts for: " + deviceId);
+        
+        BluetoothDevice device = companionDevices.get(deviceId);
+        if (device == null) {
+            Log.w(TAG, "⚠️ Device not found in companion devices: " + deviceId);
+            return;
+        }
+        
+        Handler handler = new Handler(Looper.getMainLooper());
+        directConnectionHandlers.put(deviceId, handler);
+        
+        Runnable connectionRunnable = new Runnable() {
+            private int attemptCount = 0;
+            
+            @Override
+            public void run() {
+                // Check if device is still disconnected and we should continue
+                if (companionDevices.containsKey(deviceId) && 
+                    connectionManager != null && 
+                    !connectionManager.isDeviceConnected(deviceId)) {
+                    
+                    int attempts = reconnectAttempts.getOrDefault(deviceId, 0);
+                    if (attempts >= MAX_RECONNECT_ATTEMPTS) {
+                        Log.d(TAG, "❌ Max reconnection attempts reached for: " + deviceId);
+                        directConnectionHandlers.remove(deviceId);
+                        return;
+                    }
+                    
+                    // Increment attempt count
+                    reconnectAttempts.put(deviceId, attempts + 1);
+                    
+                    Log.d(TAG, "🔗 Direct connection attempt #" + (attempts + 1) + " for: " + deviceId);
+                    
+                    // Try direct connection (like iOS retrievePeripherals + connect)
+                    // Use onDevicePresenceChanged to trigger reconnection, which handles callback creation
+                    if (connectionManager != null) {
+                        // Mark device as in range to trigger reconnection logic
+                        // This will create a callback if needed and attempt connection
+                        connectionManager.onDevicePresenceChanged(deviceId, true);
+                    }
+                    
+                    // Calculate next delay with exponential backoff
+                    long delay = Math.min(
+                        INITIAL_RECONNECT_DELAY_MS * (long) Math.pow(2, attempts),
+                        MAX_RECONNECT_DELAY_MS
+                    );
+                    
+                    // Schedule next attempt
+                    handler.postDelayed(this, delay);
+                } else {
+                    // Device connected or removed, stop attempts
+                    Log.d(TAG, "🛑 Stopping direct connection attempts for: " + deviceId);
+                    directConnectionHandlers.remove(deviceId);
+                    reconnectAttempts.remove(deviceId);
+                }
+            }
+        };
+        
+        // Start first attempt after 2 seconds
+        handler.postDelayed(connectionRunnable, INITIAL_RECONNECT_DELAY_MS);
+    }
+    
+    /**
+     * Stop continuous reconnection attempts for a device
+     */
+    private void stopContinuousReconnection(String deviceId) {
+        Handler scanHandler = continuousScanHandlers.remove(deviceId);
+        if (scanHandler != null) {
+            scanHandler.removeCallbacksAndMessages(null);
+            Log.d(TAG, "🛑 Stopped continuous scanning for: " + deviceId);
+        }
+        
+        Handler connectionHandler = directConnectionHandlers.remove(deviceId);
+        if (connectionHandler != null) {
+            connectionHandler.removeCallbacksAndMessages(null);
+            Log.d(TAG, "🛑 Stopped direct connection attempts for: " + deviceId);
+        }
+        
+        reconnectAttempts.remove(deviceId);
     }
     
     private void startMonitoringBondedDevices() {
@@ -187,7 +363,22 @@ public class BLECompanionDeviceService {
     }
     
     private void performPresenceScan(String deviceId) {
+        performPresenceScan(deviceId, 2000); // Default 2 second scan
+    }
+    
+    /**
+     * Perform an immediate presence scan for a device
+     * This is called when a device disconnects to check if it's still in range
+     * or when we need to actively check for a device coming back in range
+     */
+    public void performImmediatePresenceScan(String deviceId) {
+        Log.d(TAG, "🔍 Performing immediate presence scan for: " + deviceId);
+        performPresenceScan(deviceId, 5000); // Longer scan (5 seconds) for immediate checks
+    }
+    
+    private void performPresenceScan(String deviceId, long scanDurationMs) {
         if (bluetoothLeScanner == null || !hasBluetoothPermissions()) {
+            Log.w(TAG, "⚠️ Cannot perform presence scan - scanner or permissions unavailable");
             return;
         }
         
@@ -200,25 +391,29 @@ public class BLECompanionDeviceService {
             filters.add(filter);
             
             // Configure scan settings for presence detection
+            // Use BALANCED or LOW_LATENCY mode for better detection
+            // Use ALL_MATCHES instead of FIRST_MATCH to catch device even if it wasn't advertising initially
             ScanSettings.Builder settingsBuilder = new ScanSettings.Builder()
-                    .setScanMode(ScanSettings.SCAN_MODE_LOW_POWER)
-                    .setCallbackType(ScanSettings.CALLBACK_TYPE_FIRST_MATCH)
+                    .setScanMode(scanDurationMs > 2000 ? ScanSettings.SCAN_MODE_LOW_LATENCY : ScanSettings.SCAN_MODE_BALANCED)
+                    .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES) // Changed from FIRST_MATCH to catch device even if scan started before it began advertising
                     .setReportDelay(0);
             
             ScanSettings settings = settingsBuilder.build();
             
-            // Start a short scan to detect device presence
+            // Start a scan to detect device presence
             bluetoothLeScanner.startScan(filters, settings, presenceScanCallback);
+            Log.d(TAG, "✅ Started presence scan for " + deviceId + " (duration: " + scanDurationMs + "ms)");
             
-            // Stop scan after 2 seconds
+            // Stop scan after specified duration
             Handler stopHandler = new Handler(Looper.getMainLooper());
             stopHandler.postDelayed(() -> {
                 try {
                     bluetoothLeScanner.stopScan(presenceScanCallback);
+                    Log.d(TAG, "🛑 Stopped presence scan for " + deviceId);
                 } catch (Exception e) {
                     Log.w(TAG, "Error stopping presence scan", e);
                 }
-            }, 2000);
+            }, scanDurationMs);
             
         } catch (Exception e) {
             Log.e(TAG, "❌ Failed to perform presence scan for: " + deviceId, e);
@@ -231,8 +426,13 @@ public class BLECompanionDeviceService {
         // Check if already connected
         if (connectionManager.isDeviceConnected(deviceId)) {
             Log.d(TAG, "✅ Device already connected: " + deviceId);
+            // Stop continuous reconnection attempts since device is connected
+            stopContinuousReconnection(deviceId);
             return;
         }
+        
+        // Stop continuous reconnection attempts since we're actively connecting
+        stopContinuousReconnection(deviceId);
         
         // Use connection manager to connect with auto-connect enabled
         connectionManager.connectToDevice(deviceId, device, new BLEConnectionManager.BLEConnectionCallback() {
@@ -242,11 +442,23 @@ public class BLECompanionDeviceService {
                 
                 if (state == BLEConnectionManager.ConnectionState.CONNECTED) {
                     Log.d(TAG, "✅ Companion device connected successfully: " + deviceId);
+                    // Ensure continuous reconnection is stopped
+                    stopContinuousReconnection(deviceId);
                     
                     // Send local notification for auto-connection (like iOS)
                     // COMMENTED OUT: Local notifications for connection/disconnection/restore/auto-connect
                     // String deviceName = getDeviceName(deviceId);
                     // sendLocalNotificationIfBackground("Device Connected", "Connected to " + deviceName);
+                    
+                    // ✅ Notify parent about auto-connection success (do NOT wait for services)
+                    // Parent needs to know immediately so it can update UI
+                    if (autoConnectionCallback != null) {
+                        BluetoothGatt gatt = connectionManager.getGatt(deviceId);
+                        if (gatt != null) {
+                            Log.d(TAG, "📢 Notifying parent about auto-connection: " + deviceId);
+                            autoConnectionCallback.onAutoConnected(deviceId, gatt);
+                        }
+                    }
                     
                 } else if (state == BLEConnectionManager.ConnectionState.DISCONNECTED) {
                     Log.d(TAG, "❌ Companion device disconnected: " + deviceId);
@@ -255,6 +467,12 @@ public class BLECompanionDeviceService {
                     // COMMENTED OUT: Local notifications for connection/disconnection/restore/auto-connect
                     // String deviceName = getDeviceName(deviceId);
                     // sendLocalNotificationIfBackground("Device Disconnected", deviceName + " has disconnected");
+                    
+                    // ✅ Notify parent about auto-disconnection
+                    if (autoConnectionCallback != null) {
+                        Log.d(TAG, "📢 Notifying parent about auto-disconnection: " + deviceId);
+                        autoConnectionCallback.onAutoDisconnected(deviceId);
+                    }
                     
                     // Device will be monitored for reconnection automatically
                 }
@@ -267,7 +485,8 @@ public class BLECompanionDeviceService {
             
             @Override
             public void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
-                // Handle characteristic reads
+                // ✅ Forward to parent (SampleBridgeAndroid) for auto-connected devices
+                notifyCharacteristicRead(deviceId, characteristic, status);
             }
             
             @Override
@@ -433,5 +652,85 @@ public class BLECompanionDeviceService {
             return "Device " + deviceId.substring(deviceId.length() - 8);
         }
         return "Device " + deviceId;
+    }
+    
+    // ✅ Set callback for auto-connection notifications
+    public void setAutoConnectionCallback(AutoConnectionCallback callback) {
+        this.autoConnectionCallback = callback;
+        Log.d(TAG, "✅ Auto-connection callback registered");
+    }
+    
+    public void setConnectionManager(BLEConnectionManager manager) {
+        this.connectionManager = manager;
+    }
+    
+    /**
+     * ✅ CRITICAL FIX: Method called by BLEConnectionManager's default callback
+     * This method bridges the gap between the default callback and SampleBridgeAndroid
+     */
+    public void notifyConnectionStateChanged(String deviceId, BLEConnectionManager.ConnectionState state) {
+        Log.d(TAG, "📢 Received connection state notification: " + deviceId + " = " + state);
+        
+        if (state == BLEConnectionManager.ConnectionState.CONNECTED) {
+            Log.d(TAG, "✅ Device connected via default callback: " + deviceId);
+            
+            // Notify parent about auto-connection
+            if (autoConnectionCallback != null) {
+                BluetoothGatt gatt = connectionManager.getGatt(deviceId);
+                if (gatt != null) {
+                    Log.d(TAG, "📢 Notifying parent about auto-connection: " + deviceId);
+                    autoConnectionCallback.onAutoConnected(deviceId, gatt);
+                } else {
+                    Log.w(TAG, "⚠️ GATT is null for connected device: " + deviceId);
+                }
+            } else {
+                Log.w(TAG, "⚠️ autoConnectionCallback is null, cannot notify parent");
+            }
+            
+            // Stop continuous reconnection since device is connected
+            stopContinuousReconnection(deviceId);
+            
+        } else if (state == BLEConnectionManager.ConnectionState.DISCONNECTED) {
+            Log.d(TAG, "❌ Device disconnected via default callback: " + deviceId);
+            
+            // Notify parent about auto-disconnection
+            if (autoConnectionCallback != null) {
+                Log.d(TAG, "📢 Notifying parent about auto-disconnection: " + deviceId);
+                autoConnectionCallback.onAutoDisconnected(deviceId);
+            }
+        }
+    }
+    
+    /**
+     * ✅ Method called when services are discovered for auto-connected device
+     */
+    public void notifyServicesDiscovered(String deviceId) {
+        Log.d(TAG, "📢 Received services discovered notification: " + deviceId);
+        
+        if (autoConnectionCallback != null) {
+            BluetoothGatt gatt = connectionManager.getGatt(deviceId);
+            if (gatt != null) {
+                Log.d(TAG, "📢 Notifying parent about services discovered: " + deviceId);
+                autoConnectionCallback.onServicesDiscovered(deviceId, gatt);
+            } else {
+                Log.w(TAG, "⚠️ GATT is null for services discovered: " + deviceId);
+            }
+        } else {
+            Log.w(TAG, "⚠️ autoConnectionCallback is null, cannot notify about services discovered");
+        }
+    }
+    
+    /**
+     * ✅ CRITICAL FIX: Forward characteristic read events to parent (SampleBridgeAndroid)
+     * This allows SampleBridgeAndroid to process Device Status, battery, etc. for auto-connected devices
+     */
+    public void notifyCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+        Log.d(TAG, "📢 Received characteristic read notification: " + deviceId + " - " + characteristic.getUuid());
+        
+        if (autoConnectionCallback != null) {
+            autoConnectionCallback.onCharacteristicRead(deviceId, characteristic, status);
+        } else {
+            Log.w(TAG, "⚠️ autoConnectionCallback is null, cannot notify about characteristic read");
+        }
     }
 }
