@@ -34,6 +34,8 @@ const DeviceDetails = ({ route, navigation }) => {
   const [inputModalVisible, setInputModalVisible] = useState(false);
   const [inputModalConfig, setInputModalConfig] = useState(null);
   const [inputValue, setInputValue] = useState('');
+  // Store event handler reference for proper cleanup
+  const dataUpdateHandlerRef = React.useRef(null);
 
   useEffect(() => {
     loadDeviceDetails();
@@ -49,27 +51,23 @@ const DeviceDetails = ({ route, navigation }) => {
 
     const appStateSubscription = AppState.addEventListener('change', handleAppStateChange);
 
-    // Set up data update callback for real-time updates (with fallback)
-    try {
-      if (BLEService && typeof BLEService.setDeviceDataUpdateCallback === 'function') {
-        BLEService.setDeviceDataUpdateCallback((updatedDeviceId, deviceData) => {
-          if (updatedDeviceId === deviceId && AppState.currentState === 'active') {
-            console.log('Device data updated via callback:', deviceData);
-            updateDeviceData();
-          } else if (updatedDeviceId === deviceId && AppState.currentState !== 'active') {
-            console.log('📱 [DeviceDetails] Skipping callback update - app is in background');
-          }
-        });
-        console.log('Callback setup successful');
-      } else {
-        console.log('Using polling method instead of callbacks');
+    // Set up event listener for real-time updates (uses events instead of callback to avoid conflicts)
+    dataUpdateHandlerRef.current = (eventData) => {
+      try {
+        if (eventData.deviceId === deviceId && AppState.currentState === 'active') {
+          console.log('📱 [DeviceDetails] Device data updated via event:', eventData.type);
+          updateDeviceData();
+        } else if (eventData.deviceId === deviceId && AppState.currentState !== 'active') {
+          console.log('📱 [DeviceDetails] Skipping event update - app is in background');
+        }
+      } catch (error) {
+        console.error('📱 [DeviceDetails] Error in data update handler:', error);
       }
-    } catch (error) {
-      console.warn('Callback setup failed, using polling:', error.message);
-    }
+    };
+    BLEService.on('deviceDataUpdate', dataUpdateHandlerRef.current);
+    console.log('📱 [DeviceDetails] Event listener setup successful');
 
-    // Less frequent polling to reduce excessive updates (fallback method)
-    // Only poll when app is active to prevent background updates
+    // Less frequent polling as fallback (only when app is active)
     const interval = setInterval(() => {
       if (AppState.currentState === 'active') {
         updateDeviceData();
@@ -90,13 +88,12 @@ const DeviceDetails = ({ route, navigation }) => {
       clearInterval(interval);
       clearTimeout(timeout);
       appStateSubscription?.remove();
-      try {
-        if (BLEService && typeof BLEService.setDeviceDataUpdateCallback === 'function') {
-          BLEService.setDeviceDataUpdateCallback(null);
-        }
-      } catch (error) {
-        console.log('Cleanup warning:', error.message);
+      // Remove only this screen's event listener (not all listeners for the event)
+      if (dataUpdateHandlerRef.current) {
+        BLEService.off('deviceDataUpdate', dataUpdateHandlerRef.current);
+        dataUpdateHandlerRef.current = null;
       }
+      console.log('📱 [DeviceDetails] Cleaned up event listener');
     };
   }, [deviceId, device?.name, navigation]);
 

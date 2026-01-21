@@ -278,7 +278,12 @@ const ConnectionLogScreen = ({ route, navigation }) => {
       return log.timestamp;
     }
     if (typeof log.timestamp === 'number') {
-      return new Date(log.timestamp);
+      // ✅ FIX: Check if timestamp is in seconds or milliseconds
+      // Unix timestamps in seconds are typically < 4102444800 (year 2100)
+      // If timestamp is small (< year 2100 in seconds), it's likely seconds - convert to ms
+      // If timestamp is large (> year 2100 in seconds), it's likely already milliseconds
+      const isSeconds = log.timestamp < 4102444800;
+      return new Date(isSeconds ? log.timestamp * 1000 : log.timestamp);
     }
     return new Date();
   };
@@ -308,6 +313,33 @@ const ConnectionLogScreen = ({ route, navigation }) => {
         )}
         {item.responseHex && (
           <Text style={styles.hexText}>Response: {item.responseHex}</Text>
+        )}
+        {/* ✅ Display notification information */}
+        {item.characteristic && (
+          <Text style={styles.hexText}>Characteristic: {item.characteristic}</Text>
+        )}
+        {item.uuid && (
+          <Text style={styles.hexText}>UUID: {item.uuid}</Text>
+        )}
+        {item.characteristicNames && (
+          <Text style={styles.hexText}>Characteristics: {item.characteristicNames}</Text>
+        )}
+        {item.count !== undefined && !item.characteristic && (
+          <Text style={styles.hexText}>Count: {item.count}</Text>
+        )}
+        {item.totalEnabled !== undefined && (
+          <Text style={styles.hexText}>Total Enabled: {item.totalEnabled}</Text>
+        )}
+        {item.note && (
+          <Text style={styles.hexText}>Note: {item.note}</Text>
+        )}
+        {item.status && item.action?.includes('Notification') && (
+          <Text style={[styles.hexText, { color: item.status === 'success' ? '#4CAF50' : '#F44336' }]}>
+            Status: {item.status === 'success' ? '✅ Success' : '❌ Failed'}
+          </Text>
+        )}
+        {item.gattStatus !== undefined && (
+          <Text style={styles.hexText}>GATT Status: {item.gattStatus}</Text>
         )}
         {/* ✅ Display time information for SET_TIME commands */}
         {item.systemTimestamp !== undefined && (

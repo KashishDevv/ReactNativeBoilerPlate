@@ -117,8 +117,8 @@ export const SYSTEM_COMMAND_CONSTANTS = {
     GET_FW_VERSION: 0x05,       // Length: 1, Data: No Data (0x00)
     GET_HW_VERSION: 0x06,       // Length: 1, Data: No Data (0x00)
     GET_DIAGNOSTICS: 0x07,      // Length: 1, Data: No Data (0x00)
-    DATA_SYNC_START: 0x08,      // Length: 1, Data: No Data (0x00)
-    DATA_SYNC_STOP: 0x09,       // Length: 1, Data: 0x01=Clear Flash, 0x00=Failed
+    DATA_SYNC_START: 0x08,      // Length: 2, Data: Number of records (2-byte little-endian) [v1.5]
+    DATA_SYNC_STOP: 0x09,       // Length: 2, Data: Number of records transmitted (2-byte little-endian) [v1.5]
     ENTER_DFU_MODE: 0x0A,       // Length: 0, Data: No Data (enters DFU bootloader)
     SYSTEM_RESTART: 0x10,       // Length: 1, Data: No Data (0x00)
     TOGGLE_BUZZER: 0x11,        // Length: 2, Data: [0x00, beepCount]=Activate (0xFF=max 4min), [0x01, 0x00]=Deactivate
@@ -175,6 +175,28 @@ export const SCAN_CONFIG = {
   maxDurationMs: 15000,
   // Scan mode hint (LowLatency | Balanced | LowPower) where supported
   mode: 'LowLatency',
+};
+
+// Firmware v1.5 Advertising Interval Optimization
+// Reference: ET-DSSID-SSD-V1.5_12012026.md - Section 6.12.2 Secure Connection
+export const FIRMWARE_V15_ADVERTISING = {
+  FACTORY_DEFAULT: {
+    intervalMs: 4000,        // 4 seconds advertising interval
+    txPower: -8,             // -8dBm TX power
+    scanIntervalMs: 4500,    // Scan every 4.5s (slightly longer than advertising to catch packets)
+    scanWindowMs: 2000       // Scan window of 2s
+  },
+  ACTIVATED: {
+    intervalMs: 2000,        // 2 seconds advertising interval
+    txPower: 4,              // +4dBm TX power
+    scanIntervalMs: 2500,    // Scan every 2.5s (slightly longer than advertising to catch packets)
+    scanWindowMs: 1500       // Scan window of 1.5s
+  },
+  CONNECTION: {
+    intervalMs: 320,         // 320ms connection interval
+    latency: 2,              // Connection latency: 2
+    supervisionTimeoutMs: 500000  // 500 seconds (500000ms) connection timeout
+  }
 };
 
 // Power profiles for tuning intervals without changing behavior everywhere

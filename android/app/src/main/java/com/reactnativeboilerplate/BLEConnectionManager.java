@@ -84,6 +84,7 @@ public class BLEConnectionManager {
         public ConnectionState state;
         public BluetoothGatt gatt;
         public long lastConnectionTime;
+        public long lastConnectionAttemptTime; // When we started CONNECTING state
         public int reconnectAttempts;
         public boolean isManualDisconnect;
         
@@ -91,6 +92,7 @@ public class BLEConnectionManager {
             this.deviceId = deviceId;
             this.state = ConnectionState.DISCONNECTED;
             this.lastConnectionTime = 0;
+            this.lastConnectionAttemptTime = 0;
             this.reconnectAttempts = 0;
             this.isManualDisconnect = false;
         }
@@ -377,8 +379,47 @@ public class BLEConnectionManager {
         }
     }
     
-    // Connection management methods
+    // ════════════════════════════════════════════════════════════════════════════════
+    // INDUSTRY-STANDARD BLE CONNECTION STRATEGY (Nordic/Punch Through Best Practices)
+    // ════════════════════════════════════════════════════════════════════════════════
+    // 
+    // 1. DIRECT CONNECT (autoConnect=false):
+    //    - Use for user-initiated connections or when device is KNOWN to be in range
+    //    - Fast connection (high-duty scan: 30ms window every 60ms)
+    //    - Times out after ~30 seconds if device not found
+    //    - Best for: Initial connection, reconnection when device detected via scan
+    //
+    // 2. BACKGROUND CONNECT (autoConnect=true):
+    //    - Use for link-loss recovery when device may be out of range
+    //    - Slow but power-efficient (low-duty scan: 48ms window every 1280ms)
+    //    - Never times out - waits indefinitely for device
+    //    - Best for: Automatic recovery after unexpected disconnection
+    //
+    // Strategy: 
+    //    - When device detected in range → Direct connect (fast)
+    //    - After link loss, device out of range → Background connect (patient)
+    // ════════════════════════════════════════════════════════════════════════════════
+    
+    // Connection timeout for CONNECTING state (industry standard: 30 seconds)
+    private static final long CONNECTION_TIMEOUT_MS = 30000;
+    
+    /**
+     * Connect to device with automatic strategy selection.
+     * Uses direct connect (autoConnect=false) by default for faster connection.
+     */
     public void connectToDevice(String deviceId, BluetoothDevice device, BLEConnectionCallback callback) {
+        connectToDevice(deviceId, device, callback, false); // Default: direct connect
+    }
+    
+    /**
+     * Connect to device with explicit autoConnect parameter.
+     * 
+     * @param deviceId Device MAC address
+     * @param device BluetoothDevice instance
+     * @param callback Connection callback
+     * @param useAutoConnect true = background connect (slow, patient), false = direct connect (fast)
+     */
+    public void connectToDevice(String deviceId, BluetoothDevice device, BLEConnectionCallback callback, boolean useAutoConnect) {
         if (device == null) {
             Log.e(TAG, "Device is null for ID: " + deviceId);
             return;
@@ -390,18 +431,43 @@ public class BLEConnectionManager {
             deviceStates.put(deviceId, state);
         }
         
-        // ✅ FIX #5: Enhanced connection check - check both state AND actual connected map
+        // Check if already connected
         boolean isInConnectedMap = isDeviceInConnectedMap(deviceId);
-        if ((state.state == ConnectionState.CONNECTED || state.state == ConnectionState.CONNECTING) || isInConnectedMap) {
-            if (isInConnectedMap) {
-                Log.w(TAG, "Device " + deviceId + " already in connected map - skipping duplicate connection");
-            } else {
-                Log.w(TAG, "Device " + deviceId + " already connected or connecting");
-            }
+        if (isInConnectedMap || state.state == ConnectionState.CONNECTED) {
+            Log.w(TAG, "Device " + deviceId + " already connected - skipping duplicate connection");
             return;
         }
         
+        // ════════════════════════════════════════════════════════════════════════════
+        // INDUSTRY STANDARD: Handle stale CONNECTING state
+        // If a previous connection attempt is stuck, clean it up before retrying
+        // ════════════════════════════════════════════════════════════════════════════
+        if (state.state == ConnectionState.CONNECTING) {
+            long timeSinceConnecting = System.currentTimeMillis() - state.lastConnectionAttemptTime;
+            
+            if (timeSinceConnecting > CONNECTION_TIMEOUT_MS) {
+                // Connection attempt timed out - clean up and retry
+                Log.d(TAG, "🔄 [INDUSTRY] Connection attempt timed out after " + (timeSinceConnecting / 1000) + "s, cleaning up: " + deviceId);
+                cleanupStaleConnection(deviceId, state);
+            } else {
+                // Connection still in progress within timeout window
+                Log.w(TAG, "Device " + deviceId + " connection in progress (" + (timeSinceConnecting / 1000) + "s), waiting...");
+                return;
+            }
+        }
+        
+        // ════════════════════════════════════════════════════════════════════════════
+        // INDUSTRY STANDARD: Always clean up previous GATT before new connection
+        // This prevents resource leaks and error 133 (GATT_ERROR)
+        // ════════════════════════════════════════════════════════════════════════════
+        if (state.gatt != null) {
+            Log.d(TAG, "🧹 [INDUSTRY] Cleaning up previous GATT before new connection: " + deviceId);
+            cleanupStaleConnection(deviceId, state);
+        }
+        
+        // Update state
         state.state = ConnectionState.CONNECTING;
+        state.lastConnectionAttemptTime = System.currentTimeMillis();
         state.isManualDisconnect = false;
         connectionCallbacks.put(deviceId, callback);
         
@@ -410,9 +476,15 @@ public class BLEConnectionManager {
             foregroundService.addMonitoredDevice(deviceId);
         }
         
-        // Connect to GATT server with autoConnect=true for background reconnection
-        // This is crucial for auto-reconnection when device comes back in range
-        BluetoothGatt gatt = device.connectGatt(context, true, new BluetoothGattCallback() {
+        // ════════════════════════════════════════════════════════════════════════════
+        // INDUSTRY STANDARD: Choose connection strategy based on context
+        // - Direct connect (autoConnect=false): Fast, use when device is in range
+        // - Background connect (autoConnect=true): Slow but patient, use for link loss
+        // ════════════════════════════════════════════════════════════════════════════
+        Log.d(TAG, "🔗 [INDUSTRY] Connecting to " + deviceId + " with autoConnect=" + useAutoConnect + 
+              (useAutoConnect ? " (background/patient)" : " (direct/fast)"));
+        
+        BluetoothGatt gatt = device.connectGatt(context, useAutoConnect, new BluetoothGattCallback() {
             @Override
             public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
                 String deviceId = gatt.getDevice().getAddress();
@@ -471,30 +543,37 @@ public class BLEConnectionManager {
                     
                     Log.d(TAG, "Disconnected from device: " + deviceId);
                     
-                    // Enhanced reconnection logic for companion devices
+                    // ════════════════════════════════════════════════════════════════════════
+                    // INDUSTRY STANDARD: Link Loss Recovery
+                    // 1. Notify companion service of disconnection
+                    // 2. Let companion service handle aggressive scanning and detection
+                    // 3. When device detected, use DIRECT CONNECT (fast)
+                    // 4. If device not found after scan, use BACKGROUND CONNECT (patient)
+                    // ════════════════════════════════════════════════════════════════════════
                     if (!deviceState.isManualDisconnect) {
-                        // ✅ CRITICAL FIX: Trigger immediate presence scan when device disconnects
-                        // This helps detect if device is still in range but connection was lost
+                        // Notify companion service of disconnection - it will handle scanning
                         if (companionService != null) {
-                            Log.d(TAG, "🔍 Triggering immediate presence scan for disconnected device: " + deviceId);
+                            Log.d(TAG, "🔍 [INDUSTRY] Link loss detected, notifying companion service: " + deviceId);
                             companionService.onDeviceDisconnected(deviceId);
                         }
                         
+                        // ════════════════════════════════════════════════════════════════════
+                        // INDUSTRY STANDARD: Immediate check - is device still in range?
+                        // If yes: Direct connect (fast)
+                        // If no: Background connect (patient, let OS handle)
+                        // ════════════════════════════════════════════════════════════════════
                         if (companionService != null && companionService.isDeviceInRange(deviceId)) {
-                            // Device is in range but disconnected - immediate reconnection
-                            Log.d(TAG, "🔄 Device in range but disconnected, attempting immediate reconnection: " + deviceId);
-                            scheduleReconnection(deviceId, device, 1000); // 1 second delay
-                        } else if (deviceState.reconnectAttempts < 5) {
-                            // Device out of range - exponential backoff with longer delays
-                            Log.d(TAG, "🔄 Device out of range, scheduling reconnection with backoff: " + deviceId);
-                            scheduleReconnection(deviceId, device, 0); // Use exponential backoff
+                            Log.d(TAG, "🚀 [INDUSTRY] Device still in range after link loss, using DIRECT CONNECT");
+                            scheduleReconnection(deviceId, device, 500); // Short delay for stack to stabilize
                         } else {
-                            Log.d(TAG, "❌ Max reconnection attempts reached for device: " + deviceId);
-                            // ✅ CRITICAL FIX: Even after max attempts, continue monitoring for device coming back in range
-                            // The CompanionService will detect when device comes back and trigger reconnection
-                            if (companionService != null) {
-                                Log.d(TAG, "👁️ Max attempts reached, but continuing to monitor device presence: " + deviceId);
-                            }
+                            // ════════════════════════════════════════════════════════════════
+                            // INDUSTRY STANDARD: Device not in range - use BACKGROUND CONNECT
+                            // Let the companion service scan and detect device, then trigger
+                            // direct connect via onDevicePresenceChanged when device appears
+                            // ════════════════════════════════════════════════════════════════
+                            Log.d(TAG, "⏳ [INDUSTRY] Device out of range, companion service will scan and detect");
+                            // Don't call background connect here - let companion service scan first
+                            // When device is detected, onDevicePresenceChanged will use direct connect
                         }
                     }
                 }
@@ -596,22 +675,87 @@ public class BLEConnectionManager {
         Log.d(TAG, "Manually disconnected device: " + deviceId);
     }
     
+    /**
+     * INDUSTRY STANDARD: Clean up stale GATT connection
+     * This prevents resource leaks and error 133 (GATT_ERROR)
+     * Must be called before attempting a new connection to the same device
+     */
+    private void cleanupStaleConnection(String deviceId, DeviceConnectionState state) {
+        Log.d(TAG, "🧹 [INDUSTRY] Cleaning up stale connection for: " + deviceId);
+        
+        // Close any existing GATT
+        if (state.gatt != null) {
+            try {
+                // Industry best practice: disconnect then close
+                state.gatt.disconnect();
+                state.gatt.close();
+                Log.d(TAG, "   ✅ Closed stale GATT object");
+            } catch (Exception e) {
+                Log.w(TAG, "   ⚠️ Error closing stale GATT: " + e.getMessage());
+            }
+            state.gatt = null;
+        }
+        
+        // Remove from connected map
+        synchronized(gattLock) {
+            if (connectedGatts.containsKey(deviceId)) {
+                BluetoothGatt existingGatt = connectedGatts.remove(deviceId);
+                if (existingGatt != null && existingGatt != state.gatt) {
+                    try {
+                        existingGatt.disconnect();
+                        existingGatt.close();
+                        Log.d(TAG, "   ✅ Closed orphaned GATT from connected map");
+                    } catch (Exception e) {
+                        Log.w(TAG, "   ⚠️ Error closing orphaned GATT: " + e.getMessage());
+                    }
+                }
+            }
+        }
+        
+        // Reset state
+        state.state = ConnectionState.DISCONNECTED;
+        state.lastConnectionAttemptTime = 0;
+        
+        // Small delay for BLE stack to stabilize (industry recommendation: 300-600ms)
+        try {
+            Thread.sleep(300);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+    
+    /**
+     * INDUSTRY STANDARD: Direct connect for when device is known to be in range.
+     * Uses autoConnect=false for fast connection (~1-2 seconds vs 30+ seconds)
+     */
+    public void directConnectToDevice(String deviceId, BluetoothDevice device, BLEConnectionCallback callback) {
+        Log.d(TAG, "🚀 [INDUSTRY] Direct connect to device in range: " + deviceId);
+        connectToDevice(deviceId, device, callback, false); // autoConnect=false for fast connection
+    }
+    
+    /**
+     * INDUSTRY STANDARD: Background connect for link-loss recovery.
+     * Uses autoConnect=true to let Android manage reconnection.
+     */
+    public void backgroundConnectToDevice(String deviceId, BluetoothDevice device, BLEConnectionCallback callback) {
+        Log.d(TAG, "⏳ [INDUSTRY] Background connect for link-loss recovery: " + deviceId);
+        connectToDevice(deviceId, device, callback, true); // autoConnect=true for patient reconnection
+    }
+    
+    /**
+     * INDUSTRY STANDARD: Schedule reconnection with proper strategy selection.
+     * Uses direct connect when device is confirmed in range for faster reconnection.
+     */
     private void scheduleReconnection(String deviceId, BluetoothDevice device, long customDelay) {
         DeviceConnectionState state = deviceStates.get(deviceId);
         if (state == null) return;
         
         state.reconnectAttempts++;
         
-        long delay;
-        if (customDelay > 0) {
-            // Use custom delay (for immediate reconnection when device is in range)
-            delay = customDelay;
-        } else {
-            // Use exponential backoff for out-of-range devices
-            delay = Math.min(1000 * (1L << state.reconnectAttempts), 60000); // Max 60s
-        }
+        // Industry recommendation: Short delay for stack stabilization (300-600ms minimum)
+        long delay = Math.max(customDelay, 300);
         
-        Log.d(TAG, "Scheduling reconnection for " + deviceId + " in " + delay + "ms (attempt " + state.reconnectAttempts + ")");
+        Log.d(TAG, "⏱️ [INDUSTRY] Scheduling reconnection for " + deviceId + " in " + delay + "ms (attempt " + state.reconnectAttempts + ")");
         
         mainHandler.postDelayed(() -> {
             // Re-check state in case it changed during delay
@@ -621,15 +765,15 @@ public class BLEConnectionManager {
                 return;
             }
             
-            // ✅ CRITICAL FIX: Before attempting reconnection, trigger a fresh presence scan
-            // This ensures we have the latest device presence status
+            // ════════════════════════════════════════════════════════════════════════
+            // INDUSTRY STANDARD: Scan first, then connect with appropriate strategy
+            // ════════════════════════════════════════════════════════════════════════
             if (companionService != null) {
-                Log.d(TAG, "🔍 Triggering presence scan before reconnection attempt: " + deviceId);
+                Log.d(TAG, "🔍 [INDUSTRY] Scanning to verify device presence before reconnection: " + deviceId);
                 companionService.performImmediatePresenceScan(deviceId);
                 
-                // Wait a bit for scan to complete, then check presence
+                // Wait for scan to complete
                 mainHandler.postDelayed(() -> {
-                    // Re-check state again after scan delay
                     DeviceConnectionState stateAfterScan = deviceStates.get(deviceId);
                     if (stateAfterScan == null || stateAfterScan.isManualDisconnect || stateAfterScan.state != ConnectionState.DISCONNECTED) {
                         Log.d(TAG, "⏸️ Skipping reconnection after scan - state changed: " + deviceId);
@@ -637,14 +781,21 @@ public class BLEConnectionManager {
                     }
                     
                     if (companionService.isDeviceInRange(deviceId)) {
-                        Log.d(TAG, "🔄 Device confirmed in range, attempting reconnection: " + deviceId);
-                        connectToDevice(deviceId, device, connectionCallbacks.get(deviceId));
+                        // ════════════════════════════════════════════════════════════════
+                        // INDUSTRY STANDARD: Device confirmed in range - DIRECT CONNECT
+                        // ════════════════════════════════════════════════════════════════
+                        Log.d(TAG, "🚀 [INDUSTRY] Device confirmed in range, using DIRECT CONNECT: " + deviceId);
+                        BLEConnectionCallback callback = connectionCallbacks.get(deviceId);
+                        if (callback == null) {
+                            callback = createDefaultAutoReconnectCallback(deviceId);
+                            connectionCallbacks.put(deviceId, callback);
+                        }
+                        directConnectToDevice(deviceId, device, callback);
                     } else {
-                        Log.d(TAG, "⏸️ Device not in range, skipping reconnection: " + deviceId);
-                        // Don't schedule another attempt here - let CompanionService detect when device comes back
-                        // The periodic scan will detect device presence and trigger onDevicePresenceChanged
+                        // Device not in range - companion service will detect it and trigger reconnection
+                        Log.d(TAG, "⏸️ [INDUSTRY] Device not in range, waiting for companion service to detect: " + deviceId);
                     }
-                }, 1500); // Wait 1.5 seconds for scan to complete
+                }, 2000); // Wait 2 seconds for scan to complete
             } else {
                 // No companion service, attempt reconnection anyway
                 Log.d(TAG, "🔄 Attempting reconnection to device (no companion service): " + deviceId);
@@ -807,13 +958,20 @@ public class BLEConnectionManager {
                                 
                                 @Override
                                 public void onCharacteristicChanged(String deviceId, BluetoothGattCharacteristic characteristic) {
-                                    Log.d(TAG, "📡 Auto-reconnect characteristic changed: " + deviceId);
+                                    Log.d(TAG, "📡 Auto-reconnect characteristic changed: " + deviceId + " - " + characteristic.getUuid());
+                                    if (companionService != null) {
+                                        companionService.notifyCharacteristicChanged(deviceId, characteristic);
+                                    }
                                 }
                             };
                             // Store the callback for future use
                             connectionCallbacks.put(deviceId, callback);
                         }
-                        connectToDevice(deviceId, bondedDevice, callback);
+                        // ════════════════════════════════════════════════════════════════════
+                        // INDUSTRY STANDARD: Use DIRECT CONNECT when device is detected in range
+                        // This is faster than autoConnect=true (1-2s vs 30+ seconds)
+                        // ════════════════════════════════════════════════════════════════════
+                        directConnectToDevice(deviceId, bondedDevice, callback);
                         return;
                     }
                 }
@@ -822,8 +980,11 @@ public class BLEConnectionManager {
         }
         
         if (inRange && state.state == ConnectionState.DISCONNECTED && !state.isManualDisconnect) {
-            // Device came back in range and we're not manually disconnected
-            Log.d(TAG, "🔄 Device came back in range, attempting reconnection: " + deviceId);
+            // ════════════════════════════════════════════════════════════════════════════
+            // INDUSTRY STANDARD: Device detected in range - use DIRECT CONNECT (fast)
+            // autoConnect=false provides faster connection when we know device is available
+            // ════════════════════════════════════════════════════════════════════════════
+            Log.d(TAG, "🚀 [INDUSTRY] Device detected in range, using DIRECT CONNECT: " + deviceId);
             
             // Get the device from bonded devices
             BluetoothDevice device = null;
@@ -836,52 +997,73 @@ public class BLEConnectionManager {
             }
             
             if (device != null) {
-                // ✅ CRITICAL FIX: Reset reconnection attempts since device is back in range
-                // This allows reconnection even if max attempts were previously reached
+                // Reset reconnection attempts since device is back in range
                 state.reconnectAttempts = 0;
                 
                 // Get callback - if it doesn't exist, create a default one for auto-reconnection
                 BLEConnectionCallback callback = connectionCallbacks.get(deviceId);
                 if (callback == null) {
                     Log.d(TAG, "📝 Creating default callback for auto-reconnection: " + deviceId);
-                    // Create a default callback for auto-reconnection
-                    callback = new BLEConnectionCallback() {
-                        @Override
-                        public void onConnectionStateChanged(String deviceId, ConnectionState state) {
-                            Log.d(TAG, "🔗 Auto-reconnect state changed: " + deviceId + " = " + state);
-                        }
-                        
-                        @Override
-                        public void onServicesDiscovered(String deviceId, List<BluetoothGattService> services) {
-                            Log.d(TAG, "✅ Auto-reconnect services discovered: " + deviceId);
-                        }
-                        
-                        @Override
-                        public void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
-                            // Handle characteristic reads if needed
-                        }
-                        
-                        @Override
-                        public void onCharacteristicWrite(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
-                            // Handle characteristic writes if needed
-                        }
-                        
-                        @Override
-                        public void onCharacteristicChanged(String deviceId, BluetoothGattCharacteristic characteristic) {
-                            Log.d(TAG, "📡 Auto-reconnect characteristic changed: " + deviceId);
-                        }
-                    };
-                    // Store the callback for future use
+                    callback = createDefaultAutoReconnectCallback(deviceId);
                     connectionCallbacks.put(deviceId, callback);
                 }
-                Log.d(TAG, "✅ Reconnecting to device: " + deviceId);
-                connectToDevice(deviceId, device, callback);
+                
+                // ════════════════════════════════════════════════════════════════════════
+                // INDUSTRY STANDARD: DIRECT CONNECT (autoConnect=false) when device in range
+                // ════════════════════════════════════════════════════════════════════════
+                directConnectToDevice(deviceId, device, callback);
             } else {
                 Log.w(TAG, "⚠️ Device not found in bonded devices: " + deviceId);
             }
         } else if (inRange && state.state == ConnectionState.DISCONNECTED && state.isManualDisconnect) {
             Log.d(TAG, "⏸️ Device came back in range but was manually disconnected, skipping auto-reconnect: " + deviceId);
         }
+    }
+    
+    /**
+     * Creates a default callback for auto-reconnection that delegates to companionService.
+     * This ensures the callback chain reaches SampleBridgeAndroid for proper event emission.
+     */
+    private BLEConnectionCallback createDefaultAutoReconnectCallback(String deviceId) {
+        return new BLEConnectionCallback() {
+            @Override
+            public void onConnectionStateChanged(String deviceId, ConnectionState state) {
+                Log.d(TAG, "🔗 Auto-reconnect state changed: " + deviceId + " = " + state);
+                if (companionService != null) {
+                    Log.d(TAG, "📢 Delegating to companionService.notifyConnectionStateChanged()");
+                    companionService.notifyConnectionStateChanged(deviceId, state);
+                }
+            }
+            
+            @Override
+            public void onServicesDiscovered(String deviceId, List<BluetoothGattService> services) {
+                Log.d(TAG, "✅ Auto-reconnect services discovered: " + deviceId);
+                if (companionService != null) {
+                    Log.d(TAG, "📢 Delegating onServicesDiscovered to companionService");
+                    companionService.notifyServicesDiscovered(deviceId);
+                }
+            }
+            
+            @Override
+            public void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+                if (companionService != null) {
+                    companionService.notifyCharacteristicRead(deviceId, characteristic, status);
+                }
+            }
+            
+            @Override
+            public void onCharacteristicWrite(String deviceId, BluetoothGattCharacteristic characteristic, int status) {
+                // Handle characteristic writes if needed
+            }
+            
+            @Override
+            public void onCharacteristicChanged(String deviceId, BluetoothGattCharacteristic characteristic) {
+                Log.d(TAG, "📡 Auto-reconnect characteristic changed: " + deviceId + " - " + characteristic.getUuid());
+                if (companionService != null) {
+                    companionService.notifyCharacteristicChanged(deviceId, characteristic);
+                }
+            }
+        };
     }
     
     // Cleanup

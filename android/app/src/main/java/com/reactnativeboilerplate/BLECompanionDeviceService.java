@@ -51,6 +51,7 @@ public class BLECompanionDeviceService {
         void onAutoDisconnected(String deviceId);
         void onServicesDiscovered(String deviceId, BluetoothGatt gatt);
         void onCharacteristicRead(String deviceId, BluetoothGattCharacteristic characteristic, int status);
+        void onCharacteristicChanged(String deviceId, BluetoothGattCharacteristic characteristic);
     }
     
     private Context context;
@@ -434,8 +435,13 @@ public class BLECompanionDeviceService {
         // Stop continuous reconnection attempts since we're actively connecting
         stopContinuousReconnection(deviceId);
         
-        // Use connection manager to connect with auto-connect enabled
-        connectionManager.connectToDevice(deviceId, device, new BLEConnectionManager.BLEConnectionCallback() {
+        // ════════════════════════════════════════════════════════════════════════════
+        // INDUSTRY STANDARD: Use DIRECT CONNECT (autoConnect=false) for detected devices
+        // This method is only called when device has been detected in range via scanning,
+        // so direct connect provides faster connection (1-2s vs 30+ seconds)
+        // ════════════════════════════════════════════════════════════════════════════
+        Log.d(TAG, "🚀 [INDUSTRY] Using DIRECT CONNECT for detected device: " + deviceId);
+        connectionManager.directConnectToDevice(deviceId, device, new BLEConnectionManager.BLEConnectionCallback() {
             @Override
             public void onConnectionStateChanged(String deviceId, BLEConnectionManager.ConnectionState state) {
                 Log.d(TAG, "🔗 Companion device connection state changed: " + deviceId + " = " + state);
@@ -731,6 +737,20 @@ public class BLECompanionDeviceService {
             autoConnectionCallback.onCharacteristicRead(deviceId, characteristic, status);
         } else {
             Log.w(TAG, "⚠️ autoConnectionCallback is null, cannot notify about characteristic read");
+        }
+    }
+    
+    /**
+     * ✅ CRITICAL FIX: Forward characteristic changed (notification) events to parent (SampleBridgeAndroid)
+     * This allows SampleBridgeAndroid to process live data (temperature, steps, battery, etc.) for auto-reconnected devices
+     */
+    public void notifyCharacteristicChanged(String deviceId, BluetoothGattCharacteristic characteristic) {
+        Log.d(TAG, "📢 Received characteristic changed notification: " + deviceId + " - " + characteristic.getUuid());
+        
+        if (autoConnectionCallback != null) {
+            autoConnectionCallback.onCharacteristicChanged(deviceId, characteristic);
+        } else {
+            Log.w(TAG, "⚠️ autoConnectionCallback is null, cannot notify about characteristic changed");
         }
     }
 }
