@@ -304,68 +304,83 @@ const ConnectionLogScreen = ({ route, navigation }) => {
   const renderLog = ({ item, index }) => {
     const timestamp = getTimestampDate(item);
     const timeDate = formatTimeDate(timestamp);
+    // Ensure displayed values are never objects (React can't render objects as Text children)
+    const safeStr = (v) => (v != null && typeof v === 'object') ? JSON.stringify(v) : String(v ?? '');
 
     return (
       <View style={styles.logContainer}>
-        <Text style={styles.logText}>{item.action} {timeDate}</Text>
-        {item.commandHex && (
-          <Text style={styles.hexText}>Command: {item.commandHex}</Text>
-        )}
-        {item.responseHex && (
-          <Text style={styles.hexText}>Response: {item.responseHex}</Text>
-        )}
+        <Text style={styles.logText}>{safeStr(item.action)} {timeDate}</Text>
+        {item.commandHex ? (
+          <Text style={styles.hexText}>Command: {safeStr(item.commandHex)}</Text>
+        ) : null}
+        {item.responseHex ? (
+          <Text style={styles.hexText}>Response: {safeStr(item.responseHex)}</Text>
+        ) : null}
         {/* ✅ Display notification information */}
-        {item.characteristic && (
-          <Text style={styles.hexText}>Characteristic: {item.characteristic}</Text>
-        )}
-        {item.uuid && (
-          <Text style={styles.hexText}>UUID: {item.uuid}</Text>
-        )}
-        {item.characteristicNames && (
-          <Text style={styles.hexText}>Characteristics: {item.characteristicNames}</Text>
-        )}
-        {item.count !== undefined && !item.characteristic && (
+        {item.characteristic ? (
+          <Text style={styles.hexText}>Characteristic: {safeStr(item.characteristic)}</Text>
+        ) : null}
+        {item.uuid ? (
+          <Text style={styles.hexText}>UUID: {safeStr(item.uuid)}</Text>
+        ) : null}
+        {item.characteristicNames ? (
+          <Text style={styles.hexText}>Characteristics: {safeStr(item.characteristicNames)}</Text>
+        ) : null}
+        {item.count !== undefined && !item.characteristic ? (
           <Text style={styles.hexText}>Count: {item.count}</Text>
-        )}
-        {item.totalEnabled !== undefined && (
+        ) : null}
+        {/* ✅ Show sync metrics when present */}
+        {item.recordsTransmitted !== undefined ? (
+          <Text style={styles.hexText}>Records Transmitted: {safeStr(item.recordsTransmitted)}</Text>
+        ) : null}
+        {item.grandTotal !== undefined ? (
+          <Text style={styles.hexText}>Grand Total: {safeStr(item.grandTotal)}</Text>
+        ) : null}
+        {item.totalExpected !== undefined ? (
+          <Text style={styles.hexText}>Total Expected: {safeStr(item.totalExpected)}</Text>
+        ) : null}
+        {item.recordCount !== undefined && !item.characteristic ? (
+          <Text style={styles.hexText}>Record Count: {safeStr(item.recordCount)}</Text>
+        ) : null}
+        {item.totalEnabled !== undefined ? (
           <Text style={styles.hexText}>Total Enabled: {item.totalEnabled}</Text>
-        )}
-        {item.note && (
-          <Text style={styles.hexText}>Note: {item.note}</Text>
-        )}
-        {item.status && item.action?.includes('Notification') && (
+        ) : null}
+        {item.note ? (
+          <Text style={styles.hexText}>Note: {safeStr(item.note)}</Text>
+        ) : null}
+        {(item.status && item.action?.includes('Notification')) ? (
           <Text style={[styles.hexText, { color: item.status === 'success' ? '#4CAF50' : '#F44336' }]}>
             Status: {item.status === 'success' ? '✅ Success' : '❌ Failed'}
           </Text>
-        )}
-        {item.gattStatus !== undefined && (
-          <Text style={styles.hexText}>GATT Status: {item.gattStatus}</Text>
-        )}
+        ) : null}
+        {item.gattStatus !== undefined ? (
+          <Text style={styles.hexText}>GATT Status: {safeStr(item.gattStatus)}</Text>
+        ) : null}
         {/* ✅ Display time information for SET_TIME commands */}
-        {item.systemTimestamp !== undefined && (
+        {item.systemTimestamp !== undefined ? (
           <>
             <Text style={styles.hexText}>System Time: {item.systemTimestamp} ({item.systemTimestampISO || new Date(item.systemTimestamp * 1000).toISOString()})</Text>
-            {item.timestampHex && (
-              <Text style={styles.hexText}>Timestamp Hex: {item.timestampHex}</Text>
-            )}
-            {item.deviceRTCValid !== undefined && (
+            {item.timestampHex ? (
+              <Text style={styles.hexText}>Timestamp Hex: {safeStr(item.timestampHex)}</Text>
+            ) : null}
+            {item.deviceRTCValid !== undefined ? (
               <Text style={styles.hexText}>Device RTC Valid: {item.deviceRTCValid ? 'Yes' : 'No'}</Text>
-            )}
+            ) : null}
           </>
-        )}
+        ) : null}
         {/* ✅ Display RTC read information */}
-        {item.deviceRTC !== undefined && (
+        {item.deviceRTC !== undefined ? (
           <>
             <Text style={styles.hexText}>Device RTC: {item.deviceRTC} ({item.deviceRTCISO || 'N/A'})</Text>
             <Text style={styles.hexText}>System Time: {item.systemTime} ({item.systemTimeISO || 'N/A'})</Text>
-            {item.timeDifference !== undefined && (
+            {item.timeDifference !== undefined ? (
               <Text style={styles.hexText}>Time Difference: {item.timeDifferenceFormatted || `${item.timeDifference}s`}</Text>
-            )}
-            {item.rtcValid !== undefined && (
+            ) : null}
+            {item.rtcValid !== undefined ? (
               <Text style={styles.hexText}>RTC Valid: {item.rtcValid ? '✅ Yes' : '❌ No'}</Text>
-            )}
+            ) : null}
           </>
-        )}
+        ) : null}
       </View>
     );
   };

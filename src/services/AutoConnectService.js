@@ -1,6 +1,6 @@
-import { NativeModules, Platform, DeviceEventEmitter, NativeEventEmitter } from 'react-native';
+import { NativeModules, Platform, NativeEventEmitter } from 'react-native';
 
-const { BridgingCodeModule, SampleBridgeAndroid } = NativeModules;
+const { BridgingCodeModule } = NativeModules;
 
 class AutoConnectService {
   constructor() {
@@ -19,62 +19,37 @@ class AutoConnectService {
 
   setupEventListeners() {
     if (Platform.OS === 'ios') {
-      // iOS uses BridgingCodeModule
+      // iOS uses BridgingCodeModule - auto-connect events
       const bridgeEventEmitter = new NativeEventEmitter(BridgingCodeModule);
-      
-      // Listen for auto-connect device connected events
       this.connectedListener = bridgeEventEmitter.addListener('AutoConnectDeviceConnected', (deviceInfo) => {
         console.log('📱 iOS: Received auto-connect device connected event:', deviceInfo);
         this._handleDeviceConnected(deviceInfo);
       });
-
-      // Listen for auto-connect device disconnected events
       this.disconnectedListener = bridgeEventEmitter.addListener('AutoConnectDeviceDisconnected', (deviceInfo) => {
         console.log('📱 iOS: Received auto-connect device disconnected event:', deviceInfo);
         this._handleDeviceDisconnected(deviceInfo);
       });
-
       console.log('📡 iOS Auto-connect event listeners set up with NativeEventEmitter');
-    } else {
-      // Android uses DeviceEventEmitter
-      this.connectedListener = DeviceEventEmitter.addListener('AutoConnectDeviceConnected', (deviceInfo) => {
-        console.log('🤖 Android: Received auto-connect device connected event:', deviceInfo);
-        this._handleDeviceConnected(deviceInfo);
-      });
-
-      this.disconnectedListener = DeviceEventEmitter.addListener('AutoConnectDeviceDisconnected', (deviceInfo) => {
-        console.log('🤖 Android: Received auto-connect device disconnected event:', deviceInfo);
-        this._handleDeviceDisconnected(deviceInfo);
-      });
-
-      console.log('📡 Android Auto-connect event listeners set up with DeviceEventEmitter');
     }
+    // Android: auto-connect via SampleBridgeAndroid (start/stop/status). UI uses DeviceConnected/DeviceDisconnected.
   }
 
   /**
-   * Start auto-connect functionality
-   * This enables background scanning and automatic reconnection to bonded devices
+   * Start auto-connect (iOS: BridgingCodeModule; Android: BLEService calls SampleBridgeAndroid directly).
    */
   async startAutoConnect() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log('🚀 Starting auto-connect...');
-
-      // Refresh bonded devices before starting to avoid empty scans
       const bondedResult = await this.getBondedDevices();
       const bondedCount = bondedResult.success ? bondedResult.devices.length : 0;
-
       if (bondedCount === 0) {
         console.log('⏸️ Skipping auto-connect start: no bonded devices available');
         return { success: true, skipped: true, reason: 'no_bonded_devices' };
       }
-
-      let result;
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.startAutoConnect();
-      } else {
-        result = await SampleBridgeAndroid.startAutoConnect();
-      }
-      
+      const result = await BridgingCodeModule.startAutoConnect();
       this.isEnabled = true;
       console.log('✅ Auto-connect started:', result);
       return { success: true, result };
@@ -85,19 +60,15 @@ class AutoConnectService {
   }
 
   /**
-   * Stop auto-connect functionality
+   * Stop auto-connect (iOS only here; Android handled by BLEService → SampleBridgeAndroid).
    */
   async stopAutoConnect() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log('🛑 Stopping auto-connect...');
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.stopAutoConnect();
-      } else {
-        result = await SampleBridgeAndroid.stopAutoConnect();
-      }
-      
+      const result = await BridgingCodeModule.stopAutoConnect();
       this.isEnabled = false;
       console.log('✅ Auto-connect stopped:', result);
       return { success: true, result };
@@ -108,20 +79,16 @@ class AutoConnectService {
   }
 
   /**
-   * Add a device to the bonded devices list
-   * This device will be automatically connected to when discovered
+   * Add a device to the bonded devices list (iOS only).
+   * Android: no-op; use BLEService which calls native directly.
    */
   async addBondedDevice(deviceId) {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log(`✅ Adding bonded device: ${deviceId}`);
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.addBondedDevice(deviceId);
-      } else {
-        result = await SampleBridgeAndroid.addBondedDevice(deviceId);
-      }
-      
+      const result = await BridgingCodeModule.addBondedDevice(deviceId);
       this.bondedDevices.add(deviceId);
       console.log('✅ Device bonded:', result);
       return { success: true, result };
@@ -132,19 +99,16 @@ class AutoConnectService {
   }
 
   /**
-   * Remove a device from the bonded devices list
+   * Remove a device from the bonded devices list (iOS only).
+   * Android: no-op.
    */
   async removeBondedDevice(deviceId) {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log(`❌ Removing bonded device: ${deviceId}`);
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.removeBondedDevice(deviceId);
-      } else {
-        result = await SampleBridgeAndroid.removeBondedDevice(deviceId);
-      }
-      
+      const result = await BridgingCodeModule.removeBondedDevice(deviceId);
       this.bondedDevices.delete(deviceId);
       console.log('✅ Device unbonded:', result);
       return { success: true, result };
@@ -155,18 +119,15 @@ class AutoConnectService {
   }
 
   /**
-   * Get list of bonded devices
+   * Get list of bonded devices (iOS only).
+   * Android: returns empty list; BLEService uses native directly.
    */
   async getBondedDevices() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, devices: [] };
+    }
     try {
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.getBondedDevices();
-      } else {
-        result = await SampleBridgeAndroid.getBondedDevices();
-      }
-      
+      const result = await BridgingCodeModule.getBondedDevices();
       const devices = result.bondedDevices || [];
       this.bondedDevices = new Set(devices);
       console.log('📱 Bonded devices:', devices);
@@ -178,18 +139,15 @@ class AutoConnectService {
   }
 
   /**
-   * Get list of forgotten devices
+   * Get list of forgotten devices (iOS only).
+   * Android: returns empty list; BLEService uses native directly.
    */
   async getForgottenDevices() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, devices: [] };
+    }
     try {
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.getForgottenDevices();
-      } else {
-        result = await SampleBridgeAndroid.getForgottenDevices();
-      }
-      
+      const result = await BridgingCodeModule.getForgottenDevices();
       const devices = result.forgottenDevices || [];
       console.log('📱 Forgotten devices:', devices);
       return { success: true, devices };
@@ -200,18 +158,14 @@ class AutoConnectService {
   }
 
   /**
-   * Get auto-connect status
+   * Get auto-connect status (iOS only here; Android via BLEService → SampleBridgeAndroid.getAutoConnectStatus).
    */
   async getAutoConnectStatus() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, status: { enabled: false } };
+    }
     try {
-      let status;
-      
-      if (Platform.OS === 'ios') {
-        status = await BridgingCodeModule.getAutoConnectStatus();
-      } else {
-        status = await SampleBridgeAndroid.getAutoConnectStatus();
-      }
-      
+      const status = await BridgingCodeModule.getAutoConnectStatus();
       console.log('📊 Auto-connect status:', status);
       return { success: true, status };
     } catch (error) {
@@ -221,20 +175,16 @@ class AutoConnectService {
   }
 
   /**
-   * Force scan for bonded devices (debug method)
+   * Force scan for bonded devices (iOS only).
+   * Android: no-op.
    */
   async forceScanForBondedDevices() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log('🔍 Force scanning for bonded devices...');
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.forceScanForBondedDevices();
-      } else {
-        // Android doesn't have this specific method, but we can start scanning
-        result = await SampleBridgeAndroid.startScanning();
-      }
-      
+      const result = await BridgingCodeModule.forceScanForBondedDevices();
       console.log('✅ Force scan result:', result);
       return { success: true, result };
     } catch (error) {
@@ -244,20 +194,16 @@ class AutoConnectService {
   }
 
   /**
-   * Disconnect device from native Bluetooth
+   * Disconnect device from native Bluetooth (iOS only).
+   * Android: no-op; BLEService uses native disconnect directly.
    */
   async disconnectFromNative(deviceId) {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log('🔌 Disconnecting device from native Bluetooth:', deviceId);
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.disconnectFromNative(deviceId);
-      } else {
-        // ✅ UPDATED: Use new disconnectFromNative method (matching iOS)
-        result = await SampleBridgeAndroid.disconnectFromNative(deviceId);
-      }
-      
+      const result = await BridgingCodeModule.disconnectFromNative(deviceId);
       console.log('✅ Native disconnect result:', result);
       return { success: true, result };
     } catch (error) {
@@ -267,20 +213,16 @@ class AutoConnectService {
   }
 
   /**
-   * Debug method to get detailed connection status
+   * Debug method to get detailed connection status (iOS only).
+   * Android: no-op.
    */
   async debugConnectionStatus() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log('🐛 Getting debug connection status...');
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.debugConnectionStatus();
-      } else {
-        // ✅ UPDATED: Use new debugConnectionStatus method (matching iOS)
-        result = await SampleBridgeAndroid.debugConnectionStatus();
-      }
-      
+      const result = await BridgingCodeModule.debugConnectionStatus();
       console.log('🐛 Debug Connection Status:', result);
       return { success: true, result };
     } catch (error) {
@@ -307,20 +249,16 @@ class AutoConnectService {
   }
 
   /**
-   * Connect to known bonded peripherals directly (bypasses scanning)
+   * Connect to known bonded peripherals (iOS only).
+   * Android: manual connection only; no-op.
    */
   async connectToKnownPeripherals() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: { attempted: 0, knownPeripherals: [] } };
+    }
     try {
       console.log('🔗 Connecting to known bonded peripherals...');
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.connectToKnownPeripherals();
-      } else {
-        // ✅ UPDATED: Use new connectToKnownPeripherals method (matching iOS)
-        result = await SampleBridgeAndroid.connectToKnownPeripherals();
-      }
-      
+      const result = await BridgingCodeModule.connectToKnownPeripherals();
       console.log('✅ Connect to known peripherals result:', result);
       return { success: true, result };
     } catch (error) {
@@ -330,19 +268,16 @@ class AutoConnectService {
   }
 
   /**
-   * Get resource status for debugging (memory, timers, etc.)
+   * Get resource status for debugging (iOS only).
+   * Android: no-op.
    */
   async getResourceStatus() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log('📊 Getting resource status...');
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.getResourceStatus();
-      } else {
-        result = await SampleBridgeAndroid.getResourceStatus();
-      }
-      
+      const result = await BridgingCodeModule.getResourceStatus();
       console.log('📊 Resource Status:', result);
       return { success: true, result };
     } catch (error) {
@@ -352,19 +287,16 @@ class AutoConnectService {
   }
 
   /**
-   * Get manufacturer information (manufacturer ID, etc.)
+   * Get manufacturer information (iOS only).
+   * Android: no-op.
    */
   async getManufacturerInfo() {
+    if (Platform.OS !== 'ios') {
+      return { success: true, result: null };
+    }
     try {
       console.log('🏭 Getting manufacturer info...');
-      let result;
-      
-      if (Platform.OS === 'ios') {
-        result = await BridgingCodeModule.getManufacturerInfo();
-      } else {
-        result = await SampleBridgeAndroid.getManufacturerInfo();
-      }
-      
+      const result = await BridgingCodeModule.getManufacturerInfo();
       console.log('🏭 Manufacturer Info:', result);
       return { success: true, result };
     } catch (error) {
@@ -448,9 +380,10 @@ class AutoConnectService {
   }
 
   /**
-   * Check if auto-connect is enabled
+   * Check if auto-connect is enabled (iOS: this.isEnabled; Android: BLEService.androidAutoConnectEnabled).
    */
   isAutoConnectEnabled() {
+    if (Platform.OS !== 'ios') return false;
     return this.isEnabled;
   }
 

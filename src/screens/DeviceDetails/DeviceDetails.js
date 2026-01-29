@@ -36,6 +36,7 @@ const DeviceDetails = ({ route, navigation }) => {
   const [inputValue, setInputValue] = useState('');
   // Store event handler reference for proper cleanup
   const dataUpdateHandlerRef = React.useRef(null);
+  const loadingTimeoutRef = React.useRef(null);
 
   useEffect(() => {
     loadDeviceDetails();
@@ -76,17 +77,23 @@ const DeviceDetails = ({ route, navigation }) => {
       }
     }, 2000); // Update every 2 seconds for better performance
 
-    // Add timeout to prevent infinite loading
-    const timeout = setTimeout(() => {
-      if (loading) {
-        console.log('⚠️ [DeviceDetails] Loading timeout reached, forcing completion');
-        setLoading(false);
-      }
+    // Add timeout to prevent infinite loading (cleared when loading completes)
+    loadingTimeoutRef.current = setTimeout(() => {
+      setLoading((prev) => {
+        if (prev) {
+          console.log('⚠️ [DeviceDetails] Loading timeout reached, forcing completion');
+          return false;
+        }
+        return prev;
+      });
     }, 5000); // 5 second timeout - more reasonable
 
     return () => {
       clearInterval(interval);
-      clearTimeout(timeout);
+      if (loadingTimeoutRef.current != null) {
+        clearTimeout(loadingTimeoutRef.current);
+        loadingTimeoutRef.current = null;
+      }
       appStateSubscription?.remove();
       // Remove only this screen's event listener (not all listeners for the event)
       if (dataUpdateHandlerRef.current) {
@@ -204,6 +211,10 @@ const DeviceDetails = ({ route, navigation }) => {
       Alert.alert('Error', 'Failed to load device details');
     } finally {
       console.log('📱 [DeviceDetails] Loading completed, setting loading to false');
+      if (loadingTimeoutRef.current != null) {
+        clearTimeout(loadingTimeoutRef.current);
+        loadingTimeoutRef.current = null;
+      }
       setLoading(false);
     }
   };
@@ -285,6 +296,8 @@ const DeviceDetails = ({ route, navigation }) => {
           await loadDeviceDetails();
         } catch (error) {
           console.log('⚠️ Error loading details after connection:', error.message);
+          if (loadingTimeoutRef.current != null) clearTimeout(loadingTimeoutRef.current);
+          loadingTimeoutRef.current = null;
           setLoading(false);
         }
       }, 2000);
@@ -292,6 +305,8 @@ const DeviceDetails = ({ route, navigation }) => {
     } catch (error) {
       console.error('❌ Connection attempt failed:', error);
       Alert.alert('Connection Failed', 'Could not connect to device. Please try again.');
+      if (loadingTimeoutRef.current != null) clearTimeout(loadingTimeoutRef.current);
+      loadingTimeoutRef.current = null;
       setLoading(false);
     }
   };
@@ -308,6 +323,8 @@ const DeviceDetails = ({ route, navigation }) => {
       console.error('❌ Service refresh failed:', error);
       Alert.alert('Refresh Failed', 'Could not refresh services. Please try again.');
     } finally {
+      if (loadingTimeoutRef.current != null) clearTimeout(loadingTimeoutRef.current);
+      loadingTimeoutRef.current = null;
       setLoading(false);
     }
   };

@@ -66,6 +66,7 @@ const ModernBLEManager = ({ navigation }) => {
     deviceFound: null,
     deviceConnected: null,
     deviceDataUpdate: null,
+    rssiUpdate: null,
   }); 
   useEffect(() => {
     checkBLEState();
@@ -228,6 +229,9 @@ const ModernBLEManager = ({ navigation }) => {
     console.log('📞 [Modern] Device disconnection listener registered');
     eventHandlersRef.current.deviceFound = (device) => {
       console.log('🔍 [Modern] Device found event received:', device.name, device.id);
+      if (device.manufacturerData) {
+        console.log('📦 [Modern] Manufacturer data:', JSON.stringify(device.manufacturerData, null, 2));
+      }
       setDevices(prevDevices => {
         const existingIndex = prevDevices.findIndex(d => d.id === device.id);
         if (existingIndex >= 0) {
@@ -362,7 +366,9 @@ const ModernBLEManager = ({ navigation }) => {
           return;
         }
         if (eventData.type === 'sync_complete') {
-        console.log('📊 [Modern] Sync complete - setting recordCount to 0:', eventData.deviceId);
+        // After sync success: show total records we have (synced), not "0 left on device"
+        const totalSynced = eventData.totalRecords ?? eventData.recordsTransmitted ?? eventData.deviceData?.recordCount ?? 0;
+        console.log('📊 [Modern] Sync complete – total synced:', totalSynced, eventData.deviceId);
         lastSyncCompleteTime.current.set(eventData.deviceId, Date.now());
         setDevices(prevDevices => {
           return prevDevices.map(d => {
@@ -375,15 +381,15 @@ const ModernBLEManager = ({ navigation }) => {
                 deviceData: {
                   ...d.deviceData,
                   ...eventData.deviceData,
-                  recordCount: 0, 
+                  recordCount: totalSynced,
                   totalSteps: preservedTotalSteps,
                   steps: preservedSteps,
                   temperature: preservedTemperature,
                 },
                 manufacturerData: d.manufacturerData ? {
                   ...d.manufacturerData,
-                  recordCount: 0,
-                  hasRecords: false
+                  recordCount: totalSynced,
+                  hasRecords: totalSynced > 0
                 } : d.manufacturerData
               };
             }
@@ -522,39 +528,21 @@ const ModernBLEManager = ({ navigation }) => {
       }
     };
     BLEService.on('deviceDataUpdate', eventHandlersRef.current.deviceDataUpdate);
-    console.log('📞 [Modern] Device data update event listener registered');
-    BLEService.setDeviceDataUpdateCallback((deviceId, deviceData) => {
+    console.log('📞 [Modern] Device data update event listener registered (single source per flow)');
+    eventHandlersRef.current.rssiUpdate = ({ deviceId, rssi }) => {
+      if (deviceId == null || rssi == null) return;
       setDevices(prevDevices => {
-        return prevDevices.map(d => {
-          if (d.id === deviceId) {
-            const allKnownDevices = BLEService.getScannedDevices();
-            const freshDevice = allKnownDevices.find(dev => dev.id === deviceId);
-            const isFromPolling = deviceData.isFromPolling === true;
-            const recordCount = isFromPolling ? deviceData.recordCount : d.deviceData?.recordCount;
-            return {
-              ...d,
-              deviceData: {
-                ...(freshDevice?.deviceData || d.deviceData),
-                ...deviceData,
-                recordCount: recordCount !== undefined ? recordCount : d.deviceData?.recordCount,
-              },
-              manufacturerData: d.manufacturerData ? {
-                ...d.manufacturerData,
-                recordCount: recordCount !== undefined ? recordCount : d.manufacturerData.recordCount,
-                hasRecords: (recordCount !== undefined ? recordCount : d.manufacturerData.recordCount) > 0,
-              } : d.manufacturerData,
-              ...(freshDevice && {
-                rssi: freshDevice.rssi,
-                connectionState: freshDevice.connectionState,
-              }),
-            };
-          }
-          return d;
-        });
+        const idx = prevDevices.findIndex(d => d.id === deviceId);
+        if (idx < 0) return prevDevices;
+        const next = [...prevDevices];
+        next[idx] = { ...next[idx], rssi };
+        return next;
       });
       setRefreshTrigger(prev => prev + 1);
-    });
-    console.log('📞 [Modern] Device data update callback registered for live notifications');
+    };
+    BLEService.on('rssiUpdate', eventHandlersRef.current.rssiUpdate);
+    BLEService.on('rssiUpdated', eventHandlersRef.current.rssiUpdate);
+    console.log('📞 [Modern] RSSI update listeners registered (fixes Signal N/A for auto-connect)');
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 800,
@@ -580,7 +568,6 @@ const ModernBLEManager = ({ navigation }) => {
       }
       BLEService.stopScanning();
       BLEService.setDeviceListUpdateCallback(null);
-      BLEService.setDeviceDataUpdateCallback(null); 
       // Use specific handler references to avoid removing other screens' listeners
       if (eventHandlersRef.current.powerProfileChanged) {
         BLEService.off('powerProfileChanged', eventHandlersRef.current.powerProfileChanged);
@@ -596,6 +583,10 @@ const ModernBLEManager = ({ navigation }) => {
       }
       if (eventHandlersRef.current.deviceDataUpdate) {
         BLEService.off('deviceDataUpdate', eventHandlersRef.current.deviceDataUpdate);
+      }
+      if (eventHandlersRef.current.rssiUpdate) {
+        BLEService.off('rssiUpdate', eventHandlersRef.current.rssiUpdate);
+        BLEService.off('rssiUpdated', eventHandlersRef.current.rssiUpdate);
       }
       console.log('🧹 [Modern] Cleaned up listeners, callbacks, intervals, and scan timeout');
     };
@@ -1073,7 +1064,9 @@ const ModernBLEManager = ({ navigation }) => {
       connectToDevice(device);
     }
   };
-  const renderDevice = ({ item, index }) => (
+  const renderDevice = ({ item, index }) => {
+    const displayRssi = item.rssi ?? (item.id ? BLEService.getDeviceRssi(item.id) : null);
+    return (
     <Animated.View 
       style={[
         styles.deviceCard,
@@ -1109,13 +1102,11 @@ const ModernBLEManager = ({ navigation }) => {
             {}
             {item.manufacturerData && (
               <View style={styles.manufacturerDataContainer}>
-                {}
                 {item.manufacturerData.recordCount !== undefined && item.manufacturerData.recordCount > 0 && (
                   <Text style={styles.manufacturerDataText}>
                     📊 {String(item.manufacturerData.recordCount)} records
                   </Text>
                 )}
-                {}
                 {item.manufacturerData.deviceStatus && (
                   <Text style={[
                     styles.manufacturerDataText,
@@ -1124,7 +1115,6 @@ const ModernBLEManager = ({ navigation }) => {
                     ⚙️ {item.manufacturerData.deviceStatus}
                   </Text>
                 )}
-                {}
                 {item.manufacturerData.version !== undefined && (
                   <Text style={styles.manufacturerDataText}>
                     📋 v{String(item.manufacturerData.version)}
@@ -1132,7 +1122,7 @@ const ModernBLEManager = ({ navigation }) => {
                 )}
                 {item.manufacturerData.macId && (
                   <Text style={[styles.manufacturerDataText, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 11 }]}>
-                    📍 {item.manufacturerData.macId}
+                    📍 MAC ID: {item.manufacturerData.macId}
                   </Text>
                 )}
                 {item.manufacturerData.connectIndication !== undefined && (
@@ -1143,14 +1133,11 @@ const ModernBLEManager = ({ navigation }) => {
                     🔗 {item.manufacturerData.connectIndication ? 'Connect' : 'Standby'}
                   </Text>
                 )}
-                {}
-                {}
                 {!item.deviceData?.batteryLevel && item.manufacturerData.batteryLevel > 0 && (
                   <Text style={styles.manufacturerDataText}>
                     {`🔋 ${item.manufacturerData.batteryLevel}% (${item.manufacturerData.batteryMillivolts || 'N/A'}mV)`}
                   </Text>
                 )}
-                {}
                 {item.deviceData?.batteryLevel > 0 && (
                   <Text style={styles.manufacturerDataText}>
                     {`🔋 ${item.deviceData.batteryLevel}%`}
@@ -1162,8 +1149,8 @@ const ModernBLEManager = ({ navigation }) => {
         <View style={styles.deviceMeta}>
           <View style={styles.rssiContainer}>
             <Text style={styles.rssiLabel}>Signal</Text>
-            <View style={[styles.rssiBar, { backgroundColor: getRSSIColor(item.rssi) }]}>
-              <Text style={styles.rssiText}>{item.rssi || 'N/A'}</Text>
+            <View style={[styles.rssiBar, { backgroundColor: getRSSIColor(displayRssi) }]}>
+              <Text style={styles.rssiText}>{displayRssi != null ? displayRssi : 'N/A'}</Text>
             </View>
           </View>
         </View>
@@ -1219,8 +1206,7 @@ const ModernBLEManager = ({ navigation }) => {
           </View>
           {}
           {(item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined ||
-            (item.connectionState === CONNECTION_STATES.CONNECTED && 
-             item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined)) && (
+            (item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined)) && (
             <View style={styles.dataRow}>
               {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
                 <View style={styles.dataItem}>
@@ -1231,8 +1217,7 @@ const ModernBLEManager = ({ navigation }) => {
                 </View>
               )}
               {}
-              {item.connectionState === CONNECTION_STATES.CONNECTED && 
-               item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
+              {item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
                 <View style={styles.dataItem}>
                   <Text style={styles.dataLabel}>📊 Records</Text>
                   <Text style={[styles.dataValue, { color: item.deviceData.recordCount > 0 ? Colors.primary : Colors.lightText }]}>
@@ -1366,6 +1351,7 @@ const ModernBLEManager = ({ navigation }) => {
       )}
     </Animated.View>
   );
+  };
   const renderEmptyList = () => (
     <Animated.View style={[styles.emptyContainer, { opacity: fadeAnim }]}>
       <Text style={styles.emptyIcon}>🔍</Text>
