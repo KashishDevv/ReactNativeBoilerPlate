@@ -94,8 +94,8 @@ const LiveDataScreen = ({ route, navigation }) => {
   const loadInitialData = () => {
     try {
       setLoading(true);
-      // Load all sync records (same as SyncRecordsScreen)
-      const syncRecords = BLEService.getSyncRecords(deviceId);
+      // Load sync records filtered by last record (for live display)
+      const syncRecords = BLEService.getSyncRecordsForDisplay(deviceId);
       
       if (!syncRecords || syncRecords.length === 0) {
         setRecords([]);

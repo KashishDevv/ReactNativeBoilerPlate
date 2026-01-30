@@ -2540,13 +2540,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           let currentFileNum = self.syncCurrentFileNumber[deviceId] ?? 1
           NSLog("📊 File #\(currentFileNum) complete: \(recordsInThisChunk) records (device reported \(actualCount))")
           var hasMoreChunks = (grandTotal < totalRecords) || (actualCount > RECORDS_PER_FILE)
-          // SDD v1.5: When we received a full file (500) and our total equals grandTotal, assume more chunks
-          if !hasMoreChunks && actualCount == RECORDS_PER_FILE && grandTotal == totalRecords {
-            hasMoreChunks = true
-            let newTotal = grandTotal + RECORDS_PER_FILE
-            self.syncTotalRecords[deviceId] = newTotal
-            NSLog("📦 [MULTI-FILE] Forcing next chunk (full file 500, total=grandTotal=\(totalRecords); next total=\(newTotal))")
-          }
+          // SDD v1.5: When tag sends DATA_SYNC_COMPLETE (0x02), that means "data sync complete" — no more data.
+          // So if we have 500/500 and tag sent 0x02, sync is done — do NOT start chunk 2.
           if actualCount > RECORDS_PER_FILE {
             let excessRecords = actualCount - RECORDS_PER_FILE
             NSLog("   Excess records from device: \(excessRecords) (will be synced in next chunk)")
@@ -2622,14 +2617,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
                   NSLog("✅ [DATA_SYNC_COMPLETE] Record path already sent START — skipping duplicate")
                   return
                 }
-                
-                // CRITICAL: Only start next chunk if this was an incomplete chunk (< 500 records)
-                // If actualCount == 500, the record-path should have handled it already
-                if actualCount == RECORDS_PER_FILE {
-                  NSLog("📦 [DATA_SYNC_COMPLETE] Received 500 records but hasMore=true — record path should handle. Skipping duplicate START.")
-                  return
-                }
-                
+                // When actualCount == 500 and hasMoreChunks, we must start the next chunk here.
+                // (Record path may not have run yet if 0x02 arrived first, or its runnable was overwritten.)
                 let nextFileNum = currentFileNum + 1
                 self.syncCurrentFileNumber[deviceId] = nextFileNum
                 self.syncRecordsReceived[deviceId] = 0

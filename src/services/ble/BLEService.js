@@ -108,6 +108,7 @@ class BLEService {
     this.characteristicsLogBatchTimers = new Map();
     this.lastConnectedLogs = new Map();
     this.lastRecordSyncedLogs = new Map();
+    this.latestNativeSyncCompletionEvent = new Map(); // deviceId -> parsedTransfer (recordsTransmitted, etc.) for sendHistoricalRecords/logs
     this.lastRTCReadLogs = new Map();
     this.lastCommandResponseLogs = new Map();
     // ✅ FIX: Deduplicate RSSI update logs (prevent duplicate logs from native event + JS polling)
@@ -883,6 +884,7 @@ class BLEService {
   }
   handleIOSDeviceDisconnected(deviceInfo) {
     const deviceId = deviceInfo.deviceId;
+    this.clearSyncStateOnDisconnect(deviceId);
     const device = this.scannedDevices.get(deviceId);
     if (device) {
       device.connectionState = CONNECTION_STATES.DISCONNECTED;
@@ -1396,6 +1398,7 @@ class BLEService {
   }
   handleAndroidDeviceDisconnected(event) {
     const { deviceId, deviceName, error } = event;
+    this.clearSyncStateOnDisconnect(deviceId);
     this.handleAutoDisconnectedDevice({
       deviceId,
       deviceName: deviceName || 'Unknown Device',
@@ -1835,8 +1838,8 @@ class BLEService {
           this.addConnectionLog(deviceId, 'Live Data Received', {
             temperature: device.deviceData.temperature,
             steps: device.deviceData.steps,
-            timestamp: recordTs || undefined,
-            timestampDate: recordTs ? new Date(recordTs * 1000).toISOString() : undefined,
+            recordTimestamp: recordTs || undefined,
+            recordTimestampDate: recordTs ? new Date(recordTs * 1000).toISOString() : undefined,
             source: 'notification',
             platform: 'Android'
           });
@@ -4937,6 +4940,7 @@ class BLEService {
     });
   }
   async handleSyncComplete(deviceId, parsedTransfer) {
+    this.latestNativeSyncCompletionEvent.set(deviceId, parsedTransfer);
     const syncState = this.dataSyncStates?.get(deviceId);
     const previousState = syncState?.state || 'unknown';
     const timeout = this.syncTimeouts.get(deviceId);
@@ -4962,7 +4966,7 @@ class BLEService {
     this.lastSyncCompleteTime.set(deviceId, Date.now());
     this.addConnectionLog(deviceId, 'Data Sync: Sync Complete', {
       success: parsedTransfer.success,
-      recordsTransmitted: recordsTransmitted,
+      recordsTransmitted,
       expectedRecords: expectedRecords,
       receivedRecords: receivedRecords,
       effectiveReceived,
@@ -4996,15 +5000,20 @@ class BLEService {
         const recordsBeforeSync = device?.syncRecordsBeforeSync !== undefined ? device.syncRecordsBeforeSync : 0;
         const recordsAfterSync = device?.syncRecords?.length || 0;
         const actualNewRecords = Math.max(0, recordsAfterSync - recordsBeforeSync);
-        if (actualNewRecords > 0) {
+        const totalSyncedThisRun = recordsTransmitted;
+        if (totalSyncedThisRun > 0) {
           const now = Date.now();
           const lastLog = this.lastRecordSyncedLogs.get(deviceId);
           const shouldLog = !lastLog ||
             (now - lastLog.timestamp) > 500 ||
-            lastLog.recordCount !== actualNewRecords;
+            lastLog.recordCount !== totalSyncedThisRun;
           if (shouldLog) {
-            this.addConnectionLog(deviceId, `${actualNewRecords} Record${actualNewRecords === 1 ? '' : 's'} Synced`);
-            this.lastRecordSyncedLogs.set(deviceId, { timestamp: now, recordCount: actualNewRecords });
+            this.addConnectionLog(deviceId, `${totalSyncedThisRun} Record${totalSyncedThisRun === 1 ? '' : 's'} Synced`);
+            this.lastRecordSyncedLogs.set(deviceId, { timestamp: now, recordCount: totalSyncedThisRun });
+            if (actualNewRecords < recordsTransmitted && actualNewRecords >= 0) {
+              const deduplicated = recordsTransmitted - actualNewRecords;
+              this.addConnectionLog(deviceId, `Newly added ${actualNewRecords} (${deduplicated} deduplicated)`);
+            }
           }
         }
         const recordCount = device?.syncRecords?.length || 0;
@@ -5135,8 +5144,7 @@ class BLEService {
         if (!device.syncRecords) {
           device.syncRecords = [];
         }
-        // ✅ RECOMMENDED FLOW: Only store records newer than lastAppRecordTimestamp (filter by timestamp)
-        const lastAppRecordTimestamp = (this.autoSyncMeta?.get(deviceId) || {}).lastRecordTimestamp || 0;
+        // Store all records during sync; filter by last record only when displaying (live/history screens)
         let validCount = 0;
         let invalidCount = 0;
         parsedTransfer.records.forEach((record, index) => {
@@ -5147,9 +5155,6 @@ class BLEService {
             recordTimestamp = Math.floor(record.timestamp.getTime() / 1000);
           } else if (record.timestampDate) {
             recordTimestamp = Math.floor(new Date(record.timestampDate).getTime() / 1000);
-          }
-          if ((recordTimestamp || 0) <= lastAppRecordTimestamp) {
-            return; // Skip: already have this or older
           }
           const currentTimeSeconds = Math.floor(Date.now() / 1000);
           const MIN_VALID_TIMESTAMP = 1577836800;
@@ -5231,17 +5236,12 @@ class BLEService {
           }
           const timestampForDedup = adjustedTimestamp || recordTimestamp;
           if (timestampForDedup) {
-            const normalizeTimestamp = (ts) => {
-              if (!ts) return null;
-              return Math.floor(ts / 30) * 30;
-            };
-            const normalizedTimestamp = normalizeTimestamp(timestampForDedup);
+            // Exact timestamp match (same as iOS) for deduplication
             const existingRecordIndex = device.syncRecords.findIndex(r => {
               const existingTimestamp = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : null);
-              const normalizedExisting = normalizeTimestamp(existingTimestamp);
-              return normalizedExisting !== null &&
-                normalizedTimestamp !== null &&
-                normalizedExisting === normalizedTimestamp &&
+              return existingTimestamp !== null &&
+                timestampForDedup !== null &&
+                existingTimestamp === timestampForDedup &&
                 r.steps === record.steps &&
                 r.temperature === record.temperature;
             });
@@ -5493,8 +5493,8 @@ class BLEService {
         this.addConnectionLog(deviceId, 'Live Data Received', {
           temperature: record.temperature,
           steps: record.steps,
-          timestamp: recordTimestamp,
-          timestampDate: record.timestampDate || new Date(recordTimestamp * 1000).toISOString(),
+          recordTimestamp: recordTimestamp,
+          recordTimestampDate: record.timestampDate || new Date(recordTimestamp * 1000).toISOString(),
           source: 'push_notification',
           platform: Platform.OS
         });
@@ -5638,6 +5638,17 @@ class BLEService {
             case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_START:
               break;
             case SYSTEM_COMMAND_CONSTANTS.CMD.DATA_SYNC_STOP:
+              // Clear sync timeout and mark sync not active when STOP is acknowledged (BB 09 00 00).
+              // Prevents SYNC_TIMEOUT firing 2 min later on both Android and iOS (e.g. empty sync or early stop).
+              const syncTimeoutOnStop = this.syncTimeouts.get(deviceId);
+              if (syncTimeoutOnStop) {
+                clearTimeout(syncTimeoutOnStop);
+                this.syncTimeouts.delete(deviceId);
+              }
+              const syncStateOnStop = this.dataSyncStates?.get(deviceId);
+              if (syncStateOnStop) {
+                syncStateOnStop.isActive = false;
+              }
               const hasActiveSync = this.dataSyncStates?.get(deviceId)?.isActive === true;
               const connectedDevice = this.connectedDevices.get(deviceId);
               const isDemoTag = connectedDevice?.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
@@ -6066,12 +6077,38 @@ class BLEService {
       return { success: false, error: error.message };
     }
   }
+  /**
+   * Returns all synced records for the device (full history from sync).
+   */
   getSyncRecords(deviceId) {
     const device = this.getDevice(deviceId);
     if (device && device.syncRecords) {
       return device.syncRecords;
     }
     return [];
+  }
+
+  /**
+   * Returns last-app record timestamp for display filtering (live/history).
+   * Records with timestamp <= this are considered "already seen".
+   */
+  getLastAppRecordTimestamp(deviceId) {
+    return (this.autoSyncMeta?.get(deviceId) || {}).lastRecordTimestamp || 0;
+  }
+
+  /**
+   * Returns synced records filtered by last record (for live/history display).
+   * Use this when showing live data or history so only records newer than lastAppRecordTimestamp are shown.
+   */
+  getSyncRecordsForDisplay(deviceId) {
+    const all = this.getSyncRecords(deviceId);
+    if (!all || all.length === 0) return [];
+    const lastAppRecordTimestamp = this.getLastAppRecordTimestamp(deviceId);
+    if (lastAppRecordTimestamp <= 0) return all;
+    return all.filter((r) => {
+      const ts = typeof r.timestamp === 'number' ? r.timestamp : (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : 0);
+      return (ts || 0) > lastAppRecordTimestamp;
+    });
   }
   getLatestSyncedRecord(deviceId) {
     const records = this.getSyncRecords(deviceId);
@@ -6160,11 +6197,14 @@ class BLEService {
       const meta = this.autoSyncMeta.get(deviceId);
       return meta?.syncCompletedRecordCount;
     })();
+    const totalSyncedCount = (device.syncRecords && device.syncRecords.length) || 0;
     this.emit('deviceDataUpdate', {
       deviceId,
       type: 'sync_complete',
       deviceData: device.deviceData,
       recordCount: device.deviceData.recordCount,
+      totalRecords: totalSyncedCount,
+      recordsTransmitted: totalSyncedCount,
       syncJustCompleted: syncJustCompleted,
       syncCompletedRecordCount: syncCompletedRecordCount
     });
@@ -7016,10 +7056,34 @@ class BLEService {
       if (scannedDevice) {
         scannedDevice.syncRecordsBeforeSync = scannedDevice.syncRecords ? scannedDevice.syncRecords.length : 0;
       }
-      const expectedRecords = scannedDevice?.deviceData?.recordCount || 0;
+      // Read device status before sync to get latest record count (skip for demo tag)
+      const connectedDeviceForSync = this.connectedDevices.get(deviceId);
+      const isDemoTagForSync = connectedDeviceForSync?.isDemoTag || DemoTagSimulator.isDemoDevice(deviceId);
+      if (!isDemoTagForSync) {
+        try {
+          const deviceStatusData = await this.readCharacteristic(deviceId, BLE_SERVICES.SMART_TAG, BLE_CHARACTERISTICS.DEVICE_STATUS);
+          if (deviceStatusData) {
+            this.handleDeviceStatusUpdate(deviceId, deviceStatusData);
+          }
+        } catch (e) {
+          this.addConnectionLog(deviceId, 'Sync: Device status read failed (using last known count)', { error: e?.message });
+        }
+      }
+      // Total records in tag = from device status (just read) or last known. If JS has 0, use native value on iOS.
+      let expectedRecords = scannedDevice?.deviceData?.recordCount ?? 0;
+      if (Platform.OS === 'ios' && BridgingCodeModule && (expectedRecords === 0 || expectedRecords === undefined)) {
+        try {
+          const nativeState = await BridgingCodeModule.getDataSyncState(deviceId);
+          if (nativeState && typeof nativeState.expectedRecords === 'number') {
+            expectedRecords = nativeState.expectedRecords;
+          }
+        } catch (_) { }
+      }
+      const RECORDS_PER_CHUNK = 500; // SDD: first chunk request = 500 (payload F4 01)
       this.addConnectionLog(deviceId, 'Decide: Start history sync', {
-        recordCount: expectedRecords,
-        note: 'Requesting min(500, remaining) per SDD'
+        totalInTag: expectedRecords,
+        firstChunkRequest: RECORDS_PER_CHUNK,
+        note: 'Total from device status; command payload = min(500, remaining) per SDD'
       });
       this.syncExpectedRecords.set(deviceId, expectedRecords);
       const existingTimeout = this.syncTimeouts.get(deviceId);
@@ -7240,6 +7304,38 @@ class BLEService {
         syncState.isActive = false;
         syncState.state = 'failed';
       }
+    }
+  }
+  /**
+   * Clear sync state and cancel timeouts when device disconnects.
+   * Prevents SYNC_TIMEOUT and "Response Timeout: DATA_SYNC_STOP" from firing minutes later.
+   */
+  clearSyncStateOnDisconnect(deviceId) {
+    if (!deviceId) return;
+    const syncTimeout = this.syncTimeouts.get(deviceId);
+    if (syncTimeout) {
+      clearTimeout(syncTimeout);
+      this.syncTimeouts.delete(deviceId);
+    }
+    this.dataSyncStates?.delete(deviceId);
+    this.syncRetryAttempts?.delete(deviceId);
+    this.syncRetryDelays?.delete(deviceId);
+    const retryTimer = this.syncRetryTimers?.get(deviceId);
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      this.syncRetryTimers.delete(deviceId);
+    }
+    const deviceResponses = this.pendingCommandResponses.get(deviceId);
+    if (deviceResponses) {
+      deviceResponses.forEach((handler) => {
+        if (handler.timeout) clearTimeout(handler.timeout);
+        if (typeof handler.reject === 'function') {
+          try {
+            handler.reject(new Error('Device disconnected'));
+          } catch (_) { }
+        }
+      });
+      this.pendingCommandResponses.delete(deviceId);
     }
   }
   logError(deviceId, errorCode, context = {}) {
@@ -8447,7 +8543,7 @@ class BLEService {
       console.error('Error handling RTC read event:', error);
     }
   }
-  
+
   /**
    * ✅ NEW FLOW: Handle Device Status manual read event from native
    * 
@@ -8647,6 +8743,16 @@ class BLEService {
             state.lastActivity = Date.now();
           }
         }
+        // Reset sync timeout so next chunk gets a full SYNC_TIMEOUT_MS (avoids 2nd/3rd chunk timing out)
+        const chunkTimeout = this.syncTimeouts.get(deviceId);
+        if (chunkTimeout) {
+          clearTimeout(chunkTimeout);
+          this.syncTimeouts.delete(deviceId);
+        }
+        const chunkTimer = setTimeout(() => {
+          this.handleSyncTimeout(deviceId);
+        }, this.SYNC_TIMEOUT_MS);
+        this.syncTimeouts.set(deviceId, chunkTimer);
         break;
       case 'sync_complete': {
         const grandTotal = eventData.grandTotal;
@@ -8717,10 +8823,15 @@ class BLEService {
           }
           const device = this.scannedDevices.get(deviceId);
           if (device && device.syncRecords) {
-            const recordsBeforeSync = device.syncRecordsBeforeSync !== undefined ? device.syncRecordsBeforeSync : 0;
-            const newRecords = device.syncRecords.slice(recordsBeforeSync);
-            if (newRecords && newRecords.length > 0) {
-              await this.sendHistoricalRecords(deviceId, newRecords);
+            // Send all records received this sync run (recordsTransmitted/grandTotal), not just the
+            // slice after recordsBeforeSync — dedup can make that slice smaller than what we synced.
+            const countThisRun = recordsTransmitted || grandTotal || 0;
+            const recordsToSend = countThisRun > 0
+              ? device.syncRecords.slice(-countThisRun)
+              : device.syncRecords.slice(device.syncRecordsBeforeSync !== undefined ? device.syncRecordsBeforeSync : 0);
+            console.log(`📤 [HISTORICAL SYNC] recordsToSend.length=${recordsToSend?.length ?? 0}, countThisRun=${countThisRun}, device.syncRecords.length=${device.syncRecords?.length ?? 0}`);
+            if (recordsToSend && recordsToSend.length > 0) {
+              await this.sendHistoricalRecords(deviceId, recordsToSend);
               device.syncRecordsBeforeSync = device.syncRecords.length;
               this.scannedDevices.set(deviceId, device);
             }
@@ -8783,8 +8894,7 @@ class BLEService {
             if (!device.syncRecords) {
               device.syncRecords = [];
             }
-            // ✅ RECOMMENDED FLOW: Only store records newer than lastAppRecordTimestamp
-            const lastAppRecordTimestamp = (this.autoSyncMeta?.get(deviceId) || {}).lastRecordTimestamp || 0;
+            // Store all records during sync; filter by last record only when displaying (live/history screens)
             let validRecordsCount = 0;
             let invalidRecordsCount = 0;
             validRecords.forEach((record) => {
@@ -8804,9 +8914,6 @@ class BLEService {
                 recordTimestamp = Math.floor(record.timestamp.getTime() / 1000);
               } else if (record.timestampDate) {
                 recordTimestamp = Math.floor(new Date(record.timestampDate).getTime() / 1000);
-              }
-              if ((recordTimestamp || 0) <= lastAppRecordTimestamp) {
-                return; // Skip: already have this or older
               }
               const receivedAt = new Date();
               const receivedAtSeconds = Math.floor(receivedAt.getTime() / 1000);
@@ -8952,8 +9059,8 @@ class BLEService {
               recordCount: records?.length || 1,
               temperature: latestRecord?.temperature,
               steps: latestRecord?.steps,
-              timestamp: latestRecord?.timestamp,
-              timestampDate: latestRecord?.timestampDate || (latestRecord?.timestamp ? new Date(latestRecord.timestamp * 1000).toISOString() : null),
+              recordTimestamp: latestRecord?.timestamp,
+              recordTimestampDate: latestRecord?.timestampDate || (latestRecord?.timestamp ? new Date(latestRecord.timestamp * 1000).toISOString() : null),
               source: 'push_notification',
               platform: Platform.OS
             });

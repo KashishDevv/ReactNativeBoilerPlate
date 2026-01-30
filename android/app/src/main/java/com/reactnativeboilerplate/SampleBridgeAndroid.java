@@ -1187,6 +1187,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     /** Retry attempt for queued DATA_SYNC_START; used when queue write fails to retry sendDataSyncStartCommand. */
     private Map<String, Integer> dataSyncStartRetryAttemptForQueue = new ConcurrentHashMap<>();
     
+    /** Device IDs for which we enqueued a Device Status read before starting sync; when that read completes we start sync with actual count. */
+    private final Set<String> pendingAutoSyncAfterDeviceStatusRead = ConcurrentHashMap.newKeySet();
+    /** Timeout fallback for pending auto-sync read: deviceId -> ScheduledFuture; cancelled when read completes. */
+    private Map<String, ScheduledFuture<?>> pendingAutoSyncReadTimeout = new ConcurrentHashMap<>();
+    
     /** Flag indicating set time response received: deviceId -> received */
     private Map<String, Boolean> setTimeResponseReceived = new ConcurrentHashMap<>();
     
@@ -3826,53 +3831,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             if (recordCount != null && recordCount > 0) {
                 boolean historySyncInProgress = "syncing".equals(dataSyncState.getOrDefault(deviceId, "idle"));
                 if (!historySyncInProgress) {
-                    Log.d(TAG, "🔄 [AUTO-SYNC ON READY] Device already SECURE_READY with " + recordCount + " records - triggering auto-sync");
-                    
-                    mainHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            try {
-                                // Avoid duplicate start: if JS already requested sync (startDataSync), skip native auto-sync.
-                                if (Boolean.TRUE.equals(dataSyncRequested.get(deviceId))) {
-                                    Log.d(TAG, "   [AUTO-SYNC ON READY] Sync already requested by JS, skipping duplicate");
-                                    return;
-                                }
-                                Log.d(TAG, "📤 [AUTO-SYNC ON READY] Sending Data Sync Start command for " + deviceId);
-                                
-                                Boolean rtcValid = deviceRTCValidity.get(deviceId);
-                                dataSyncState.put(deviceId, "idle");
-                                dataSyncRequested.put(deviceId, false);
-                                
-                                if (rtcValid != null && rtcValid) {
-                                    // RTC is valid, start sync immediately
-                                    dataSyncRequested.put(deviceId, true);
-                                    boolean success = sendDataSyncStartCommand(deviceId, 0);
-                                    if (success) {
-                                        Log.d(TAG, "✅ [AUTO-SYNC ON READY] Data sync started successfully (RTC already valid)");
-                                    } else {
-                                        dataSyncRequested.put(deviceId, false);
-                                        Log.e(TAG, "❌ [AUTO-SYNC ON READY] Failed to send data sync start command");
-                                    }
-                                } else {
-                                    // RTC invalid, sync time first then start sync
-                                    Log.d(TAG, "⏰ [AUTO-SYNC ON READY] RTC invalid - syncing time first");
-                                    sendSetSystemTimeCommand(deviceId);
-                                    executorService.schedule(() -> {
-                                        dataSyncRequested.put(deviceId, true);
-                                        boolean success = sendDataSyncStartCommand(deviceId, 0);
-                                        if (success) {
-                                            Log.d(TAG, "✅ [AUTO-SYNC ON READY] Data sync started successfully (after time sync)");
-                                        } else {
-                                            dataSyncRequested.put(deviceId, false);
-                                            Log.e(TAG, "❌ [AUTO-SYNC ON READY] Failed to send data sync start command after time sync");
-                                        }
-                                    }, 6, TimeUnit.SECONDS);
-                                }
-                            } catch (Exception e) {
-                                Log.e(TAG, "❌ [AUTO-SYNC ON READY] Error starting sync: " + e.getMessage());
-                            }
-                        }
-                    });
+                    Log.d(TAG, "🔄 [AUTO-SYNC ON READY] Device already SECURE_READY with " + recordCount + " records - reading Device Status for actual count before sync");
+                    mainHandler.post(() -> startAutoSyncAfterDeviceStatusRead(deviceId));
                 } else {
                     Log.d(TAG, "   [AUTO-SYNC ON READY] Sync already in progress, skipping");
                 }
@@ -3930,53 +3890,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         if (recordCount != null && recordCount > 0) {
             boolean historySyncInProgress = "syncing".equals(dataSyncState.getOrDefault(deviceId, "idle"));
             if (!historySyncInProgress) {
-                Log.d(TAG, "🔄 [AUTO-SYNC ON READY] Device became SECURE_READY with " + recordCount + " records - triggering auto-sync");
-                
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            // Avoid duplicate start: if JS already requested sync (startDataSync), skip native auto-sync.
-                            if (Boolean.TRUE.equals(dataSyncRequested.get(deviceId))) {
-                                Log.d(TAG, "   [AUTO-SYNC ON READY] Sync already requested by JS, skipping duplicate");
-                                return;
-                            }
-                            Log.d(TAG, "📤 [AUTO-SYNC ON READY] Sending Data Sync Start command for " + deviceId);
-                            
-                            Boolean rtcValid = deviceRTCValidity.get(deviceId);
-                            dataSyncState.put(deviceId, "idle");
-                            dataSyncRequested.put(deviceId, false);
-                            
-                            if (rtcValid != null && rtcValid) {
-                                // RTC is valid, start sync immediately
-                                dataSyncRequested.put(deviceId, true);
-                                boolean success = sendDataSyncStartCommand(deviceId, 0);
-                                if (success) {
-                                    Log.d(TAG, "✅ [AUTO-SYNC ON READY] Data sync started successfully (RTC already valid)");
-                                } else {
-                                    dataSyncRequested.put(deviceId, false);
-                                    Log.e(TAG, "❌ [AUTO-SYNC ON READY] Failed to send data sync start command");
-                                }
-                            } else {
-                                // RTC invalid, sync time first then start sync
-                                Log.d(TAG, "⏰ [AUTO-SYNC ON READY] RTC invalid - syncing time first");
-                                sendSetSystemTimeCommand(deviceId);
-                                executorService.schedule(() -> {
-                                    dataSyncRequested.put(deviceId, true);
-                                    boolean success = sendDataSyncStartCommand(deviceId, 0);
-                                    if (success) {
-                                        Log.d(TAG, "✅ [AUTO-SYNC ON READY] Data sync started successfully (after time sync)");
-                                    } else {
-                                        dataSyncRequested.put(deviceId, false);
-                                        Log.e(TAG, "❌ [AUTO-SYNC ON READY] Failed to send data sync start command after time sync");
-                                    }
-                                }, 6, TimeUnit.SECONDS);
-                            }
-                        } catch (Exception e) {
-                            Log.e(TAG, "❌ [AUTO-SYNC ON READY] Error starting sync: " + e.getMessage());
-                        }
-                    }
-                });
+                Log.d(TAG, "🔄 [AUTO-SYNC ON READY] Device became SECURE_READY with " + recordCount + " records - reading Device Status for actual count before sync");
+                mainHandler.post(() -> startAutoSyncAfterDeviceStatusRead(deviceId));
             } else {
                 Log.d(TAG, "   [AUTO-SYNC ON READY] Sync already in progress, skipping");
             }
@@ -3984,6 +3899,91 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Log.d(TAG, "   [AUTO-SYNC ON READY] No records to sync (recordCount=" + recordCount + ")");
         }
     }
+    
+    /**
+     * Before starting sync from native (AUTO-SYNC ON READY), read Device Status characteristic once to get
+     * the actual record count. When that read completes, we start sync. Device Status is only for count
+     * (how many records to sync); sync protocol (e.g. >500 / <500, chunking) is unchanged.
+     */
+    private void startAutoSyncAfterDeviceStatusRead(String deviceId) {
+        try {
+            if (Boolean.TRUE.equals(dataSyncRequested.get(deviceId))) {
+                Log.d(TAG, "   [AUTO-SYNC] Sync already requested by JS, skipping native auto-sync");
+                return;
+            }
+            DeviceData deviceData = deviceDataMap.get(deviceId);
+            BluetoothGatt gatt = connectedGatts.get(deviceId);
+            if (deviceData == null || gatt == null) {
+                Log.e(TAG, "❌ [AUTO-SYNC] Cannot read Device Status - deviceData or gatt null for " + deviceId);
+                return;
+            }
+            BluetoothGattCharacteristic deviceStatusChar = deviceData.characteristics.get(DEVICE_STATUS_CHAR_UUID);
+            if (deviceStatusChar == null) {
+                Log.e(TAG, "❌ [AUTO-SYNC] Device Status characteristic not found for " + deviceId);
+                return;
+            }
+            pendingAutoSyncAfterDeviceStatusRead.add(deviceId);
+            Log.d(TAG, "📖 [AUTO-SYNC] Reading Device Status for actual record count before starting sync: " + deviceId);
+            enqueueReadCharacteristicOp(deviceId, gatt, deviceStatusChar, "autoSync_deviceStatus");
+            // Fallback: if read never completes (e.g. GATT error), start sync with last known count after 5s
+            ScheduledFuture<?> existing = pendingAutoSyncReadTimeout.put(deviceId, executorService.schedule(() -> {
+                pendingAutoSyncReadTimeout.remove(deviceId);
+                if (pendingAutoSyncAfterDeviceStatusRead.remove(deviceId)) {
+                    Log.w(TAG, "⚠️ [AUTO-SYNC] Device Status read timeout - starting sync with last known count");
+                    mainHandler.post(() -> doStartAutoSyncAfterDeviceStatusRead(deviceId));
+                }
+            }, 5, TimeUnit.SECONDS));
+            if (existing != null) existing.cancel(false);
+        } catch (Exception e) {
+            Log.e(TAG, "❌ [AUTO-SYNC] Error before Device Status read: " + e.getMessage());
+            pendingAutoSyncAfterDeviceStatusRead.remove(deviceId);
+        }
+    }
+    
+    /** Runs on main thread after Device Status read (or timeout): start sync with current deviceRecordCounts. */
+    private void doStartAutoSyncAfterDeviceStatusRead(String deviceId) {
+        try {
+            if (Boolean.TRUE.equals(dataSyncRequested.get(deviceId))) {
+                Log.d(TAG, "   [AUTO-SYNC] Sync already requested by JS, skipping");
+                return;
+            }
+            Integer recordCount = deviceRecordCounts.get(deviceId);
+            if (recordCount == null || recordCount <= 0) {
+                Log.d(TAG, "   [AUTO-SYNC] No records to sync (recordCount=" + recordCount + ") - skipping");
+                return;
+            }
+            Log.d(TAG, "📤 [AUTO-SYNC ON READY] Sending Data Sync Start command for " + deviceId + " (actual count: " + recordCount + ")");
+            Boolean rtcValid = deviceRTCValidity.get(deviceId);
+            dataSyncState.put(deviceId, "idle");
+            dataSyncRequested.put(deviceId, false);
+            if (rtcValid != null && rtcValid) {
+                dataSyncRequested.put(deviceId, true);
+                boolean success = sendDataSyncStartCommand(deviceId, 0);
+                if (success) {
+                    Log.d(TAG, "✅ [AUTO-SYNC ON READY] Data sync started successfully (RTC already valid)");
+                } else {
+                    dataSyncRequested.put(deviceId, false);
+                    Log.e(TAG, "❌ [AUTO-SYNC ON READY] Failed to send data sync start command");
+                }
+            } else {
+                Log.d(TAG, "⏰ [AUTO-SYNC ON READY] RTC invalid - syncing time first");
+                sendSetSystemTimeCommand(deviceId);
+                executorService.schedule(() -> {
+                    dataSyncRequested.put(deviceId, true);
+                    boolean success = sendDataSyncStartCommand(deviceId, 0);
+                    if (success) {
+                        Log.d(TAG, "✅ [AUTO-SYNC ON READY] Data sync started successfully (after time sync)");
+                    } else {
+                        dataSyncRequested.put(deviceId, false);
+                        Log.e(TAG, "❌ [AUTO-SYNC ON READY] Failed to send data sync start command after time sync");
+                    }
+                }, 6, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "❌ [AUTO-SYNC ON READY] Error starting sync: " + e.getMessage());
+        }
+    }
+    
     private void requestDeviceData(String deviceId) {
         DeviceData deviceData = deviceDataMap.get(deviceId);
         if (deviceData == null) {
@@ -4552,6 +4552,13 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             } else {
                 parseDeviceStatusData(deviceData, data);
             }
+            // Only start sync when this read was the one we enqueued for auto-sync (not on every device status read/notification).
+            if (pendingAutoSyncAfterDeviceStatusRead.remove(deviceId)) {
+                ScheduledFuture<?> timeout = pendingAutoSyncReadTimeout.remove(deviceId);
+                if (timeout != null) timeout.cancel(false);
+                Log.d(TAG, "✅ [AUTO-SYNC] Device Status read complete - starting sync with actual count: " + deviceRecordCounts.get(deviceId));
+                mainHandler.post(() -> doStartAutoSyncAfterDeviceStatusRead(deviceId));
+            }
             return;
         } else if (charUuid.equals(SYSTEM_COMMAND_CHAR_UUID)) {
             // Fix: Add debug logging to track System Command responses
@@ -5113,67 +5120,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         sendEvent("deviceDataUpdate", deviceDataUpdateEvent);
         if (recordCount > 0) {
             Log.d(TAG, "📦 " + recordCount + " records available for sync on " + deviceData.deviceId);
-            
-            // ✅ CRITICAL FIX: Auto-start sync if records are available AND device is ready
-            // This was broken when we moved finalizeConnectionReady() - restore auto-sync trigger
-            SecureReadyState deviceState = secureReadyStates.get(deviceData.deviceId);
-            
-            if (deviceState == SecureReadyState.SECURE_READY && !historySyncInProgress) {
-                Log.d(TAG, "🔄 [AUTO-SYNC] Device is SECURE_READY with " + recordCount + " records - auto-starting history sync");
-                
-                // Start sync automatically (native-side trigger, not dependent on JS)
-                // Schedule on main thread to avoid blocking Device Status processing
-                mainHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            String finalDeviceId = deviceData.deviceId;
-                            // Avoid starting a second sync right after one completed (device status race).
-                            Long lastSyncTime = lastSyncCompleteTimestamps.get(finalDeviceId);
-                            if (lastSyncTime != null && (System.currentTimeMillis() - lastSyncTime) < SYNC_COMPLETE_GRACE_PERIOD_MS) {
-                                Log.d(TAG, "   [AUTO-SYNC] Within grace period after sync complete, skipping duplicate start");
-                                return;
-                            }
-                            Log.d(TAG, "📤 [AUTO-SYNC] Sending Data Sync Start command for " + finalDeviceId);
-                            
-                            Boolean rtcValid = deviceRTCValidity.get(finalDeviceId);
-                            dataSyncState.put(finalDeviceId, "idle");
-                            dataSyncRequested.put(finalDeviceId, false);
-                            
-                            if (rtcValid != null && rtcValid) {
-                                // RTC is valid, start sync immediately
-                                dataSyncRequested.put(finalDeviceId, true);
-                                boolean success = sendDataSyncStartCommand(finalDeviceId, 0);
-                                if (success) {
-                                    Log.d(TAG, "✅ [AUTO-SYNC] Data sync started successfully (RTC already valid)");
-                                } else {
-                                    dataSyncRequested.put(finalDeviceId, false);
-                                    Log.e(TAG, "❌ [AUTO-SYNC] Failed to send data sync start command");
-                                }
-                            } else {
-                                // RTC invalid, sync time first then start sync
-                                Log.d(TAG, "⏰ [AUTO-SYNC] RTC invalid - syncing time first");
-                                sendSetSystemTimeCommand(finalDeviceId);
-                                executorService.schedule(() -> {
-                                    dataSyncRequested.put(finalDeviceId, true);
-                                    boolean success = sendDataSyncStartCommand(finalDeviceId, 0);
-                                    if (success) {
-                                        Log.d(TAG, "✅ [AUTO-SYNC] Data sync started successfully (after time sync)");
-                                    } else {
-                                        dataSyncRequested.put(finalDeviceId, false);
-                                        Log.e(TAG, "❌ [AUTO-SYNC] Failed to send data sync start command after time sync");
-                                    }
-                                }, 6, TimeUnit.SECONDS);
-                            }
-                        } catch (Exception e) {
-                            Log.e(TAG, "❌ [AUTO-SYNC] Error starting sync: " + e.getMessage());
-                        }
-                    }
-                });
-            } else {
-                Log.d(TAG, "   [AUTO-SYNC] Waiting - deviceState=" + (deviceState != null ? deviceState.name() : "null") + ", historySyncInProgress=" + historySyncInProgress);
-            }
         }
+        // Do NOT start sync here on every device status read/notification. Sync is started only from:
+        // 1) AUTO-SYNC ON READY flow (finalizeConnectionReady/checkAndEmitDeviceConnected) → startAutoSyncAfterDeviceStatusRead
+        //    → we enqueue one Device Status read → when that read completes (pendingAutoSyncAfterDeviceStatusRead), doStartAutoSyncAfterDeviceStatusRead.
+        // 2) JS startDataSync(deviceId). Device Status is used only to know how many records exist (for UI/validation); sync protocol (>500/<500, chunking) is unchanged.
     }
     /** SDD v1.5: Device Status path (compact format). Metadata only – never start sync. */
     private void parseCompactDeviceStatusData(DeviceData deviceData, byte[] data) {
@@ -5387,14 +5338,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         int value = buffer.getShort() & 0xFFFF;
         final String deviceId = deviceData.deviceId;
         
-        // 🔓 RELEASE SYNC LOCK: History sync complete, allow normal operations
-        SyncLockState lockState = historySyncLock.remove(deviceId);
-        if (lockState != null) {
-            long duration = System.currentTimeMillis() - lockState.startTime;
-            Log.d(TAG, "🔓 [SYNC LOCK] Released for " + deviceId + " - sync complete after " + (duration / 1000) + "s");
-        }
-        
-        dataSyncState.put(deviceId, "complete");
+        // Do NOT set dataSyncState="complete" or release sync lock here — 0x02 is per-chunk.
+        // Only set complete and release lock when hasMoreChunks == false (full sync done), below.
         dataSyncRetryCount.remove(deviceId);
         syncCommandSentFlags.put(deviceId, false);  // FIX: Reset the sent flag on sync complete
         ScheduledFuture<?> syncTimer = dataSyncTimers.get(deviceId);
@@ -5424,16 +5369,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 }
                 int currentFileNum = syncCurrentFileNumber.getOrDefault(deviceId, 1);
                 boolean hasMoreChunks = (grandTotal < totalRecords) || (actualCount > RECORDS_PER_FILE);
-                // SDD v1.5: When we received a full file (500) and our total equals grandTotal (e.g. total was
-                // wrong or device reported "this file" only), assume more chunks — otherwise we stop and never
-                // sync the remaining ~8000. Force continuation and bump total; if device has no more, the next
-                // sync_complete will have actualCount<500 and we stop then.
-                if (!hasMoreChunks && actualCount == RECORDS_PER_FILE && grandTotal == totalRecords) {
-                    hasMoreChunks = true;
-                    int newTotal = grandTotal + RECORDS_PER_FILE;
-                    syncTotalRecords.put(deviceId, newTotal);
-                    Log.d(TAG, "📦 [MULTI-FILE] Forcing next chunk (full file 500, total=grandTotal=" + totalRecords + "; assuming more data, next total=" + newTotal + ")");
-                }
+                // SDD v1.5: When tag sends DATA_SYNC_COMPLETE (0x02), that means "data sync complete" — no more data.
+                // So if we have 500/500 and tag sent 0x02, sync is done — do NOT start chunk 2.
+                // Next chunk is only started when we hit 500 in the record path and we ourselves send STOP (no 0x02
+                // from tag until the very last chunk). So we never "force" hasMoreChunks when we received 0x02.
                 Log.d(TAG, "📦 [SYNC COMPLETE] totalRecords=" + totalRecords + ", grandTotal=" + grandTotal + ", hasMoreChunks=" + hasMoreChunks + " (actualCount=" + actualCount + ")");
                 if (actualCount > RECORDS_PER_FILE) {
                     int excessRecords = actualCount - RECORDS_PER_FILE;                    if (totalRecords < grandTotal + excessRecords) {
@@ -5459,6 +5398,13 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 eventData.putString("deviceId", deviceId);
                 sendEvent("DataTransfer", eventData);
                 if (!hasMoreChunks) {
+                    // Full sync complete: release lock and set state so UI and logic see "complete"
+                    SyncLockState lockState = historySyncLock.remove(deviceId);
+                    if (lockState != null) {
+                        long duration = System.currentTimeMillis() - lockState.startTime;
+                        Log.d(TAG, "🔓 [SYNC LOCK] Released for " + deviceId + " - sync complete after " + (duration / 1000) + "s");
+                    }
+                    dataSyncState.put(deviceId, "complete");
                     // Set timestamp first so device status callbacks processed shortly after see grace period (avoids second sync start).
                     lastSyncCompleteTimestamps.put(deviceId, System.currentTimeMillis());
                     int finalRecordCount = remainingRecords; 
@@ -5526,15 +5472,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                 Log.d(TAG, "✅ [DATA_SYNC_COMPLETE] Record path already sent START — skipping duplicate");
                                 return;
                             }
-                            
-                            // CRITICAL: Only start next chunk if this was an incomplete chunk (< 500 records)
-                            // OR if we haven't reached a 500-boundary yet (edge cases).
-                            // If actualCount == 500, the record-path should have handled it already.
-                            if (actualCountFinal == RECORDS_PER_FILE) {
-                                Log.d(TAG, "📦 [DATA_SYNC_COMPLETE] Received 500 records but hasMore=true — record path should handle. Skipping duplicate START.");
-                                return;
-                            }
-                            
+                            // When actualCount==500 and hasMoreChunks, we must start the next chunk here.
+                            // (Record path may not have run yet if 0x02 arrived first, or its runnable was overwritten by ours.)
                             int nextFileNum = currentFileNumFinal + 1;
                             syncCurrentFileNumber.put(deviceId, nextFileNum);
                             syncRecordsReceived.put(deviceId, 0);
@@ -5554,11 +5493,13 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     pendingStartNextChunkAfterStopResponse.put(deviceId, startNextChunkRunnable);
                     pendingStartNextChunkRunnables.put(deviceId, startNextChunkRunnable);
                 } else {
-                    // No more chunks — cleanup immediately
-                    String finalState = dataSyncState.getOrDefault(deviceId, "complete");
-                    if (!"complete".equals(finalState)) {
-                        dataSyncState.put(deviceId, "complete");
+                    // No more chunks — release lock, set complete, cleanup
+                    SyncLockState lockState = historySyncLock.remove(deviceId);
+                    if (lockState != null) {
+                        long duration = System.currentTimeMillis() - lockState.startTime;
+                        Log.d(TAG, "🔓 [SYNC LOCK] Released for " + deviceId + " - all chunks complete after " + (duration / 1000) + "s");
                     }
+                    dataSyncState.put(deviceId, "complete");
                     dataSyncRequested.put(deviceId, false);
                     syncCommandSentFlags.put(deviceId, false);
                     syncTotalRecords.remove(deviceId);
@@ -5781,8 +5722,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         eventData.putBoolean("isLiveData", false);
         sendEvent("DataTransfer", eventData);
         int currentChunkRecords = syncRecordsReceived.getOrDefault(deviceId, 0);
-        // SDD v1.5: Send cumulative total so UI shows e.g. 500/9000, 1000/9000 (not chunk-only 90/9000)
-        int cumulativeReceived = currentGrandTotal + recordsForThisChunk.size();
+        // SDD v1.5: Send cumulative total so UI shows e.g. 500/9000, 1000/9000 (not chunk-only 90/9000).
+        // Use grandTotal + current-chunk count (syncRecordsReceived already updated above), not
+        // currentGrandTotal + this batch size — during chunk 2+ currentGrandTotal stays at last
+        // 500-boundary until we hit the next one, so the old formula sent 501 for every record in chunk 2.
+        int cumulativeReceived = syncGrandTotalReceived.getOrDefault(deviceId, 0) + syncRecordsReceived.getOrDefault(deviceId, 0);
         WritableMap syncUpdateEvent = Arguments.createMap();
         syncUpdateEvent.putString("deviceId", deviceData.deviceId);
         syncUpdateEvent.putString("type", "sync_records");
@@ -5839,6 +5783,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     pendingStartNextChunkAfterStopResponse.put(deviceId, startNextRunnable);
                 } else {
                     // Sync complete via 500-boundary path (total was exactly N×500)
+                    SyncLockState lockState = historySyncLock.remove(deviceId);
+                    if (lockState != null) {
+                        long duration = System.currentTimeMillis() - lockState.startTime;
+                        Log.d(TAG, "🔓 [SYNC LOCK] Released for " + deviceId + " - sync complete at 500 boundary after " + (duration / 1000) + "s");
+                    }
                     int currentFileNum = syncCurrentFileNumber.getOrDefault(deviceId, 1);
                     int remainingRecords = Math.max(0, totalExpectedRecordPath - newGrandTotal);
                     Log.d(TAG, "✅ [CHUNKED SYNC] Sync complete at 500 boundary (total=" + newGrandTotal + "). Emitting sync_complete to JS.");
@@ -9726,6 +9675,12 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         if (syncTimer != null) {
             syncTimer.cancel(false);
             dataSyncTimers.remove(deviceId);
+        }
+        
+        // Cancel sync timeout checker (no records for 30s) so it doesn't fire after disconnect
+        ScheduledFuture<?> syncChecker = syncTimeoutCheckers.remove(deviceId);
+        if (syncChecker != null) {
+            syncChecker.cancel(false);
         }
         
         // Cancel pending "start next chunk" runnable so it doesn't fire after disconnect

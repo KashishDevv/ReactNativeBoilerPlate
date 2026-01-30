@@ -69,10 +69,13 @@ const HistoricalDataScreen = ({ route, navigation }) => {
     try {
       setLoading(true);
       
-      // ✅ Load from Redux only (all historical records are persisted there)
-      // Since all records are saved to Redux when received, we don't need to merge with BLEService
-      const historicalRecords = reduxRecords || [];
-      
+      // Load from Redux; filter by last record for history display (only show records newer than last)
+      const lastAppTs = BLEService.getLastAppRecordTimestamp(deviceId);
+      const historicalRecords = (reduxRecords || []).filter((r) => {
+        const ts = typeof r.timestamp === 'number' ? r.timestamp : (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : 0);
+        return lastAppTs <= 0 || (ts || 0) > lastAppTs;
+      });
+
       if (historicalRecords.length === 0) {
         setRecords([]);
         setLoading(false);

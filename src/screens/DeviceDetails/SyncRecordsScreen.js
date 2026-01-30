@@ -50,7 +50,8 @@ const SyncRecordsScreen = ({ route, navigation }) => {
 
   const loadRecords = () => {
     try {
-      const syncRecords = BLEService.getSyncRecords(deviceId);
+      // Filter by last record for history display (only show records newer than last)
+      const syncRecords = BLEService.getSyncRecordsForDisplay(deviceId);
       
       if (!syncRecords || syncRecords.length === 0) {
         setRecords([]);

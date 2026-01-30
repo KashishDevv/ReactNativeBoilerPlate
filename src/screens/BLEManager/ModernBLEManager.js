@@ -67,7 +67,7 @@ const ModernBLEManager = ({ navigation }) => {
     deviceConnected: null,
     deviceDataUpdate: null,
     rssiUpdate: null,
-  }); 
+  });
   useEffect(() => {
     checkBLEState();
     const getCurrentProfile = async () => {
@@ -81,8 +81,8 @@ const ModernBLEManager = ({ navigation }) => {
     getCurrentProfile();
     const getPhoneBattery = async () => {
       try {
-              const battery = await BLEService.getPhoneBatteryLevel();
-      setPhoneBatteryLevel(battery);
+        const battery = await BLEService.getPhoneBatteryLevel();
+        setPhoneBatteryLevel(battery);
         console.log('📱 Battery level loaded:', battery);
       } catch (error) {
         console.log('Could not get detailed battery info, trying basic method:', error);
@@ -181,10 +181,10 @@ const ModernBLEManager = ({ navigation }) => {
       }
       const allKnownDevices = BLEService.getScannedDevices();
       const freshDevice = allKnownDevices.find(d => d.id === deviceId);
-      setConnectedDevices(prevConnected => 
+      setConnectedDevices(prevConnected =>
         prevConnected.filter(d => d.id !== deviceId && d.id !== device.deviceId)
       );
-      setDevices(prevDevices => 
+      setDevices(prevDevices =>
         prevDevices.map(d => {
           if (d.id === deviceId || d.id === device.deviceId || deviceId === d.id) {
             const deviceToUse = freshDevice || device;
@@ -194,9 +194,9 @@ const ModernBLEManager = ({ navigation }) => {
             });
             return {
               ...d,
-              ...deviceToUse, 
-              id: deviceId, 
-              connectionState: CONNECTION_STATES.DISCONNECTED, 
+              ...deviceToUse,
+              id: deviceId,
+              connectionState: CONNECTION_STATES.DISCONNECTED,
               batteryLevel: null,
               temperature: null,
               steps: null,
@@ -283,14 +283,14 @@ const ModernBLEManager = ({ navigation }) => {
             } catch (error) {
               console.log('⚠️ [Modern] Could not read RSSI for auto-connected device:', error);
             }
-          }, 2000); 
+          }, 2000);
         }
         if (existingIndex >= 0) {
           const updatedDevices = [...prevDevices];
           const existingDevice = updatedDevices[existingIndex];
           const existingDeviceData = existingDevice.deviceData || {};
           const newDeviceData = deviceData.deviceData || {};
-          
+
           // Debug log for temperature tracking
           if (newDeviceData.temperature !== undefined || existingDeviceData.temperature !== undefined) {
             console.log('🌡️ [Modern] Temperature merge:', deviceId, {
@@ -300,19 +300,19 @@ const ModernBLEManager = ({ navigation }) => {
               existingIsZero: existingDeviceData.temperature === 0
             });
           }
-          
+
           const mergedDeviceData = {
             ...existingDeviceData,
-            steps: (newDeviceData.steps !== undefined && newDeviceData.steps !== 0) 
-              ? newDeviceData.steps  
+            steps: (newDeviceData.steps !== undefined && newDeviceData.steps !== 0)
+              ? newDeviceData.steps
               : (existingDeviceData.steps !== undefined && existingDeviceData.steps !== 0)
-                ? existingDeviceData.steps  
-                : (newDeviceData.steps !== undefined ? newDeviceData.steps : existingDeviceData.steps),  
+                ? existingDeviceData.steps
+                : (newDeviceData.steps !== undefined ? newDeviceData.steps : existingDeviceData.steps),
             temperature: (newDeviceData.temperature !== undefined && newDeviceData.temperature !== 0)
-              ? newDeviceData.temperature  
+              ? newDeviceData.temperature
               : (existingDeviceData.temperature !== undefined && existingDeviceData.temperature !== 0)
-                ? existingDeviceData.temperature  
-                : (newDeviceData.temperature !== undefined ? newDeviceData.temperature : existingDeviceData.temperature),  
+                ? existingDeviceData.temperature
+                : (newDeviceData.temperature !== undefined ? newDeviceData.temperature : existingDeviceData.temperature),
             totalSteps: newDeviceData.totalSteps !== undefined ? newDeviceData.totalSteps : existingDeviceData.totalSteps,
             batteryLevel: newDeviceData.batteryLevel !== undefined ? newDeviceData.batteryLevel : existingDeviceData.batteryLevel,
             recordCount: newDeviceData.recordCount !== undefined ? newDeviceData.recordCount : existingDeviceData.recordCount,
@@ -366,163 +366,161 @@ const ModernBLEManager = ({ navigation }) => {
           return;
         }
         if (eventData.type === 'sync_complete') {
-        // After sync success: show total records we have (synced), not "0 left on device"
-        const totalSynced = eventData.totalRecords ?? eventData.recordsTransmitted ?? eventData.deviceData?.recordCount ?? 0;
-        console.log('📊 [Modern] Sync complete – total synced:', totalSynced, eventData.deviceId);
-        lastSyncCompleteTime.current.set(eventData.deviceId, Date.now());
-        setDevices(prevDevices => {
-          return prevDevices.map(d => {
-            if (d.id === eventData.deviceId) {
-              const preservedTotalSteps = eventData.totalSteps !== undefined ? eventData.totalSteps : d.deviceData?.totalSteps;
-              const preservedSteps = eventData.steps !== undefined ? eventData.steps : d.deviceData?.steps;
-              const preservedTemperature = eventData.temperature !== undefined ? eventData.temperature : d.deviceData?.temperature;
-              return {
-                ...d,
-                deviceData: {
-                  ...d.deviceData,
-                  ...eventData.deviceData,
-                  recordCount: totalSynced,
-                  totalSteps: preservedTotalSteps,
-                  steps: preservedSteps,
-                  temperature: preservedTemperature,
-                },
-                manufacturerData: d.manufacturerData ? {
-                  ...d.manufacturerData,
-                  recordCount: totalSynced,
-                  hasRecords: totalSynced > 0
-                } : d.manufacturerData
-              };
-            }
-            return d;
+          // After sync success: show total records we have (synced), not "0 left on device"
+          const totalSynced = eventData.totalRecords ?? eventData.recordsTransmitted ?? eventData.deviceData?.recordCount ?? 0;
+          console.log('📊 [Modern] Sync complete – total synced:', totalSynced, eventData.deviceId);
+          lastSyncCompleteTime.current.set(eventData.deviceId, Date.now());
+          setDevices(prevDevices => {
+            return prevDevices.map(d => {
+              if (d.id === eventData.deviceId) {
+                const preservedTotalSteps = eventData.totalSteps !== undefined ? eventData.totalSteps : d.deviceData?.totalSteps;
+                const preservedSteps = eventData.steps !== undefined ? eventData.steps : d.deviceData?.steps;
+                const preservedTemperature = eventData.temperature !== undefined ? eventData.temperature : d.deviceData?.temperature;
+                return {
+                  ...d,
+                  deviceData: {
+                    ...d.deviceData,
+                    ...eventData.deviceData,
+                    recordCount: totalSynced,
+                    totalSteps: preservedTotalSteps,
+                    steps: preservedSteps,
+                    temperature: preservedTemperature,
+                  },
+                  manufacturerData: d.manufacturerData ? {
+                    ...d.manufacturerData,
+                    recordCount: totalSynced,
+                    hasRecords: totalSynced > 0
+                  } : d.manufacturerData
+                };
+              }
+              return d;
+            });
           });
-        });
-        setRefreshTrigger(prev => prev + 1);
-      }
-      if (eventData.type === 'live_data' && eventData.deviceData) {
-        console.log('📊 [Modern] Live data received:', eventData.deviceId, {
-          steps: eventData.deviceData.steps,
-          temperature: eventData.deviceData.temperature,
-          tempIsZero: eventData.deviceData.temperature === 0,
-          batteryLevel: eventData.deviceData.batteryLevel
-        });
-        setDevices(prevDevices => {
-          return prevDevices.map(d => {
-            if (d.id === eventData.deviceId) {
-              return {
-                ...d,
-                deviceData: {
-                  ...d.deviceData,
-                  ...eventData.deviceData,
-                  recordCount: eventData.deviceData.recordCount !== undefined 
-                    ? eventData.deviceData.recordCount 
-                    : d.deviceData?.recordCount
-                }
-              };
-            }
-            return d;
-          });
-        });
-        setRefreshTrigger(prev => prev + 1);
-      }
-      // FIX: Handle live_record events from push-generated (v1.5 live) records
-      if (eventData.type === 'live_record' && (eventData.deviceData || eventData.latestRecord)) {
-        const latestRecord = eventData.latestRecord || {};
-        const deviceData = eventData.deviceData || {};
-        console.log('📊 [Modern] Live record received:', eventData.deviceId, {
-          steps: latestRecord.steps || deviceData.steps,
-          temperature: latestRecord.temperature || deviceData.temperature,
-          totalSteps: deviceData.totalSteps,
-          recordCount: eventData.recordCount
-        });
-        setDevices(prevDevices => {
-          return prevDevices.map(d => {
-            if (d.id === eventData.deviceId) {
-              return {
-                ...d,
-                deviceData: {
-                  ...d.deviceData,
-                  ...deviceData,
-                  // Use latest record values for immediate display
-                  temperature: latestRecord.temperature ?? deviceData.temperature ?? d.deviceData?.temperature,
-                  steps: latestRecord.steps ?? deviceData.steps ?? d.deviceData?.steps,
-                  totalSteps: deviceData.totalSteps ?? d.deviceData?.totalSteps,
-                  dataSource: 'live',
-                  lastUpdate: new Date()
-                }
-              };
-            }
-            return d;
-          });
-        });
-        setRefreshTrigger(prev => prev + 1);
-      }
-      if (eventData.type === 'device_status' && eventData.deviceData?.recordCount !== undefined) {
-        const deviceId = eventData.deviceId;
-        const isFromPolling = eventData.deviceData?.isFromPolling === true;
-        if (!isFromPolling) {
-          return; 
+          setRefreshTrigger(prev => prev + 1);
         }
-        const recordCount = eventData.deviceData.recordCount;
-        setDevices(prevDevices => {
-          return prevDevices.map(d => {
-            if (d.id === deviceId) {
-              return {
-                ...d,
-                deviceData: {
-                  ...d.deviceData,
-                  ...eventData.deviceData,
-                  recordCount: recordCount,
-                },
-                manufacturerData: d.manufacturerData ? {
-                  ...d.manufacturerData,
-                  recordCount: recordCount,
-                  hasRecords: recordCount > 0
-                } : d.manufacturerData
-              };
-            }
-            return d;
+        if (eventData.type === 'live_data' && eventData.deviceData) {
+          console.log('📊 [Modern] Live data received:', eventData.deviceId, {
+            steps: eventData.deviceData.steps,
+            temperature: eventData.deviceData.temperature,
+            tempIsZero: eventData.deviceData.temperature === 0,
+            batteryLevel: eventData.deviceData.batteryLevel
           });
-        });
-        setRefreshTrigger(prev => prev + 1);
-      }
-      if (eventData.type === 'sync_records') {
-        const totalReceived = eventData.totalReceived || 0;
-        const totalExpected = eventData.totalExpected || 0;
-        const recordsReceived = eventData.recordsReceived || 0;
-        const remainingRecords = Math.max(0, totalExpected - totalReceived);
-        const deviceData = eventData.deviceData || {};
-        console.log('📊 [Modern] Sync progress received:', eventData.deviceId, `${totalReceived}/${totalExpected} records (${remainingRecords} remaining)`);
-        setDevices(prevDevices => {
-          return prevDevices.map(d => {
-            if (d.id === eventData.deviceId) {
-              return {
-                ...d,
-                deviceData: {
-                  ...d.deviceData,
-                  recordCount: remainingRecords, 
-                  // FIX: Also update temperature, steps, totalSteps from deviceData
-                  temperature: deviceData.temperature ?? d.deviceData?.temperature,
-                  steps: deviceData.steps ?? d.deviceData?.steps,
-                  totalSteps: deviceData.totalSteps ?? d.deviceData?.totalSteps,
-                  dataSource: 'synced',
-                  syncProgress: {
-                    totalReceived,
-                    totalExpected,
-                    recordsReceived
+          setDevices(prevDevices => {
+            return prevDevices.map(d => {
+              if (d.id === eventData.deviceId) {
+                return {
+                  ...d,
+                  deviceData: {
+                    ...d.deviceData,
+                    ...eventData.deviceData,
+                    recordCount: eventData.deviceData.recordCount !== undefined
+                      ? eventData.deviceData.recordCount
+                      : d.deviceData?.recordCount
                   }
-                },
-                manufacturerData: d.manufacturerData ? {
-                  ...d.manufacturerData,
-                  recordCount: remainingRecords,
-                  hasRecords: remainingRecords > 0
-                } : d.manufacturerData
-              };
-            }
-            return d;
+                };
+              }
+              return d;
+            });
           });
-        });
-        setRefreshTrigger(prev => prev + 1);
-      }
+          setRefreshTrigger(prev => prev + 1);
+        }
+        // FIX: Handle live_record events from push-generated (v1.5 live) records
+        if (eventData.type === 'live_record' && (eventData.deviceData || eventData.latestRecord)) {
+          const latestRecord = eventData.latestRecord || {};
+          const deviceData = eventData.deviceData || {};
+          console.log('📊 [Modern] Live record received:', eventData.deviceId, {
+            steps: latestRecord.steps || deviceData.steps,
+            temperature: latestRecord.temperature || deviceData.temperature,
+            totalSteps: deviceData.totalSteps,
+            recordCount: eventData.recordCount
+          });
+          setDevices(prevDevices => {
+            return prevDevices.map(d => {
+              if (d.id === eventData.deviceId) {
+                return {
+                  ...d,
+                  deviceData: {
+                    ...d.deviceData,
+                    ...deviceData,
+                    // Use latest record values for immediate display
+                    temperature: latestRecord.temperature ?? deviceData.temperature ?? d.deviceData?.temperature,
+                    steps: latestRecord.steps ?? deviceData.steps ?? d.deviceData?.steps,
+                    totalSteps: deviceData.totalSteps ?? d.deviceData?.totalSteps,
+                    dataSource: 'live',
+                    lastUpdate: new Date()
+                  }
+                };
+              }
+              return d;
+            });
+          });
+          setRefreshTrigger(prev => prev + 1);
+        }
+        // Update record count from Device Status characteristic (first read after connect + any later update).
+        // Don't require isFromPolling — otherwise we'd keep showing advertising value (e.g. 500) until sync_complete.
+        if (eventData.type === 'device_status' && eventData.deviceData?.recordCount !== undefined) {
+          const deviceId = eventData.deviceId;
+          const recordCount = eventData.deviceData.recordCount;
+          setDevices(prevDevices => {
+            return prevDevices.map(d => {
+              if (d.id === deviceId) {
+                return {
+                  ...d,
+                  deviceData: {
+                    ...d.deviceData,
+                    ...eventData.deviceData,
+                    recordCount: recordCount,
+                  },
+                  manufacturerData: d.manufacturerData ? {
+                    ...d.manufacturerData,
+                    recordCount: recordCount,
+                    hasRecords: recordCount > 0
+                  } : d.manufacturerData
+                };
+              }
+              return d;
+            });
+          });
+          setRefreshTrigger(prev => prev + 1);
+        }
+        if (eventData.type === 'sync_records') {
+          const totalReceived = eventData.totalReceived || 0;
+          const totalExpected = eventData.totalExpected || 0;
+          const recordsReceived = eventData.recordsReceived || 0;
+          const remainingRecords = Math.max(0, totalExpected - totalReceived);
+          const deviceData = eventData.deviceData || {};
+          console.log('📊 [Modern] Sync progress received:', eventData.deviceId, `${totalReceived}/${totalExpected} records (${remainingRecords} remaining)`);
+          setDevices(prevDevices => {
+            return prevDevices.map(d => {
+              if (d.id === eventData.deviceId) {
+                return {
+                  ...d,
+                  deviceData: {
+                    ...d.deviceData,
+                    recordCount: remainingRecords,
+                    // FIX: Also update temperature, steps, totalSteps from deviceData
+                    temperature: deviceData.temperature ?? d.deviceData?.temperature,
+                    steps: deviceData.steps ?? d.deviceData?.steps,
+                    totalSteps: deviceData.totalSteps ?? d.deviceData?.totalSteps,
+                    dataSource: 'synced',
+                    syncProgress: {
+                      totalReceived,
+                      totalExpected,
+                      recordsReceived
+                    }
+                  },
+                  manufacturerData: d.manufacturerData ? {
+                    ...d.manufacturerData,
+                    recordCount: remainingRecords,
+                    hasRecords: remainingRecords > 0
+                  } : d.manufacturerData
+                };
+              }
+              return d;
+            });
+          });
+          setRefreshTrigger(prev => prev + 1);
+        }
       } catch (error) {
         console.error('⚠️ [Modern] Error in deviceDataUpdate handler:', error);
       }
@@ -559,7 +557,7 @@ const ModernBLEManager = ({ navigation }) => {
       } catch (error) {
         console.log('Periodic refresh failed:', error);
       }
-    }, 10000); 
+    }, 10000);
     return () => {
       clearInterval(refreshInterval);
       if (scanTimeoutRef.current) {
@@ -659,8 +657,8 @@ const ModernBLEManager = ({ navigation }) => {
           'Bluetooth and Location permissions are required to scan for devices. Please grant the required permissions and try again.',
           [
             { text: 'Cancel', style: 'cancel' },
-            { 
-              text: 'Settings', 
+            {
+              text: 'Settings',
               onPress: () => {
                 if (Platform.OS === 'android') {
                   Linking.openSettings();
@@ -680,14 +678,14 @@ const ModernBLEManager = ({ navigation }) => {
       }
       setIsScanning(true);
       console.log('🔍 Starting scan while preserving existing devices...');
-      const SCAN_DURATION_MS = 15000; 
+      const SCAN_DURATION_MS = 15000;
       scanTimeoutRef.current = setTimeout(() => {
         console.log('⏰ Auto-stopping scan after 15 seconds (industry standard)');
         BLEService.stopScanning();
         setIsScanning(false);
         scanTimeoutRef.current = null;
         setTimeout(() => {
-          setDevices(prevDevices => 
+          setDevices(prevDevices =>
             prevDevices.map(device => ({
               ...device,
               isFreshDiscovery: false
@@ -709,8 +707,8 @@ const ModernBLEManager = ({ navigation }) => {
               updatedDevices[existingIndex] = {
                 ...updatedDevices[existingIndex],
                 ...device,
-                lastSeen: Date.now(), 
-                isFreshDiscovery: true 
+                lastSeen: Date.now(),
+                isFreshDiscovery: true
               };
               return updatedDevices;
             } else {
@@ -750,13 +748,13 @@ const ModernBLEManager = ({ navigation }) => {
       scanTimeoutRef.current = null;
     }
     setTimeout(() => {
-      setDevices(prevDevices => 
+      setDevices(prevDevices =>
         prevDevices.map(device => ({
           ...device,
           isFreshDiscovery: false
         }))
       );
-    }, 3000); 
+    }, 3000);
     console.log('🔍 Scan stopped, fresh discovery flags will clear in 3 seconds');
   }, []);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -781,10 +779,10 @@ const ModernBLEManager = ({ navigation }) => {
     devices.forEach(device => {
       const existing = deviceMap.get(device.id);
       if (existing) {
-        deviceMap.set(device.id, { 
-          ...existing, 
+        deviceMap.set(device.id, {
+          ...existing,
           rssi: device.rssi || existing.rssi,
-          lastSeen: device.lastSeen || existing.lastSeen 
+          lastSeen: device.lastSeen || existing.lastSeen
         });
       } else {
         deviceMap.set(device.id, { ...device, isConnected: false });
@@ -793,8 +791,8 @@ const ModernBLEManager = ({ navigation }) => {
     let result = Array.from(deviceMap.values());
     result = result.map(d => {
       if ((d.deviceData?.recordCount === null || d.deviceData?.recordCount === undefined) &&
-          d.manufacturerData?.recordCount !== null && 
-          d.manufacturerData?.recordCount !== undefined) {
+        d.manufacturerData?.recordCount !== null &&
+        d.manufacturerData?.recordCount !== undefined) {
         return {
           ...d,
           deviceData: {
@@ -806,8 +804,8 @@ const ModernBLEManager = ({ navigation }) => {
       return d;
     });
     const now = Date.now();
-    const STALE_MS = 5 * 60 * 1000; 
-    const VERY_STALE_MS = 30 * 60 * 1000; 
+    const STALE_MS = 5 * 60 * 1000;
+    const VERY_STALE_MS = 30 * 60 * 1000;
     result = result.filter(d => {
       if (d.connectionState === CONNECTION_STATES.CONNECTED) {
         return true;
@@ -818,8 +816,8 @@ const ModernBLEManager = ({ navigation }) => {
       if (d.isFreshDiscovery) {
         return true;
       }
-      if (d.connectionState === CONNECTION_STATES.CONNECTING || 
-          d.connectionState === CONNECTION_STATES.DISCONNECTING) {
+      if (d.connectionState === CONNECTION_STATES.CONNECTING ||
+        d.connectionState === CONNECTION_STATES.DISCONNECTING) {
         return true;
       }
       if (typeof d.lastSeen === 'number' && (now - d.lastSeen) > VERY_STALE_MS) {
@@ -859,7 +857,7 @@ const ModernBLEManager = ({ navigation }) => {
       return 0;
     });
     return result;
-  }, [connectedDevices, devices, refreshTrigger]); 
+  }, [connectedDevices, devices, refreshTrigger]);
   const connectToDevice = useCallback(async (device) => {
     try {
       console.log(`🔗 Attempting to connect to ${device.name} (${device.id})`);
@@ -867,9 +865,9 @@ const ModernBLEManager = ({ navigation }) => {
         device.id,
         (deviceId, connectionState) => {
           console.log(`📱 Connection state update: ${deviceId} -> ${connectionState}`);
-          setDevices(prevDevices => 
-            prevDevices.map(d => 
-              d.id === deviceId 
+          setDevices(prevDevices =>
+            prevDevices.map(d =>
+              d.id === deviceId
                 ? { ...d, connectionState }
                 : d
             )
@@ -891,9 +889,9 @@ const ModernBLEManager = ({ navigation }) => {
       );
     } catch (error) {
       console.error('❌ Connection error:', error);
-      setDevices(prevDevices => 
-        prevDevices.map(d => 
-          d.id === device.id 
+      setDevices(prevDevices =>
+        prevDevices.map(d =>
+          d.id === device.id
             ? { ...d, connectionState: 'disconnected' }
             : d
         )
@@ -916,19 +914,19 @@ const ModernBLEManager = ({ navigation }) => {
       let errorTitle = '❌ Connection Error';
       let showRetryButton = false;
       if (error.message.includes('cooldown')) {
-        errorMessage = error.message; 
+        errorMessage = error.message;
       } else if (error.message.includes('Device not connected')) {
         errorMessage = 'Connection failed - device may be out of range or turned off';
       } else if (error.message.includes('timeout') || (errorType === 'TRANSIENT' && canRetry)) {
         errorMessage = 'Connection timed out - please try again';
-        showRetryButton = true; 
+        showRetryButton = true;
       } else if (error.message.includes('permission') || requiresUserAction) {
         errorMessage = 'Bluetooth permission required - please enable in settings';
       } else if (errorType === 'PERMANENT') {
         errorMessage = 'Device not found or invalid - please scan again';
       } else {
         errorMessage = error.message || 'Failed to connect to device';
-        showRetryButton = canRetry; 
+        showRetryButton = canRetry;
       }
       const alertButtons = showRetryButton ? [
         { text: 'Retry', onPress: () => connectToDevice(device) },
@@ -942,9 +940,9 @@ const ModernBLEManager = ({ navigation }) => {
       await BLEService.disconnectFromDevice(
         device.id,
         (deviceId, connectionState) => {
-          setDevices(prevDevices => 
-            prevDevices.map(d => 
-              d.id === deviceId 
+          setDevices(prevDevices =>
+            prevDevices.map(d =>
+              d.id === deviceId
                 ? { ...d, connectionState }
                 : d
             )
@@ -998,8 +996,8 @@ const ModernBLEManager = ({ navigation }) => {
         `Platform: ${debugInfo.platform}\nAPI Level: ${debugInfo.apiLevel}\n\nBluetooth Scan: ${debugInfo.availablePermissions?.bluetoothScan || 'N/A'}\nBluetooth Connect: ${debugInfo.availablePermissions?.bluetoothConnect || 'N/A'}\nLocation: ${debugInfo.availablePermissions?.location || 'N/A'}`,
         [
           { text: 'OK' },
-          { 
-            text: 'Force Request', 
+          {
+            text: 'Force Request',
             onPress: async () => {
               const result = await BLEPermissions.forceRequestPermissions();
               Alert.alert('Force Request Result', result ? 'Permissions granted!' : 'Permissions denied');
@@ -1054,8 +1052,8 @@ const ModernBLEManager = ({ navigation }) => {
     }
   };
   const isConnectionInProgress = (device) => {
-    return device.connectionState === CONNECTION_STATES.CONNECTING || 
-           device.connectionState === CONNECTION_STATES.DISCONNECTING;
+    return device.connectionState === CONNECTION_STATES.CONNECTING ||
+      device.connectionState === CONNECTION_STATES.DISCONNECTING;
   };
   const handleConnectionPress = (device) => {
     if (device.connectionState === CONNECTION_STATES.CONNECTED) {
@@ -1067,39 +1065,39 @@ const ModernBLEManager = ({ navigation }) => {
   const renderDevice = ({ item, index }) => {
     const displayRssi = item.rssi ?? (item.id ? BLEService.getDeviceRssi(item.id) : null);
     return (
-    <Animated.View 
-      style={[
-        styles.deviceCard,
-        {
-          opacity: fadeAnim,
-          transform: [{
-            translateY: fadeAnim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [50, 0],
-            })
-          }]
-        }
-      ]}
-    >
-      {}
-      <View style={[
-        styles.connectionIndicator,
-        { backgroundColor: getConnectionIndicatorColor(item.connectionState) }
-      ]} />
-      <View style={styles.deviceHeader}>
-                  <View style={styles.deviceInfo}>
+      <Animated.View
+        style={[
+          styles.deviceCard,
+          {
+            opacity: fadeAnim,
+            transform: [{
+              translateY: fadeAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [50, 0],
+              })
+            }]
+          }
+        ]}
+      >
+        { }
+        <View style={[
+          styles.connectionIndicator,
+          { backgroundColor: getConnectionIndicatorColor(item.connectionState) }
+        ]} />
+        <View style={styles.deviceHeader}>
+          <View style={styles.deviceInfo}>
             <View style={styles.deviceNameContainer}>
               <Text style={styles.deviceName}>{item.name || 'Unknown Device'}</Text>
               <View style={styles.deviceBadgesContainer}>
                 {item.isFreshDiscovery && (
                   <View style={styles.freshDiscoveryBadge}>
-                    {}
+                    { }
                   </View>
                 )}
               </View>
             </View>
             <Text style={styles.deviceId}>{item.id}</Text>
-            {}
+            { }
             {item.manufacturerData && (
               <View style={styles.manufacturerDataContainer}>
                 {item.manufacturerData.recordCount !== undefined && item.manufacturerData.recordCount > 0 && (
@@ -1146,211 +1144,211 @@ const ModernBLEManager = ({ navigation }) => {
               </View>
             )}
           </View>
-        <View style={styles.deviceMeta}>
-          <View style={styles.rssiContainer}>
-            <Text style={styles.rssiLabel}>Signal</Text>
-            <View style={[styles.rssiBar, { backgroundColor: getRSSIColor(displayRssi) }]}>
-              <Text style={styles.rssiText}>{displayRssi != null ? displayRssi : 'N/A'}</Text>
+          <View style={styles.deviceMeta}>
+            <View style={styles.rssiContainer}>
+              <Text style={styles.rssiLabel}>Signal</Text>
+              <View style={[styles.rssiBar, { backgroundColor: getRSSIColor(displayRssi) }]}>
+                <Text style={styles.rssiText}>{displayRssi != null ? displayRssi : 'N/A'}</Text>
+              </View>
             </View>
           </View>
         </View>
-      </View>
-      {}
-      {item.isDemoTag && (
-        <View style={styles.demoBadge}>
-          <Text style={styles.demoBadgeText}>🏷️ DEMO</Text>
-        </View>
-      )}
-      {}
-      {(item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined || 
-        item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined || 
-        item.deviceData?.steps !== null && item.deviceData?.steps !== undefined ||
-        item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined) && (
-        <View>
-          {}
-          <View style={styles.dataRow}>
-            {}
-            {item.deviceData?.dataSource && (
-              <View style={styles.dataSourceBadge}>
-                <Text style={styles.dataSourceText}>
-                  {item.deviceData.dataSource === 'live' ? '🟢 LIVE' : 
-                   item.deviceData.dataSource === 'synced' ? '💾 SYNCED' : '📦 CACHED'}
-                </Text>
-              </View>
-            )}
-            {}
-            {item.deviceData?.batteryLevel > 0 && (
-              <View style={styles.dataItem}>
-                <Text style={styles.dataLabel}>🔋 Battery</Text>
-                <Text style={[styles.dataValue, { color: getBatteryColor(item.deviceData.batteryLevel) }]}>
-                  {item.deviceData.batteryLevel}%
-                </Text>
-              </View>
-            )}
-            {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && item.deviceData?.temperature !== 0 && (
-              <View style={styles.dataItem}>
-                <Text style={styles.dataLabel}>🌡️ Temp</Text>
-                <Text style={styles.dataValue}>
-                  {String(item.deviceData.temperature?.toFixed(1))}°C
-                </Text>
-              </View>
-            )}
-            {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
-              <View style={styles.dataItem}>
-                <Text style={styles.dataLabel}>👟 Latest</Text>
-                <Text style={styles.dataValue}>
-                  {String(item.deviceData.steps?.toLocaleString())}
-                </Text>
-              </View>
-            )}
+        { }
+        {item.isDemoTag && (
+          <View style={styles.demoBadge}>
+            <Text style={styles.demoBadgeText}>🏷️ DEMO</Text>
           </View>
-          {}
-          {(item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined ||
-            (item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined)) && (
-            <View style={styles.dataRow}>
-              {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>🏃 Total</Text>
-                  <Text style={[styles.dataValue, styles.totalStepsValue]}>
-                    {item.deviceData.totalSteps.toLocaleString()}
-                  </Text>
-                </View>
-              )}
-              {}
-              {item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
-                <View style={styles.dataItem}>
-                  <Text style={styles.dataLabel}>📊 Records</Text>
-                  <Text style={[styles.dataValue, { color: item.deviceData.recordCount > 0 ? Colors.primary : Colors.lightText }]}>
-                    {item.deviceData.recordCount}
-                  </Text>
-                </View>
-              )}
+        )}
+        { }
+        {(item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined ||
+          item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined ||
+          item.deviceData?.steps !== null && item.deviceData?.steps !== undefined ||
+          item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined) && (
+            <View>
+              { }
+              <View style={styles.dataRow}>
+                { }
+                {item.deviceData?.dataSource && (
+                  <View style={styles.dataSourceBadge}>
+                    <Text style={styles.dataSourceText}>
+                      {item.deviceData.dataSource === 'live' ? '🟢 LIVE' :
+                        item.deviceData.dataSource === 'synced' ? '💾 SYNCED' : '📦 CACHED'}
+                    </Text>
+                  </View>
+                )}
+                { }
+                {item.deviceData?.batteryLevel > 0 && (
+                  <View style={styles.dataItem}>
+                    <Text style={styles.dataLabel}>🔋 Battery</Text>
+                    <Text style={[styles.dataValue, { color: getBatteryColor(item.deviceData.batteryLevel) }]}>
+                      {item.deviceData.batteryLevel}%
+                    </Text>
+                  </View>
+                )}
+                {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && item.deviceData?.temperature !== 0 && (
+                  <View style={styles.dataItem}>
+                    <Text style={styles.dataLabel}>🌡️ Temp</Text>
+                    <Text style={styles.dataValue}>
+                      {String(item.deviceData.temperature?.toFixed(1))}°C
+                    </Text>
+                  </View>
+                )}
+                {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
+                  <View style={styles.dataItem}>
+                    <Text style={styles.dataLabel}>👟 Latest</Text>
+                    <Text style={styles.dataValue}>
+                      {String(item.deviceData.steps?.toLocaleString())}
+                    </Text>
+                  </View>
+                )}
+              </View>
+              { }
+              {(item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined ||
+                (item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined)) && (
+                  <View style={styles.dataRow}>
+                    {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
+                      <View style={styles.dataItem}>
+                        <Text style={styles.dataLabel}>🏃 Total</Text>
+                        <Text style={[styles.dataValue, styles.totalStepsValue]}>
+                          {item.deviceData.totalSteps.toLocaleString()}
+                        </Text>
+                      </View>
+                    )}
+                    { }
+                    {item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
+                      <View style={styles.dataItem}>
+                        <Text style={styles.dataLabel}>📊 Records</Text>
+                        <Text style={[styles.dataValue, { color: item.deviceData.recordCount > 0 ? Colors.primary : Colors.lightText }]}>
+                          {item.deviceData.recordCount}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                )}
             </View>
           )}
-        </View>
-      )}
-      <View style={styles.buttonContainer}>
-        <TouchableOpacity
-          style={getConnectionButtonStyle(item)}
-          onPress={() => handleConnectionPress(item)}
-          disabled={isConnectionInProgress(item)}
-          activeOpacity={0.8}
-        >
-          {isConnectionInProgress(item) ? (
-            <ActivityIndicator size="small" color={Colors.white} />
-          ) : (
-            <Text style={styles.connectionButtonText}>
-              {getConnectionButtonText(item)}
-            </Text>
-          )}
-        </TouchableOpacity>
-        {item.connectionState === CONNECTION_STATES.CONNECTED && (
+        <View style={styles.buttonContainer}>
           <TouchableOpacity
-            style={styles.detailsButton}
-            onPress={() => navigation.navigate('DeviceDetails', { deviceId: item.id })}
+            style={getConnectionButtonStyle(item)}
+            onPress={() => handleConnectionPress(item)}
+            disabled={isConnectionInProgress(item)}
             activeOpacity={0.8}
           >
-            <Text style={styles.detailsButtonText}>View Details</Text>
+            {isConnectionInProgress(item) ? (
+              <ActivityIndicator size="small" color={Colors.white} />
+            ) : (
+              <Text style={styles.connectionButtonText}>
+                {getConnectionButtonText(item)}
+              </Text>
+            )}
           </TouchableOpacity>
-        )}
-        {}
-        {item.connectionState === CONNECTION_STATES.CONNECTED && (
-          <TouchableOpacity
-            style={[
-              styles.forgetButton,
-              !BLEService.canForgetDevice(item.id) && styles.forgetButtonDisabled
-            ]}
-            onPress={() => {
-              if (!BLEService.canForgetDevice(item.id)) {
-                Alert.alert('Cannot Forget Device', 'This device is currently connecting. Please wait for the connection to complete or fail before forgetting.');
-                return;
-              }
-              Alert.alert(
-                'Forget Device',
-                `Are you sure you want to forget "${item.name || 'Unknown Device'}"?\n\nThis will:\n• Disconnect the device\n• Remove pairing data\n• Clear all device history\n• Require manual re-pairing`,
-                [
-                  { text: 'Cancel', style: 'cancel' },
-                  { 
-                    text: 'Forget Device', 
-                    style: 'destructive',
-                    onPress: async () => {
-                      try {
-                        const result = await BLEService.forgetDevice(item.id);
-                        if (result.success) {
-                          Alert.alert(
-                            'Device Forgotten', 
-                            `"${result.deviceName}" has been forgotten successfully.\n\nYou'll need to scan and reconnect manually if you want to use it again.`
-                          );
-                        } else {
-                          Alert.alert('Error', `Failed to forget device: ${result.error}`);
+          {item.connectionState === CONNECTION_STATES.CONNECTED && (
+            <TouchableOpacity
+              style={styles.detailsButton}
+              onPress={() => navigation.navigate('DeviceDetails', { deviceId: item.id })}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.detailsButtonText}>View Details</Text>
+            </TouchableOpacity>
+          )}
+          { }
+          {item.connectionState === CONNECTION_STATES.CONNECTED && (
+            <TouchableOpacity
+              style={[
+                styles.forgetButton,
+                !BLEService.canForgetDevice(item.id) && styles.forgetButtonDisabled
+              ]}
+              onPress={() => {
+                if (!BLEService.canForgetDevice(item.id)) {
+                  Alert.alert('Cannot Forget Device', 'This device is currently connecting. Please wait for the connection to complete or fail before forgetting.');
+                  return;
+                }
+                Alert.alert(
+                  'Forget Device',
+                  `Are you sure you want to forget "${item.name || 'Unknown Device'}"?\n\nThis will:\n• Disconnect the device\n• Remove pairing data\n• Clear all device history\n• Require manual re-pairing`,
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Forget Device',
+                      style: 'destructive',
+                      onPress: async () => {
+                        try {
+                          const result = await BLEService.forgetDevice(item.id);
+                          if (result.success) {
+                            Alert.alert(
+                              'Device Forgotten',
+                              `"${result.deviceName}" has been forgotten successfully.\n\nYou'll need to scan and reconnect manually if you want to use it again.`
+                            );
+                          } else {
+                            Alert.alert('Error', `Failed to forget device: ${result.error}`);
+                          }
+                        } catch (error) {
+                          Alert.alert('Error', 'Failed to forget device. Please try again.');
                         }
-                      } catch (error) {
-                        Alert.alert('Error', 'Failed to forget device. Please try again.');
                       }
                     }
-                  }
-                ]
-              );
-            }}
-            disabled={!BLEService.canForgetDevice(item.id)}
-            activeOpacity={0.8}
-          >
-            <Text style={[
-              styles.forgetButtonText,
-              !BLEService.canForgetDevice(item.id) && styles.forgetButtonTextDisabled
-            ]}>
-              🗑️ Forget
-            </Text>
-          </TouchableOpacity>
+                  ]
+                );
+              }}
+              disabled={!BLEService.canForgetDevice(item.id)}
+              activeOpacity={0.8}
+            >
+              <Text style={[
+                styles.forgetButtonText,
+                !BLEService.canForgetDevice(item.id) && styles.forgetButtonTextDisabled
+              ]}>
+                🗑️ Forget
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        { }
+        { }
+        {item.connectionState === CONNECTION_STATES.CONNECTED && (
+          <View style={styles.dataButtonsContainer}>
+            <TouchableOpacity
+              style={styles.liveDataButton}
+              onPress={() => {
+                console.log('📊 [Modern] Navigating to Live Data screen for device:', item.id);
+                navigation.navigate('LiveData', {
+                  deviceId: item.id,
+                  deviceName: item.name || 'Device'
+                });
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.dataButtonText}>Live Data</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.connectionLogButton}
+              onPress={() => {
+                console.log('📋 [Modern] Navigating to Connection Log screen for device:', item.id);
+                navigation.navigate('ConnectionLog', {
+                  deviceId: item.id,
+                  deviceName: item.name || 'Device'
+                });
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.connectionLogButtonText}>Connec. logs</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.historicalDataButton}
+              onPress={() => {
+                console.log('📋 [Modern] Navigating to Historical Data screen for device:', item.id);
+                navigation.navigate('HistoricalData', {
+                  deviceId: item.id,
+                  deviceName: item.name || 'Device'
+                });
+              }}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.dataButtonText}>Historical Data</Text>
+            </TouchableOpacity>
+          </View>
         )}
-      </View>
-      {}
-      {}
-      {item.connectionState === CONNECTION_STATES.CONNECTED && (
-      <View style={styles.dataButtonsContainer}>
-        <TouchableOpacity
-          style={styles.liveDataButton}
-          onPress={() => {
-            console.log('📊 [Modern] Navigating to Live Data screen for device:', item.id);
-            navigation.navigate('LiveData', {
-              deviceId: item.id,
-              deviceName: item.name || 'Device'
-            });
-          }}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.dataButtonText}>Live Data</Text>
-        </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.connectionLogButton}
-            onPress={() => {
-              console.log('📋 [Modern] Navigating to Connection Log screen for device:', item.id);
-              navigation.navigate('ConnectionLog', {
-                deviceId: item.id,
-                deviceName: item.name || 'Device'
-              });
-            }}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.connectionLogButtonText}>Connec. logs</Text>
-          </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.historicalDataButton}
-          onPress={() => {
-            console.log('📋 [Modern] Navigating to Historical Data screen for device:', item.id);
-            navigation.navigate('HistoricalData', {
-              deviceId: item.id,
-              deviceName: item.name || 'Device'
-            });
-          }}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.dataButtonText}>Historical Data</Text>
-        </TouchableOpacity>
-      </View>
-      )}
-    </Animated.View>
-  );
+      </Animated.View>
+    );
   };
   const renderEmptyList = () => (
     <Animated.View style={[styles.emptyContainer, { opacity: fadeAnim }]}>
@@ -1359,7 +1357,7 @@ const ModernBLEManager = ({ navigation }) => {
         {isScanning ? 'Scanning for devices...' : 'No devices found'}
       </Text>
       <Text style={styles.emptySubtext}>
-        {isScanning 
+        {isScanning
           ? 'Make sure your smart tag is nearby and powered on'
           : 'Pull down to refresh or tap scan to search for devices'
         }
@@ -1382,8 +1380,8 @@ const ModernBLEManager = ({ navigation }) => {
         <View style={styles.statusContainer}>
           <Text style={styles.statusIcon}>📶</Text>
           <Text style={styles.statusText}>
-            {bleState === BLE_STATES.POWERED_OFF 
-              ? 'Bluetooth is turned off' 
+            {bleState === BLE_STATES.POWERED_OFF
+              ? 'Bluetooth is turned off'
               : 'Bluetooth not available'}
           </Text>
           <Text style={styles.statusSubtext}>
@@ -1399,7 +1397,7 @@ const ModernBLEManager = ({ navigation }) => {
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.white} />
-      {}
+      { }
       <View style={styles.header}>
         <View style={styles.headerContent}>
           <Text style={styles.title}>Smart Tags</Text>
@@ -1408,7 +1406,7 @@ const ModernBLEManager = ({ navigation }) => {
           </Text>
         </View>
         <View style={styles.headerButtons}>
-          {}
+          { }
           <TouchableOpacity
             style={[styles.demoButton, demoModeEnabled && styles.demoButtonActive]}
             onPress={async () => {
@@ -1429,7 +1427,7 @@ const ModernBLEManager = ({ navigation }) => {
               {demoModeEnabled ? '🏷️ Demo ON' : '🏷️ Demo'}
             </Text>
           </TouchableOpacity>
-          {}
+          { }
           <TouchableOpacity
             style={[styles.scanButton, isScanning && styles.scanButtonActive]}
             onPress={isScanning ? stopScan : startScan}
@@ -1447,8 +1445,8 @@ const ModernBLEManager = ({ navigation }) => {
           </TouchableOpacity>
         </View>
       </View>
-      {}
-      {}
+      { }
+      { }
       {isScanning && (
         <Animated.View style={[styles.scanningIndicator, { opacity: fadeAnim }]}>
           <View style={styles.scanningContent}>
@@ -1476,7 +1474,7 @@ const ModernBLEManager = ({ navigation }) => {
         contentContainerStyle={allDevices.length === 0 ? styles.emptyListContainer : styles.listContainer}
         showsVerticalScrollIndicator={false}
       />
-      {}
+      { }
       {refreshing && allDevices.length > 0 && (
         <View style={styles.refreshOverlay}>
           <View style={styles.refreshOverlayContent}>
@@ -1894,7 +1892,7 @@ const styles = StyleSheet.create({
     minWidth: '31%',
   },
   connectionLogButton: {
-    backgroundColor: '#FFE5D9', 
+    backgroundColor: '#FFE5D9',
     paddingHorizontal: Metrics.baseMargin,
     paddingVertical: 12,
     borderRadius: 12,

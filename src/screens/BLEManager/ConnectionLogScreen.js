@@ -205,31 +205,97 @@ const ConnectionLogScreen = ({ route, navigation }) => {
     setTimeout(() => setRefreshing(false), 500);
   };
 
+  const safeStr = (v) => (v != null && typeof v === 'object') ? JSON.stringify(v) : String(v ?? '');
+
+  const formatLogEntryForCopy = (log) => {
+    const lines = [];
+    const timestamp = getTimestampDate(log);
+    const timeDate = formatTimeDate(timestamp);
+    lines.push(`${log.action} ${timeDate}`);
+    if (log.commandHex) lines.push(`  Command: ${safeStr(log.commandHex)}`);
+    if (log.responseHex) lines.push(`  Response: ${safeStr(log.responseHex)}`);
+    if (log.characteristic) lines.push(`  Characteristic: ${safeStr(log.characteristic)}`);
+    if (log.uuid) lines.push(`  UUID: ${safeStr(log.uuid)}`);
+    if (log.characteristicNames) lines.push(`  Characteristics: ${safeStr(log.characteristicNames)}`);
+    if (log.count !== undefined && !log.characteristic) lines.push(`  Count: ${log.count}`);
+    if (log.recordsTransmitted !== undefined) lines.push(`  Records Transmitted: ${safeStr(log.recordsTransmitted)}`);
+    if (log.grandTotal !== undefined) lines.push(`  Grand Total: ${safeStr(log.grandTotal)}`);
+    if (log.totalExpected !== undefined) lines.push(`  Total Expected: ${safeStr(log.totalExpected)}`);
+    if (log.recordCount !== undefined && !log.characteristic) lines.push(`  Record Count: ${safeStr(log.recordCount)}`);
+    if (log.totalEnabled !== undefined) lines.push(`  Total Enabled: ${log.totalEnabled}`);
+    if (log.note) lines.push(`  Note: ${safeStr(log.note)}`);
+    if (log.status && log.action?.includes('Notification')) {
+      lines.push(`  Status: ${log.status === 'success' ? '✅ Success' : '❌ Failed'}`);
+    }
+    if (log.gattStatus !== undefined) lines.push(`  GATT Status: ${safeStr(log.gattStatus)}`);
+    if (log.systemTimestamp !== undefined) {
+      lines.push(`  System Time: ${log.systemTimestamp} (${log.systemTimestampISO || new Date(log.systemTimestamp * 1000).toISOString()})`);
+      if (log.timestampHex) lines.push(`  Timestamp Hex: ${safeStr(log.timestampHex)}`);
+      if (log.deviceRTCValid !== undefined) lines.push(`  Device RTC Valid: ${log.deviceRTCValid ? 'Yes' : 'No'}`);
+    }
+    if (log.deviceRTC !== undefined) {
+      lines.push(`  Device RTC: ${log.deviceRTC} (${log.deviceRTCISO || 'N/A'})`);
+      lines.push(`  System Time: ${log.systemTime} (${log.systemTimeISO || 'N/A'})`);
+      if (log.timeDifference !== undefined) {
+        lines.push(`  Time Difference: ${log.timeDifferenceFormatted || `${log.timeDifference}s`}`);
+      }
+      if (log.rtcValid !== undefined) lines.push(`  RTC Valid: ${log.rtcValid ? '✅ Yes' : '❌ No'}`);
+    }
+    if (log.expectedRecords !== undefined) lines.push(`  Expected Records: ${safeStr(log.expectedRecords)}`);
+    if (log.receivedRecords !== undefined) lines.push(`  Received Records: ${safeStr(log.receivedRecords)}`);
+    if (log.success !== undefined) lines.push(`  Success: ${log.success}`);
+    if (log.recordsBeforeSync !== undefined) lines.push(`  Records Before Sync: ${log.recordsBeforeSync}`);
+    if (log.recordsAfterSync !== undefined) lines.push(`  Records After Sync: ${log.recordsAfterSync}`);
+    if (log.actualNewRecords !== undefined) lines.push(`  Actual New Records: ${log.actualNewRecords}`);
+    if (log.effectiveReceived !== undefined) lines.push(`  Effective Received: ${log.effectiveReceived}`);
+    if (log.isIncomplete !== undefined) lines.push(`  Incomplete: ${log.isIncomplete}`);
+    if (log.timeoutMs !== undefined) lines.push(`  Timeout (ms): ${log.timeoutMs}`);
+    if (log.totalInTag !== undefined) lines.push(`  Total In Tag: ${log.totalInTag}`);
+    if (log.firstChunkRequest !== undefined) lines.push(`  First Chunk Request: ${log.firstChunkRequest}`);
+    if (log.totalSynced !== undefined) lines.push(`  Total Synced: ${log.totalSynced}`);
+    if (log.lastRecordTimestamp !== undefined) lines.push(`  Last Record Timestamp: ${log.lastRecordTimestamp}`);
+    if (log.platform) lines.push(`  Platform: ${log.platform}`);
+    if (log.retryAttempt !== undefined) lines.push(`  Retry Attempt: ${log.retryAttempt}`);
+    if (log.maxRetries !== undefined) lines.push(`  Max Retries: ${log.maxRetries}`);
+    if (log.delayMs !== undefined) lines.push(`  Delay (ms): ${log.delayMs}`);
+    if (log.waitedMs !== undefined) lines.push(`  Waited (ms): ${log.waitedMs}`);
+    if (log.reason) lines.push(`  Reason: ${safeStr(log.reason)}`);
+    if (log.errorCode) lines.push(`  Error Code: ${safeStr(log.errorCode)}`);
+    if (log.error) lines.push(`  Error: ${safeStr(log.error)}`);
+    const knownKeys = new Set([
+      'action', 'timestamp', 'receivedAt', 'commandHex', 'responseHex', 'characteristic', 'uuid',
+      'characteristicNames', 'count', 'recordsTransmitted', 'grandTotal', 'totalExpected', 'recordCount',
+      'totalEnabled', 'note', 'status', 'gattStatus', 'systemTimestamp', 'systemTimestampISO', 'timestampHex',
+      'deviceRTCValid', 'deviceRTC', 'deviceRTCISO', 'systemTime', 'systemTimeISO', 'timeDifference',
+      'timeDifferenceFormatted', 'rtcValid', 'expectedRecords', 'receivedRecords', 'success', 'recordsBeforeSync',
+      'recordsAfterSync', 'actualNewRecords', 'effectiveReceived', 'isIncomplete', 'timeoutMs', 'totalInTag',
+      'firstChunkRequest', 'totalSynced', 'lastRecordTimestamp', 'platform', 'retryAttempt', 'maxRetries',
+      'delayMs', 'waitedMs', 'reason', 'errorCode', 'error', 'gapReason', 'lastAppRecordTimestamp', 'source'
+    ]);
+    Object.keys(log).forEach((key) => {
+      if (knownKeys.has(key)) return;
+      const val = log[key];
+      if (val === undefined || val === null) return;
+      lines.push(`  ${key}: ${safeStr(val)}`);
+    });
+    return lines.join('\n');
+  };
+
   const handleCopyData = () => {
     if (logs.length === 0) {
       Alert.alert('No Data', 'There is no data to copy.');
       return;
     }
 
-    // Format data as text
     let dataText = 'Action | TIME/DATE RECORDED\n';
     dataText += '---------------------------------------------------\n';
 
     logs.forEach((log) => {
-      const timestamp = getTimestampDate(log);
-      const timeDate = formatTimeDate(timestamp);
-      dataText += `${log.action} ${timeDate}\n`;
-      if (log.commandHex) {
-        dataText += `  Command: ${log.commandHex}\n`;
-      }
-      if (log.responseHex) {
-        dataText += `  Response: ${log.responseHex}\n`;
-      }
+      dataText += formatLogEntryForCopy(log) + '\n';
     });
 
-    // Copy to clipboard
-    Clipboard.setString(dataText);
-    
+    Clipboard.setString(dataText.trimEnd());
+
     Alert.alert(
       'Data Copied',
       `Copied ${logs.length} log entr${logs.length !== 1 ? 'ies' : 'y'} to clipboard.`,
