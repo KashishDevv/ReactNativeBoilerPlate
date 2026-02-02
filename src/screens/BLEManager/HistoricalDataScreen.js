@@ -45,9 +45,9 @@ const HistoricalDataScreen = ({ route, navigation }) => {
     // When Redux updates, the component will re-render via the useSelector hook
     const handleDataUpdate = (eventData) => {
       if (eventData.deviceId === deviceId && 
-          (eventData.type === 'live_record' || eventData.type === 'sync_records')) {
-        console.log(`📊 [HistoricalData] ${eventData.type} updated, new records will appear via Redux...`);
-        // No need to call loadInitialData - Redux update will trigger re-render via useSelector
+          (eventData.type === 'live_record' || eventData.type === 'sync_records' || eventData.type === 'sync_complete')) {
+        console.log(`📊 [HistoricalData] ${eventData.type} updated, refreshing...`);
+        loadInitialData();
       }
     };
     
@@ -68,13 +68,10 @@ const HistoricalDataScreen = ({ route, navigation }) => {
   const loadInitialData = () => {
     try {
       setLoading(true);
-      
-      // Load from Redux; filter by last record for history display (only show records newer than last)
-      const lastAppTs = BLEService.getLastAppRecordTimestamp(deviceId);
-      const historicalRecords = (reduxRecords || []).filter((r) => {
-        const ts = typeof r.timestamp === 'number' ? r.timestamp : (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : 0);
-        return lastAppTs <= 0 || (ts || 0) > lastAppTs;
-      });
+
+      // All records from Redux, deduplicated by (time recorded, steps, temperature)
+      const allRecords = reduxRecords || [];
+      const historicalRecords = BLEService.deduplicateRecordsByTimeStepsTemp(allRecords);
 
       if (historicalRecords.length === 0) {
         setRecords([]);

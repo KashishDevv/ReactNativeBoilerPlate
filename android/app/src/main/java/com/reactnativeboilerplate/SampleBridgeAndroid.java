@@ -1169,6 +1169,13 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         return (q != null && q.hasPendingOps());
     }
     
+    /** True only if GATT queue has pending ops. Used for continuation chunks so we don't block on "syncing" state. */
+    private boolean isGattQueueBusy(String deviceId) {
+        if (deviceId == null) return false;
+        GattOperationQueue q = gattQueues.get(deviceId);
+        return (q != null && q.hasPendingOps());
+    }
+    
     /** Data sync retry attempt counters: deviceId -> retryCount */
     private Map<String, Integer> dataSyncRetryCount = new ConcurrentHashMap<>();
     
@@ -5385,14 +5392,16 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 int remainingRecords = Math.max(0, totalRecords - grandTotal);
                 deviceRecordCounts.put(deviceId, remainingRecords);
                 Log.d(TAG, "✅ Updated record count to " + remainingRecords + " after file #" + currentFileNum);
+                // For final sync_complete: total synced = grandTotal (cap at totalRecords to avoid double-count when 0x02 and record path both run).
+                int totalSyncedForEvent = hasMoreChunks ? value : Math.min(grandTotal, totalRecords);
                 // ET-DSSID-SSD-V1.5: Data Sync Complete (0x02) = ONE batch done (1–500 records). Chunk complete ≠ full sync complete.
                 // Full sync complete only when hasMoreChunks == false (grandTotal >= totalRecords). JS must treat only sync_complete as "sync done".
                 WritableMap eventData = Arguments.createMap();
                 eventData.putString("type", hasMoreChunks ? "chunk_complete" : "sync_complete");
                 eventData.putBoolean("success", true);
-                eventData.putInt("recordsTransmitted", value);
+                eventData.putInt("recordsTransmitted", totalSyncedForEvent);
                 eventData.putInt("chunkNumber", currentFileNum);
-                eventData.putInt("grandTotal", grandTotal);
+                eventData.putInt("grandTotal", hasMoreChunks ? grandTotal : Math.min(grandTotal, totalRecords));
                 eventData.putInt("totalExpected", totalRecords);
                 eventData.putBoolean("hasMoreChunks", hasMoreChunks);
                 eventData.putString("deviceId", deviceId);
@@ -5407,28 +5416,29 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     dataSyncState.put(deviceId, "complete");
                     // Set timestamp first so device status callbacks processed shortly after see grace period (avoids second sync start).
                     lastSyncCompleteTimestamps.put(deviceId, System.currentTimeMillis());
-                    int finalRecordCount = remainingRecords; 
+                    int totalSynced = Math.min(grandTotal, totalRecords);
+                    int finalRecordCount = remainingRecords;
                     WritableMap deviceDataUpdateEvent = Arguments.createMap();
                     deviceDataUpdateEvent.putString("deviceId", deviceId);
                     deviceDataUpdateEvent.putString("type", "sync_complete");
                     deviceDataUpdateEvent.putInt("recordCount", finalRecordCount);
-                    deviceDataUpdateEvent.putInt("recordsTransmitted", value);
-                    deviceDataUpdateEvent.putInt("totalRecords", grandTotal);
+                    deviceDataUpdateEvent.putInt("recordsTransmitted", totalSynced);
+                    deviceDataUpdateEvent.putInt("totalRecords", totalSynced);
                     WritableMap deviceDataMapForEvent = Arguments.createMap();
                     DeviceData deviceDataObj = deviceDataMap.get(deviceId);
                     if (deviceDataObj != null) {
-                        deviceDataMapForEvent.putInt("recordCount", finalRecordCount);
+                        deviceDataMapForEvent.putInt("recordCount", totalSynced);
                         Integer batteryLevel = deviceDataObj.batteryLevel;
                         if (batteryLevel != null) {
                             deviceDataMapForEvent.putInt("batteryLevel", batteryLevel);
                         }
                     } else {
-                        deviceDataMapForEvent.putInt("recordCount", finalRecordCount);
+                        deviceDataMapForEvent.putInt("recordCount", totalSynced);
                     }
                     deviceDataUpdateEvent.putMap("deviceData", deviceDataMapForEvent);
                     sendEvent("deviceDataUpdate", deviceDataUpdateEvent);
                 }
-                
+
                 // SDD v1.5 CHUNKED SYNC PROTOCOL:
                 // - If actualCount == 500 AND record-path already sent STOP: Skip (duplicate prevention)
                 // - If actualCount < 500: Device sent DATA_SYNC_COMPLETE, now send STOP (last incomplete chunk)
@@ -5507,7 +5517,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     syncCurrentFileNumber.remove(deviceId);
                     syncGrandTotalReceived.remove(deviceId);
                     recordPathChunkAdvanced.remove(deviceId);
-                    Log.d(TAG, "✅ [CHUNKED SYNC] All chunks complete. Total synced: " + grandTotalFinal + " records.");
+                    int totalSyncedLog = Math.min(grandTotalFinal, totalRecordsFinal);
+                    Log.d(TAG, "✅ [CHUNKED SYNC] All chunks complete. Total synced: " + totalSyncedLog + " records.");
                 }
         } else {
             // Firmware v1.5: Invalid record count (outside 0x0001-0x01F4 range)
@@ -5687,7 +5698,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         
         int currentReceived = syncRecordsReceived.getOrDefault(deviceId, 0);
         int newTotal = currentReceived + records.size();
+        // When sync was force-completed or cleaned up, syncTotalRecords may be 0; use device record count so we never emit/show "X/0"
         int totalExpected = syncTotalRecords.getOrDefault(deviceId, 0);
+        if (totalExpected <= 0) {
+            totalExpected = deviceRecordCounts.getOrDefault(deviceId, 0);
+        }
         int currentGrandTotal = syncGrandTotalReceived.getOrDefault(deviceId, 0);
         
         List<WritableMap> recordsForThisChunk = records;
@@ -5742,7 +5757,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             // SDD v1.5 CHUNKED SYNC PROTOCOL:
             // When we hit 500 records boundary, send STOP immediately WITHOUT waiting for DATA_SYNC_COMPLETE.
             // Device only sends DATA_SYNC_COMPLETE for: (a) last chunk < 500, or (b) exactly 500 when no more data.
-            final int totalExpectedRecordPath = syncTotalRecords.getOrDefault(deviceId, 0);
+            int totalExpectedRecordPathVal = syncTotalRecords.getOrDefault(deviceId, 0);
+            if (totalExpectedRecordPathVal <= 0) {
+                totalExpectedRecordPathVal = deviceRecordCounts.getOrDefault(deviceId, 0);
+            }
+            final int totalExpectedRecordPath = totalExpectedRecordPathVal;
             final int currentGrandTotalRecordPath = syncGrandTotalReceived.getOrDefault(deviceId, 0);
             final int newGrandTotal = currentGrandTotalRecordPath + RECORDS_PER_FILE;
             final boolean hasMoreChunks = (newGrandTotal < totalExpectedRecordPath);
@@ -5795,7 +5814,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     WritableMap syncCompleteEventData = Arguments.createMap();
                     syncCompleteEventData.putString("type", "sync_complete");
                     syncCompleteEventData.putBoolean("success", true);
-                    syncCompleteEventData.putInt("recordsTransmitted", RECORDS_PER_FILE);
+                    syncCompleteEventData.putInt("recordsTransmitted", newGrandTotal);
                     syncCompleteEventData.putInt("chunkNumber", currentFileNum);
                     syncCompleteEventData.putInt("grandTotal", newGrandTotal);
                     syncCompleteEventData.putInt("totalExpected", totalExpectedRecordPath);
@@ -5807,19 +5826,19 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     deviceDataUpdateEvent.putString("deviceId", deviceId);
                     deviceDataUpdateEvent.putString("type", "sync_complete");
                     deviceDataUpdateEvent.putInt("recordCount", remainingRecords);
-                    deviceDataUpdateEvent.putInt("recordsTransmitted", RECORDS_PER_FILE);
+                    deviceDataUpdateEvent.putInt("recordsTransmitted", newGrandTotal);
                     deviceDataUpdateEvent.putInt("totalRecords", newGrandTotal);
 
                     WritableMap deviceDataMapForEvent = Arguments.createMap();
                     DeviceData deviceDataObj = deviceDataMap.get(deviceId);
                     if (deviceDataObj != null) {
-                        deviceDataMapForEvent.putInt("recordCount", remainingRecords);
+                        deviceDataMapForEvent.putInt("recordCount", newGrandTotal);
                         Integer batteryLevel = deviceDataObj.batteryLevel;
                         if (batteryLevel != null) {
                             deviceDataMapForEvent.putInt("batteryLevel", batteryLevel);
                         }
                     } else {
-                        deviceDataMapForEvent.putInt("recordCount", remainingRecords);
+                        deviceDataMapForEvent.putInt("recordCount", newGrandTotal);
                     }
                     deviceDataUpdateEvent.putMap("deviceData", deviceDataMapForEvent);
                     sendEvent("deviceDataUpdate", deviceDataUpdateEvent);
@@ -5939,8 +5958,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         syncCurrentFileNumber.remove(deviceId);
         syncGrandTotalReceived.remove(deviceId);
         
-        // Update device record count
-        deviceRecordCounts.put(deviceId, 0);
+        // Do NOT clear deviceRecordCounts — keep last known count so retry sync and late-arriving records
+        // have a valid totalExpected (avoids "X/0" progress after force-complete).
         
         // Send sync complete event to JS
         WritableMap eventData = Arguments.createMap();
@@ -8050,6 +8069,9 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                                               completedNotificationEnables.containsKey(deviceId);
                                 Integer pendingNotifications = pendingNotificationEnables.get(deviceId);
                                 Integer completedNotifications = completedNotificationEnables.get(deviceId);
+                                // Check if device was in/after sync (read before cleanup clears dataSyncState)
+                                String syncState = dataSyncState.get(deviceId);
+                                boolean wasInSyncOrComplete = "syncing".equals(syncState) || "complete".equals(syncState);
                                 
                                 if (wasDiscovering) {
                                     Log.w(TAG, "⚠️ [DISCONNECTION] Service discovery was in progress when device disconnected: " + deviceId);
@@ -8072,10 +8094,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                                 disconnectLogEvent.putString("platform", "Android");
                                 String disconnectNote = wasDiscovering ? 
                                     "Disconnected during service discovery" : 
-                                    (notificationsEnabled ? "Normal disconnection" : 
-                                     (pendingNotifications != null && pendingNotifications > 0 ? 
-                                      "Disconnected before notifications enabled (" + completedNotifications + "/" + pendingNotifications + ")" :
-                                      "Disconnected before service discovery"));
+                                    (wasInSyncOrComplete ? "Normal disconnection (after sync)" :
+                                     (notificationsEnabled ? "Normal disconnection" : 
+                                      (pendingNotifications != null && pendingNotifications > 0 ? 
+                                       "Disconnected before notifications enabled (" + completedNotifications + "/" + pendingNotifications + ")" :
+                                       "Disconnected before service discovery")));
                                 disconnectLogEvent.putString("note", disconnectNote);
                                 sendEvent("ConnectionLog", disconnectLogEvent);
                                 
@@ -11318,13 +11341,19 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         // Mark sync as requested
         dataSyncRequested.put(deviceId, true);
         
-        // Wait for global GATT queue to be idle (no descriptor/other op in progress) before sending command
-        if (isGattBusyOrSyncActive(deviceId)) {
+        // Continuation chunk (file #2+): only wait for GATT queue idle, not "syncing" state (we stay "syncing" during multi-chunk).
+        // First chunk: wait for both "syncing" and GATT queue so we don't overlap with other setup.
+        int currentFileNumForBusyCheck = syncCurrentFileNumber.getOrDefault(deviceId, 1);
+        boolean isContinuationChunk = (currentFileNumForBusyCheck > 1);
+        boolean shouldWait = isContinuationChunk ? isGattQueueBusy(deviceId) : isGattBusyOrSyncActive(deviceId);
+        if (shouldWait) {
             GattOperationQueue qBusy = gattQueues.get(deviceId);
             int pending = qBusy != null ? qBusy.queueSize() : -1;
             boolean inF = qBusy != null && qBusy.isInFlight();
             String opName = qBusy != null ? qBusy.getCurrentOpName() : "n/a";
-            Log.w(TAG, "⚠️ [DATA SYNC START] GATT queue busy - waiting before sending command [pending=" + pending + " inFlight=" + inF + " op=" + opName + "]");
+            // Busy = pending queued ops OR 1 op in flight (waiting for BLE callback). So pending=0 can still be busy when inFlight=true.
+            String reason = (pending > 0) ? ("pending=" + pending) : (inF ? "inFlight=1 (waiting for callback: " + opName + ")" : "busy");
+            Log.w(TAG, "⚠️ [DATA SYNC START] GATT busy - waiting before sending command [" + reason + "]" + (isContinuationChunk ? " (continuation chunk)" : ""));
             mainHandler.postDelayed(() -> {
                 sendDataSyncStartCommand(deviceId, retryAttempt);
             }, 500);

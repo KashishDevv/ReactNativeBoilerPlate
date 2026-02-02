@@ -99,7 +99,8 @@ class BLEService {
     this.lastDeviceStatus = new Map(); // deviceId -> { recordCount, batteryLevel, timestamp }
     // ✅ OPTIMIZATION: Notification aggregation buffer
     this.deviceStatusNotificationBuffer = new Map(); // deviceId -> { notifications: [], timer }
-    this.notificationAggregationWindow = 500; // 500ms aggregation window
+    // Shorter window on iOS so sync starts sooner (Android may send more duplicate device status, keep 500ms)
+    this.notificationAggregationWindow = Platform.OS === 'ios' ? 250 : 500; // ms before decide/sync start
     this.lastServiceDiscoveryLog = new Map();
     this.lastCharacteristicsDiscoveryLog = new Map();
     this.discoveryLogDedupeWindow = 2000;
@@ -119,6 +120,8 @@ class BLEService {
     this.liveDataLogDedupeWindow = 2000; // 2 seconds - only log same live data once per 2s
     // ✅ FIX: Deduplicate sync progress events (prevent duplicate sync_records events)
     this.lastSyncProgressEvents = new Map(); // deviceId -> { timestamp, totalReceived, totalExpected, recordsReceived }
+    // ✅ FIX: After force-complete/retry, native may send totalExpected=0; preserve last known so we never show "X/0"
+    this.lastKnownSyncTotalExpected = new Map(); // deviceId -> number
     this.syncProgressDedupeWindow = 100; // 100ms - legacy dedupe
     this.syncProgressThrottleMs = 200;  // Only emit sync_records to UI every 200ms
     this.syncProgressThrottleRecords = 25; // Or every 25 records — prevents UI hang during 8000-record sync
@@ -1848,8 +1851,14 @@ class BLEService {
     } else if (type === 'sync_records') {
       const recordsReceived = event.recordsReceived || 0;
       const totalReceived = event.totalReceived || 0;
-      // When native sends totalExpected=0 (e.g. not set yet), preserve previous to avoid "X/X (0 remaining)"
-      const totalExpectedToUse = event.totalExpected || device.deviceData?.syncProgress?.totalExpected || 0;
+      // When native sends totalExpected=0 (e.g. after force-complete/retry), use last known so we never show "X/0"
+      const rawExpected = event.totalExpected ?? device.deviceData?.syncProgress?.totalExpected ?? 0;
+      const totalExpectedToUse = rawExpected > 0
+        ? rawExpected
+        : (this.lastKnownSyncTotalExpected.get(deviceId) || 0);
+      if (rawExpected > 0) {
+        this.lastKnownSyncTotalExpected.set(deviceId, rawExpected);
+      }
       const remainingRecords = Math.max(0, totalExpectedToUse - totalReceived);
       device.deviceData = {
         ...device.deviceData,
@@ -4951,10 +4960,11 @@ class BLEService {
     const expectedRecords = this.syncExpectedRecords.get(deviceId) || syncState?.expectedRecords || 0;
     const receivedRecords = syncState?.recordsReceived || 0;
     const recordsTransmitted = parsedTransfer.recordsTransmitted || 0;
-    // Android multi-chunk: native sends grandTotal/totalExpected on sync_complete. Use it so we don't
-    // falsely mark "incomplete" when syncState.recordsReceived wasn't updated (records stay in native).
+    // Android multi-chunk: native sends grandTotal/totalExpected on sync_complete. Use it for "total synced" so
+    // connection log and UI show total across all chunks (e.g. 1500), not last chunk only (500).
+    const totalSyncedFromNative = parsedTransfer.grandTotal ?? parsedTransfer.totalExpected ?? recordsTransmitted;
     const effectiveReceived = parsedTransfer.grandTotal ?? parsedTransfer.totalExpected ?? receivedRecords;
-    const isIncomplete = expectedRecords > 0 && effectiveReceived < expectedRecords && recordsTransmitted < expectedRecords;
+    const isIncomplete = expectedRecords > 0 && effectiveReceived < expectedRecords && totalSyncedFromNative < expectedRecords;
     if (!this.lastSyncCompleteTime) {
       this.lastSyncCompleteTime = new Map();
     }
@@ -5000,7 +5010,7 @@ class BLEService {
         const recordsBeforeSync = device?.syncRecordsBeforeSync !== undefined ? device.syncRecordsBeforeSync : 0;
         const recordsAfterSync = device?.syncRecords?.length || 0;
         const actualNewRecords = Math.max(0, recordsAfterSync - recordsBeforeSync);
-        const totalSyncedThisRun = recordsTransmitted;
+        const totalSyncedThisRun = totalSyncedFromNative;
         if (totalSyncedThisRun > 0) {
           const now = Date.now();
           const lastLog = this.lastRecordSyncedLogs.get(deviceId);
@@ -5010,8 +5020,8 @@ class BLEService {
           if (shouldLog) {
             this.addConnectionLog(deviceId, `${totalSyncedThisRun} Record${totalSyncedThisRun === 1 ? '' : 's'} Synced`);
             this.lastRecordSyncedLogs.set(deviceId, { timestamp: now, recordCount: totalSyncedThisRun });
-            if (actualNewRecords < recordsTransmitted && actualNewRecords >= 0) {
-              const deduplicated = recordsTransmitted - actualNewRecords;
+            if (actualNewRecords < totalSyncedThisRun && actualNewRecords >= 0) {
+              const deduplicated = totalSyncedThisRun - actualNewRecords;
               this.addConnectionLog(deviceId, `Newly added ${actualNewRecords} (${deduplicated} deduplicated)`);
             }
           }
@@ -5213,11 +5223,11 @@ class BLEService {
           }
           const receivedAt = new Date();
           const receivedAtSeconds = Math.floor(receivedAt.getTime() / 1000);
-          const TIMESTAMP_TOLERANCE_SECONDS = 2;
+          // Adjust when device RTC is ahead of phone: record time must not be after received time
           let adjustedTimestamp = recordTimestamp;
           let timestampAdjusted = false;
           let timestampWarning = null;
-          if (recordTimestamp && recordTimestamp > receivedAtSeconds + TIMESTAMP_TOLERANCE_SECONDS) {
+          if (recordTimestamp && recordTimestamp > receivedAtSeconds) {
             const timeDiff = recordTimestamp - receivedAtSeconds;
             timestampWarning = `Device RTC is ${timeDiff} seconds ahead`;
             console.warn(`⚠️ [TIMESTAMP VALIDATION] ${deviceId}: Record timestamp is ${timeDiff} seconds in the future`, {
@@ -5229,10 +5239,7 @@ class BLEService {
             });
             adjustedTimestamp = receivedAtSeconds;
             timestampAdjusted = true;
-            // SIMPLIFIED: Native handles RTC validation and SET_TIME automatically
-            // If timestamp is in the future, native will detect this on next Device Status read
-            // and send SET_TIME command. JS just adjusts the timestamp for this record.
-            console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (native handles time sync)`);
+            console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (record time cannot be after received time)`);
           }
           const timestampForDedup = adjustedTimestamp || recordTimestamp;
           if (timestampForDedup) {
@@ -6097,18 +6104,29 @@ class BLEService {
   }
 
   /**
-   * Returns synced records filtered by last record (for live/history display).
-   * Use this when showing live data or history so only records newer than lastAppRecordTimestamp are shown.
+   * Deduplicate records by (time recorded, steps, temperature). Duplicates (same ts + steps + temp) are filtered out.
+   */
+  deduplicateRecordsByTimeStepsTemp(records) {
+    if (!records || records.length === 0) return [];
+    const seen = new Set();
+    return records.filter((r) => {
+      const ts = typeof r.timestamp === 'number' ? r.timestamp : (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : 0);
+      const steps = r.steps != null ? r.steps : 0;
+      const temp = r.temperature != null ? r.temperature : 0;
+      const key = `${ts}_${steps}_${temp}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /**
+   * Returns all synced records for display, deduplicated by (timestamp, steps, temperature).
    */
   getSyncRecordsForDisplay(deviceId) {
     const all = this.getSyncRecords(deviceId);
     if (!all || all.length === 0) return [];
-    const lastAppRecordTimestamp = this.getLastAppRecordTimestamp(deviceId);
-    if (lastAppRecordTimestamp <= 0) return all;
-    return all.filter((r) => {
-      const ts = typeof r.timestamp === 'number' ? r.timestamp : (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : 0);
-      return (ts || 0) > lastAppRecordTimestamp;
-    });
+    return this.deduplicateRecordsByTimeStepsTemp(all);
   }
   getLatestSyncedRecord(deviceId) {
     const records = this.getSyncRecords(deviceId);
@@ -8812,6 +8830,8 @@ class BLEService {
         }
         if (success) {
           const updated = this.updateDeviceDataFromSyncedRecords(deviceId);
+          const device = this.scannedDevices.get(deviceId);
+          const recordCountForEmit = device?.syncRecords?.length ?? 0;
           if (updated) {
             const latestRecord = this.getLatestSyncedRecord(deviceId);
             this.emit('syncDataUpdated', {
@@ -8820,8 +8840,15 @@ class BLEService {
               totalRecords: recordsTransmitted,
               success: true
             });
+          } else if (!hasMoreChunks) {
+            // iOS: always emit syncDataUpdated on final sync_complete so Live/Historical screens refresh (data may have arrived via record events)
+            this.emit('syncDataUpdated', {
+              deviceId,
+              latestRecord: this.getLatestSyncedRecord(deviceId) || null,
+              totalRecords: recordsTransmitted || grandTotal || recordCountForEmit,
+              success: true
+            });
           }
-          const device = this.scannedDevices.get(deviceId);
           if (device && device.syncRecords) {
             // Send all records received this sync run (recordsTransmitted/grandTotal), not just the
             // slice after recordsBeforeSync — dedup can make that slice smaller than what we synced.
@@ -8846,6 +8873,22 @@ class BLEService {
         if (this.dataSyncStates) {
           this.dataSyncStates.delete(deviceId);
         }
+        // iOS only sends DataTransfer (no deviceDataUpdate). Emit deviceDataUpdate so ModernBLEManager gets total synced (same as Android).
+        const totalSyncedForUI = grandTotal ?? totalExpected ?? recordsTransmitted ?? 0;
+        const device = this.scannedDevices.get(deviceId);
+        if (device && success && !hasMoreChunks) {
+          const prevDeviceData = device.deviceData || {};
+          device.deviceData = { ...prevDeviceData, recordCount: totalSyncedForUI };
+          this.scannedDevices.set(deviceId, device);
+          this.emit('deviceDataUpdate', {
+            deviceId,
+            type: 'sync_complete',
+            totalRecords: totalSyncedForUI,
+            recordsTransmitted: totalSyncedForUI,
+            grandTotal: grandTotal ?? totalSyncedForUI,
+            deviceData: device.deviceData
+          });
+        }
         break;
       }
       case 'record': {
@@ -8854,12 +8897,14 @@ class BLEService {
         const currentPhase = this.connectionPhase?.get(deviceId);
 
         if (isLiveRecord && currentPhase !== 'live') {
-          // Fallback: we're clearly receiving live data (e.g. Data Transfer notifications) but phase never set (e.g. Device Status enable failed / GATT timeouts). Treat as live so temp shows.
-          if (currentPhase === undefined || currentPhase === 'unknown') {
-            if (!this.connectionPhase) this.connectionPhase = new Map();
-            this.connectionPhase.set(deviceId, 'live');
-            console.log(`🔄 [PHASE GUARD] Phase was unknown but receiving live data - set to 'live' for ${deviceId} (fallback)`);
+          // When phase is undefined/unknown, a push-generated record can arrive before the "decide" step runs
+          // (e.g. iOS device status is aggregated with a short delay). Do NOT set phase to 'live' here so that
+          // when maybeTriggerAutoSyncFromDeviceStatus runs it will start history sync. Still process the record below.
+          const allowEarlyLiveData = currentPhase === undefined || currentPhase === 'unknown' || currentPhase === 'decide';
+          if (allowEarlyLiveData) {
+            // Leave phase unchanged so decide can run and start history sync; still process this record below
           } else {
+            // history_sync or other: ignore live data until sync completes
             console.log(`⏭️ [PHASE GUARD] Ignoring live data for ${deviceId} - still in phase: ${currentPhase}`);
             console.log('   Live data will be processed after history sync completes');
             break;
@@ -8917,11 +8962,11 @@ class BLEService {
               }
               const receivedAt = new Date();
               const receivedAtSeconds = Math.floor(receivedAt.getTime() / 1000);
-              const TIMESTAMP_TOLERANCE_SECONDS = 2;
+              // Adjust when device RTC is ahead of phone: record time must not be after received time
               let adjustedTimestamp = recordTimestamp;
               let timestampAdjusted = false;
               let timestampWarning = null;
-              if (recordTimestamp && recordTimestamp > receivedAtSeconds + TIMESTAMP_TOLERANCE_SECONDS) {
+              if (recordTimestamp && recordTimestamp > receivedAtSeconds) {
                 const timeDiff = recordTimestamp - receivedAtSeconds;
                 timestampWarning = `Device RTC is ${timeDiff} seconds ahead`;
                 console.warn(`⚠️ [TIMESTAMP VALIDATION] ${deviceId}: Record timestamp is ${timeDiff} seconds in the future`, {
@@ -8933,10 +8978,7 @@ class BLEService {
                 });
                 adjustedTimestamp = receivedAtSeconds;
                 timestampAdjusted = true;
-                // SIMPLIFIED: Native handles RTC validation and SET_TIME automatically
-                // If timestamp is in the future, native will detect this on next Device Status read
-                // and send SET_TIME command. JS just adjusts the timestamp for this record.
-                console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (native handles time sync)`);
+                console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (record time cannot be after received time)`);
               }
               const timestampForDedup = adjustedTimestamp || recordTimestamp;
               const existingRecordIndex = device.syncRecords.findIndex(r => {
@@ -9084,16 +9126,16 @@ class BLEService {
           });
         } else {
           // Sync progress: on Android, native already sends deviceDataUpdate(sync_records) per batch.
-          // Emitting again here caused duplicate progress (X/X and 1/500). Use native as single source.
+          // On iOS, native includes totalReceived/totalExpected in record events for accurate progress.
           if (Platform.OS !== 'android') {
             const device = this.scannedDevices.get(deviceId);
-            const totalReceived = device?.syncRecords?.length || 0;
             const syncState = this.dataSyncStates?.get(deviceId);
-            const totalExpected = eventData.totalExpected ||
-              syncState?.expectedRecords ||
-              syncState?.totalRecords ||
-              this.syncExpectedRecords.get(deviceId) ||
-              totalReceived;
+            const totalReceived = (typeof eventData.totalReceived === 'number' && eventData.totalReceived >= 0)
+              ? eventData.totalReceived
+              : (device?.syncRecords?.length ?? 0);
+            const totalExpected = (typeof eventData.totalExpected === 'number' && eventData.totalExpected > 0)
+              ? eventData.totalExpected
+              : (syncState?.expectedRecords ?? syncState?.totalRecords ?? this.syncExpectedRecords.get(deviceId) ?? totalReceived);
             const recordsReceived = records?.length || 0;
             if (syncState) {
               syncState.recordsReceived = totalReceived;

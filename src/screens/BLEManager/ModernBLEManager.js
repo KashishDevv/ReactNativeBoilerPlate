@@ -366,8 +366,8 @@ const ModernBLEManager = ({ navigation }) => {
           return;
         }
         if (eventData.type === 'sync_complete') {
-          // After sync success: show total records we have (synced), not "0 left on device"
-          const totalSynced = eventData.totalRecords ?? eventData.recordsTransmitted ?? eventData.deviceData?.recordCount ?? 0;
+          // After sync success: show total records synced (all chunks), not last chunk only or "0 left on device"
+          const totalSynced = eventData.totalRecords ?? eventData.grandTotal ?? eventData.recordsTransmitted ?? eventData.deviceData?.recordCount ?? 0;
           console.log('📊 [Modern] Sync complete – total synced:', totalSynced, eventData.deviceId);
           lastSyncCompleteTime.current.set(eventData.deviceId, Date.now());
           setDevices(prevDevices => {

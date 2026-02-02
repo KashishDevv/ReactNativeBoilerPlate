@@ -61,7 +61,7 @@ const LiveDataScreen = ({ route, navigation }) => {
     // Listen for sync record updates (same as SyncRecordsScreen)
     const handleDataUpdate = (eventData) => {
       if (eventData.deviceId === deviceId && 
-          (eventData.type === 'live_record' || eventData.type === 'sync_records')) {
+          (eventData.type === 'live_record' || eventData.type === 'sync_records' || eventData.type === 'sync_complete')) {
         console.log(`📊 [LiveData] ${eventData.type} updated, refreshing...`);
         loadInitialData();
       }
@@ -94,9 +94,9 @@ const LiveDataScreen = ({ route, navigation }) => {
   const loadInitialData = () => {
     try {
       setLoading(true);
-      // Load sync records filtered by last record (for live display)
+      // All synced records, deduplicated by (time recorded, steps, temperature)
       const syncRecords = BLEService.getSyncRecordsForDisplay(deviceId);
-      
+
       if (!syncRecords || syncRecords.length === 0) {
         setRecords([]);
         setLoading(false);
