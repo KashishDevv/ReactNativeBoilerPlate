@@ -1,37 +1,28 @@
 import { createSlice } from '@reduxjs/toolkit';
 
 /**
- * ✅ FIX: Normalize timestamp to Unix seconds (number) for consistent comparison
- * Handles Date objects, Unix timestamps (seconds or milliseconds), and ISO strings
- * @param {Date|number|string|null|undefined} timestamp - Timestamp in any format
- * @returns {number|null} Unix timestamp in seconds, or null if invalid
+ * Normalize timestamp to Unix seconds (number) for consistent comparison.
+ * Handles Date objects, Unix timestamps (seconds or milliseconds), and ISO strings.
  */
 const normalizeTimestamp = (timestamp) => {
   if (!timestamp) return null;
-  
-  // If it's already a number, check if it's seconds or milliseconds
   if (typeof timestamp === 'number') {
-    // If it's > year 2100 in seconds, it's likely milliseconds
-    if (timestamp > 4102444800) {
-      return Math.floor(timestamp / 1000);
-    }
+    if (timestamp > 4102444800) return Math.floor(timestamp / 1000);
     return timestamp;
   }
-  
-  // If it's a Date object
-  if (timestamp instanceof Date) {
-    return Math.floor(timestamp.getTime() / 1000);
-  }
-  
-  // If it's a string (ISO format or other)
+  if (timestamp instanceof Date) return Math.floor(timestamp.getTime() / 1000);
   if (typeof timestamp === 'string') {
     const date = new Date(timestamp);
-    if (!isNaN(date.getTime())) {
-      return Math.floor(date.getTime() / 1000);
-    }
+    return isNaN(date.getTime()) ? null : Math.floor(date.getTime() / 1000);
   }
-  
   return null;
+};
+
+/** Recorded time only (device time). Use for dedupe; never received/synced time. */
+const getRecordedTimeSeconds = (record) => {
+  if (!record) return null;
+  if (record.originalTimestamp != null) return record.originalTimestamp;
+  return normalizeTimestamp(record.timestamp || record.timestampDate);
 };
 
 const initialState = {
@@ -57,14 +48,14 @@ export const historicalRecordsSlice = createSlice({
         state.recordsByDevice[deviceId] = [];
       }
       
-      // ✅ FIX: Check for duplicates before adding - normalize timestamps for consistent comparison
-      const recordTimestamp = normalizeTimestamp(record.timestamp || record.timestampDate);
+      // Dedupe by RECORDED TIME only (device time), not received/synced time
+      const recordedTime = getRecordedTimeSeconds(record);
       const isDuplicate = state.recordsByDevice[deviceId].some(r => {
-        const existingTimestamp = normalizeTimestamp(r.timestamp || r.timestampDate);
-        return existingTimestamp !== null && 
-               recordTimestamp !== null &&
-               existingTimestamp === recordTimestamp && 
-               r.steps === record.steps && 
+        const existingRecordedTime = getRecordedTimeSeconds(r);
+        return existingRecordedTime !== null &&
+               recordedTime !== null &&
+               existingRecordedTime === recordedTime &&
+               r.steps === record.steps &&
                r.temperature === record.temperature;
       });
       
@@ -85,14 +76,14 @@ export const historicalRecordsSlice = createSlice({
       }
       
       records.forEach(record => {
-        // ✅ FIX: Check for duplicates - normalize timestamps for consistent comparison
-        const recordTimestamp = normalizeTimestamp(record.timestamp || record.timestampDate);
+        // Dedupe by RECORDED TIME only (device time), not received/synced time
+        const recordedTime = getRecordedTimeSeconds(record);
         const isDuplicate = state.recordsByDevice[deviceId].some(r => {
-          const existingTimestamp = normalizeTimestamp(r.timestamp || r.timestampDate);
-          return existingTimestamp !== null && 
-                 recordTimestamp !== null &&
-                 existingTimestamp === recordTimestamp && 
-                 r.steps === record.steps && 
+          const existingRecordedTime = getRecordedTimeSeconds(r);
+          return existingRecordedTime !== null &&
+                 recordedTime !== null &&
+                 existingRecordedTime === recordedTime &&
+                 r.steps === record.steps &&
                  r.temperature === record.temperature;
         });
         

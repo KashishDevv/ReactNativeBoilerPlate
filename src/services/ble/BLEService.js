@@ -4646,9 +4646,10 @@ class BLEService {
             if (!device.syncRecords) {
               device.syncRecords = [];
             }
+            // Match by RECORDED TIME only (device time), so we update the correct record
             const existingRecordIndex = device.syncRecords.findIndex(r => {
-              const recordTimestamp = r.timestamp || (r.timestampDate ? Math.floor(r.timestampDate.getTime() / 1000) : null);
-              return recordTimestamp === parsedData.timestamp;
+              const existingRecordedTime = this.getRecordedTimeSeconds(r);
+              return existingRecordedTime !== null && existingRecordedTime === parsedData.timestamp;
             });
             if (existingRecordIndex >= 0) {
               device.syncRecords[existingRecordIndex] = {
@@ -5047,7 +5048,7 @@ class BLEService {
       const syncedRecords = device?.syncRecords || [];
       if (syncedRecords.length > 0) {
         const maxTs = syncedRecords.reduce((max, r) => {
-          const ts = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : 0);
+          const ts = this.getRecordedTimeSeconds(r);
           return Math.max(max, ts || 0);
         }, 0);
         if (maxTs > 0) {
@@ -5241,22 +5242,18 @@ class BLEService {
             timestampAdjusted = true;
             console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (record time cannot be after received time)`);
           }
-          const timestampForDedup = adjustedTimestamp || recordTimestamp;
-          if (timestampForDedup) {
-            // Exact timestamp match (same as iOS) for deduplication
-            const existingRecordIndex = device.syncRecords.findIndex(r => {
-              const existingTimestamp = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : null);
-              return existingTimestamp !== null &&
-                timestampForDedup !== null &&
-                existingTimestamp === timestampForDedup &&
-                r.steps === record.steps &&
-                r.temperature === record.temperature;
-            });
-            if (existingRecordIndex >= 0) {
-              invalidCount++;
-              console.log(`⏭️ [DUPLICATE DETECTION] ${deviceId}: Skipping duplicate record (timestamp: ${timestampForDedup}, steps: ${record.steps}, temp: ${record.temperature})`);
-              return;
-            }
+          // Dedupe by RECORDED TIME only (device time), never received or synced/adjusted time.
+          const recordedTimeSeconds = recordTimestamp;
+          const existingRecordIndex = device.syncRecords.findIndex(r => {
+            const existingRecordedTime = this.getRecordedTimeSeconds(r);
+            return existingRecordedTime === recordedTimeSeconds &&
+              r.steps === record.steps &&
+              r.temperature === record.temperature;
+          });
+          if (existingRecordIndex >= 0) {
+            invalidCount++;
+            console.log(`⏭️ [DUPLICATE DETECTION] ${deviceId}: Skipping duplicate record (recorded time: ${recordedTimeSeconds}, steps: ${record.steps}, temp: ${record.temperature})`);
+            return;
           }
           validCount++;
           const finalTimestamp = adjustedTimestamp || recordTimestamp;
@@ -5305,8 +5302,8 @@ class BLEService {
           }
           device.deviceData.recordCount = device.syncRecords.length;
           device.syncRecords.sort((a, b) => {
-            const tsA = a.timestamp || (a.timestampDate ? Math.floor(new Date(a.timestampDate).getTime() / 1000) : 0);
-            const tsB = b.timestamp || (b.timestampDate ? Math.floor(new Date(b.timestampDate).getTime() / 1000) : 0);
+            const tsA = this.getRecordedTimeSeconds(a) ?? 0;
+            const tsB = this.getRecordedTimeSeconds(b) ?? 0;
             return tsA - tsB;
           });
 
@@ -5348,8 +5345,8 @@ class BLEService {
             for (let i = 1; i < device.syncRecords.length; i++) {
               const prev = device.syncRecords[i - 1];
               const curr = device.syncRecords[i];
-              const prevTs = prev.timestamp || (prev.timestampDate ? Math.floor(new Date(prev.timestampDate).getTime() / 1000) : 0);
-              const currTs = curr.timestamp || (curr.timestampDate ? Math.floor(new Date(curr.timestampDate).getTime() / 1000) : 0);
+              const prevTs = this.getRecordedTimeSeconds(prev) ?? 0;
+              const currTs = this.getRecordedTimeSeconds(curr) ?? 0;
               if (currTs < prevTs) {
                 console.warn(`⚠️ [TIMESTAMP ORDER] ${deviceId}: Record ${i} has timestamp before record ${i - 1}`, {
                   prevTs,
@@ -6104,16 +6101,43 @@ class BLEService {
   }
 
   /**
-   * Deduplicate records by (time recorded, steps, temperature). Duplicates (same ts + steps + temp) are filtered out.
+   * Normalize record timestamp to Unix seconds for deduplication/comparison.
+   * Handles number (seconds or ms), Date, and timestampDate string. Returns null if missing/invalid.
+   */
+  getRecordTimestampSeconds(record) {
+    if (!record) return null;
+    if (typeof record.timestamp === 'number') {
+      return record.timestamp > 4102444800 ? Math.floor(record.timestamp / 1000) : record.timestamp;
+    }
+    if (record.timestamp instanceof Date) return Math.floor(record.timestamp.getTime() / 1000);
+    if (record.timestampDate) {
+      const ms = typeof record.timestampDate === 'string' ? new Date(record.timestampDate).getTime() : record.timestampDate.getTime();
+      return isNaN(ms) ? null : Math.floor(ms / 1000);
+    }
+    return null;
+  }
+
+  /**
+   * Recorded time only (device time when record was created). Never received/synced/adjusted time.
+   * For dedupe we must use this so same recorded moment = duplicate; received/synced time is ignored.
+   */
+  getRecordedTimeSeconds(record) {
+    if (!record) return null;
+    if (record.originalTimestamp != null) return record.originalTimestamp;
+    return this.getRecordTimestampSeconds(record);
+  }
+
+  /**
+   * Deduplicate records by (recorded time, steps, temperature). Uses device recorded time only, not received/synced time.
    */
   deduplicateRecordsByTimeStepsTemp(records) {
     if (!records || records.length === 0) return [];
     const seen = new Set();
     return records.filter((r) => {
-      const ts = typeof r.timestamp === 'number' ? r.timestamp : (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : 0);
+      const ts = this.getRecordedTimeSeconds(r);
       const steps = r.steps != null ? r.steps : 0;
       const temp = r.temperature != null ? r.temperature : 0;
-      const key = `${ts}_${steps}_${temp}`;
+      const key = `${ts ?? 'n'}_${steps}_${temp}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -6135,8 +6159,8 @@ class BLEService {
     }
     const latestRecord = records.reduce((latest, current) => {
       if (!latest) return current;
-      const latestTime = latest.timestamp instanceof Date ? latest.timestamp.getTime() : latest.timestamp * 1000;
-      const currentTime = current.timestamp instanceof Date ? current.timestamp.getTime() : current.timestamp * 1000;
+      const latestTime = this.getRecordedTimeSeconds(latest) ?? 0;
+      const currentTime = this.getRecordedTimeSeconds(current) ?? 0;
       return currentTime > latestTime ? current : latest;
     }, null);
     return latestRecord;
@@ -8980,10 +9004,11 @@ class BLEService {
                 timestampAdjusted = true;
                 console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (record time cannot be after received time)`);
               }
-              const timestampForDedup = adjustedTimestamp || recordTimestamp;
+              // Dedupe by RECORDED TIME only (device time), never received or synced/adjusted time.
+              const recordedTimeSeconds = recordTimestamp;
               const existingRecordIndex = device.syncRecords.findIndex(r => {
-                const existingTimestamp = r.timestamp || (r.timestampDate ? Math.floor(new Date(r.timestampDate).getTime() / 1000) : null);
-                return existingTimestamp === timestampForDedup &&
+                const existingRecordedTime = this.getRecordedTimeSeconds(r);
+                return existingRecordedTime === recordedTimeSeconds &&
                   r.steps === record.steps &&
                   r.temperature === record.temperature;
               });
