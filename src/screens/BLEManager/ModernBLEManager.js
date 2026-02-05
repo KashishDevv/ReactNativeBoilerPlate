@@ -865,6 +865,12 @@ const ModernBLEManager = ({ navigation }) => {
         device.id,
         (deviceId, connectionState) => {
           console.log(`📱 Connection state update: ${deviceId} -> ${connectionState}`);
+          if (connectionState === CONNECTION_STATES.CONNECTING) {
+            setConnectedDevices(prev => prev.filter(d => d.id !== deviceId));
+          }
+          if (connectionState === CONNECTION_STATES.DISCONNECTED) {
+            setConnectedDevices(prev => prev.filter(d => d.id !== deviceId));
+          }
           setDevices(prevDevices =>
             prevDevices.map(d =>
               d.id === deviceId
@@ -940,6 +946,9 @@ const ModernBLEManager = ({ navigation }) => {
       await BLEService.disconnectFromDevice(
         device.id,
         (deviceId, connectionState) => {
+          if (connectionState === CONNECTION_STATES.DISCONNECTED) {
+            setConnectedDevices(prev => prev.filter(d => d.id !== deviceId));
+          }
           setDevices(prevDevices =>
             prevDevices.map(d =>
               d.id === deviceId

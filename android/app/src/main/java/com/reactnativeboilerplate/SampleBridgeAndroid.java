@@ -5201,7 +5201,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         String lastHex = lastDataTransferHex.get(deviceId);
         Long lastTime = lastDataTransferTime.get(deviceId);
         if (lastHex != null && lastTime != null && lastHex.equals(currentHex) && (now - lastTime) < DATA_TRANSFER_DEDUPE_WINDOW_MS) {
-            Log.d(TAG, "⏭️ [DEDUPE] Skipping duplicate data transfer notification for " + deviceId + " (same payload " + (now - lastTime) + "ms ago)");
+            String payloadPreview = currentHex.length() > 80 ? currentHex.substring(0, 80) + "..." : currentHex;
+            Log.d(TAG, "⏭️ [DEDUPE] Skipping duplicate data transfer for " + deviceId + " (same payload " + (now - lastTime) + "ms ago). Deduped payload: " + payloadPreview);
             return;
         }
         lastDataTransferHex.put(deviceId, currentHex);
@@ -5414,10 +5415,12 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         Log.d(TAG, "🔓 [SYNC LOCK] Released for " + deviceId + " - sync complete after " + (duration / 1000) + "s");
                     }
                     dataSyncState.put(deviceId, "complete");
+                    dataSyncRequested.put(deviceId, false);  // So next 0x03 packets are classified as push-generated (live records)
                     // Set timestamp first so device status callbacks processed shortly after see grace period (avoids second sync start).
                     lastSyncCompleteTimestamps.put(deviceId, System.currentTimeMillis());
                     int totalSynced = Math.min(grandTotal, totalRecords);
-                    int finalRecordCount = remainingRecords;
+                    // Use totalSynced (records received this sync), not remainingRecords (0 when done)
+                    int finalRecordCount = totalSynced;
                     WritableMap deviceDataUpdateEvent = Arguments.createMap();
                     deviceDataUpdateEvent.putString("deviceId", deviceId);
                     deviceDataUpdateEvent.putString("type", "sync_complete");

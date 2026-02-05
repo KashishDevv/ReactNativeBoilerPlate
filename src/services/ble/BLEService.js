@@ -1875,7 +1875,10 @@ class BLEService {
       }
     } else if (type === 'sync_complete') {
       const syncSuccess = event.success !== false;
-      const finalRecordCount = syncSuccess ? 0 : (event.recordCount !== undefined ? event.recordCount : 0);
+      // Use total synced from native (recordCount/recordsTransmitted/totalRecords), not 0 for "remaining on device"
+      const finalRecordCount = syncSuccess
+        ? (event.recordCount ?? event.recordsTransmitted ?? event.totalRecords ?? event.deviceData?.recordCount ?? 0)
+        : (event.recordCount !== undefined ? event.recordCount : 0);
       if (!this.autoSyncMeta) {
         this.autoSyncMeta = new Map();
       }
@@ -1924,6 +1927,7 @@ class BLEService {
           const recordsBeforeSync = device?.syncRecordsBeforeSync !== undefined ? device.syncRecordsBeforeSync : 0;
           const recordsAfterSync = device?.syncRecords?.length || 0;
           const actualNewRecords = Math.max(0, recordsAfterSync - recordsBeforeSync);
+          const receivedFromDevice = event.recordsTransmitted ?? event.totalRecords ?? finalRecordCount ?? 0;
           if (actualNewRecords > 0) {
             const now = Date.now();
             const lastLog = this.lastRecordSyncedLogs?.get(deviceId);
@@ -1931,7 +1935,12 @@ class BLEService {
               (now - lastLog.timestamp) > 500 ||
               lastLog.recordCount !== actualNewRecords;
             if (shouldLog) {
-              this.addConnectionLog(deviceId, `${actualNewRecords} Record${actualNewRecords === 1 ? '' : 's'} Synced`);
+              const deduplicated = Math.max(0, (receivedFromDevice || actualNewRecords) - actualNewRecords);
+              if (deduplicated > 0 && receivedFromDevice > 0) {
+                this.addConnectionLog(deviceId, `${receivedFromDevice} received, ${actualNewRecords} new unique (${deduplicated} duplicates skipped)`);
+              } else {
+                this.addConnectionLog(deviceId, `${actualNewRecords} Record${actualNewRecords === 1 ? '' : 's'} Synced`);
+              }
               if (!this.lastRecordSyncedLogs) this.lastRecordSyncedLogs = new Map();
               this.lastRecordSyncedLogs.set(deviceId, { timestamp: now, recordCount: actualNewRecords });
             }
@@ -3379,6 +3388,17 @@ class BLEService {
       }
       if (onConnectionStateChange) {
         onConnectionStateChange(deviceId, CONNECTION_STATES.DISCONNECTED);
+      }
+      // Android may not emit DeviceDisconnected for manual disconnect (callback removed before native fires). Emit so UI stays in sync.
+      if (Platform.OS === 'android' && device) {
+        this.emit('deviceDisconnected', {
+          ...device,
+          id: device.id || deviceId,
+          deviceId,
+          reason: 'manual',
+          error: null,
+          connectionState: CONNECTION_STATES.DISCONNECTED
+        });
       }
       if (this.onDeviceListUpdated) {
         setTimeout(() => {
@@ -5019,12 +5039,13 @@ class BLEService {
             (now - lastLog.timestamp) > 500 ||
             lastLog.recordCount !== totalSyncedThisRun;
           if (shouldLog) {
-            this.addConnectionLog(deviceId, `${totalSyncedThisRun} Record${totalSyncedThisRun === 1 ? '' : 's'} Synced`);
-            this.lastRecordSyncedLogs.set(deviceId, { timestamp: now, recordCount: totalSyncedThisRun });
-            if (actualNewRecords < totalSyncedThisRun && actualNewRecords >= 0) {
-              const deduplicated = totalSyncedThisRun - actualNewRecords;
-              this.addConnectionLog(deviceId, `Newly added ${actualNewRecords} (${deduplicated} deduplicated)`);
+            const deduplicated = Math.max(0, totalSyncedThisRun - actualNewRecords);
+            if (deduplicated > 0) {
+              this.addConnectionLog(deviceId, `${totalSyncedThisRun} received, ${actualNewRecords} new unique (${deduplicated} duplicates skipped)`);
+            } else {
+              this.addConnectionLog(deviceId, `${totalSyncedThisRun} Record${totalSyncedThisRun === 1 ? '' : 's'} Synced`);
             }
+            this.lastRecordSyncedLogs.set(deviceId, { timestamp: now, recordCount: totalSyncedThisRun });
           }
         }
         const recordCount = device?.syncRecords?.length || 0;
@@ -5224,25 +5245,18 @@ class BLEService {
           }
           const receivedAt = new Date();
           const receivedAtSeconds = Math.floor(receivedAt.getTime() / 1000);
-          // Adjust when device RTC is ahead of phone: record time must not be after received time
-          let adjustedTimestamp = recordTimestamp;
-          let timestampAdjusted = false;
-          let timestampWarning = null;
+          // Log when device RTC is ahead of phone; we still store and show exact time from tag
           if (recordTimestamp && recordTimestamp > receivedAtSeconds) {
             const timeDiff = recordTimestamp - receivedAtSeconds;
-            timestampWarning = `Device RTC is ${timeDiff} seconds ahead`;
-            console.warn(`⚠️ [TIMESTAMP VALIDATION] ${deviceId}: Record timestamp is ${timeDiff} seconds in the future`, {
+            console.warn(`⚠️ [TIMESTAMP VALIDATION] ${deviceId}: Record timestamp is ${timeDiff} seconds in the future (showing exact tag time)`, {
               recordTimestamp,
               receivedAtSeconds,
               timestampDate: record.timestampDate,
               receivedAt: receivedAt.toISOString(),
               timeDiffSeconds: timeDiff
             });
-            adjustedTimestamp = receivedAtSeconds;
-            timestampAdjusted = true;
-            console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (record time cannot be after received time)`);
           }
-          // Dedupe by RECORDED TIME only (device time), never received or synced/adjusted time.
+          // Dedupe by RECORDED TIME only (device time), never received or synced time.
           const recordedTimeSeconds = recordTimestamp;
           const existingRecordIndex = device.syncRecords.findIndex(r => {
             const existingRecordedTime = this.getRecordedTimeSeconds(r);
@@ -5252,22 +5266,16 @@ class BLEService {
           });
           if (existingRecordIndex >= 0) {
             invalidCount++;
-            console.log(`⏭️ [DUPLICATE DETECTION] ${deviceId}: Skipping duplicate record (recorded time: ${recordedTimeSeconds}, steps: ${record.steps}, temp: ${record.temperature})`);
+            const dupMsg = `Deduped record: time=${recordedTimeSeconds}, steps=${record.steps}, temp=${record.temperature}${record.timestampDate ? ` (${record.timestampDate})` : ''}`;
+            console.log(`⏭️ [DUPLICATE DETECTION] ${deviceId}: Skipping duplicate record — ${dupMsg}`);
+            this.addConnectionLog(deviceId, `Duplicate removed: ${dupMsg}`);
             return;
           }
           validCount++;
-          const finalTimestamp = adjustedTimestamp || recordTimestamp;
+          // Always use exact time from tag for display (no adjustment)
+          const finalTimestamp = recordTimestamp;
           let finalTimestampDate = record.timestampDate;
           if (!finalTimestampDate && finalTimestamp) {
-            const date = new Date(finalTimestamp * 1000);
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const hours = String(date.getHours()).padStart(2, '0');
-            const minutes = String(date.getMinutes()).padStart(2, '0');
-            const seconds = String(date.getSeconds()).padStart(2, '0');
-            finalTimestampDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-          } else if (timestampAdjusted && finalTimestamp) {
             const date = new Date(finalTimestamp * 1000);
             const year = date.getFullYear();
             const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -5282,13 +5290,7 @@ class BLEService {
             timestamp: finalTimestamp || record.timestamp,
             timestampDate: finalTimestampDate || record.timestampDate,
             receivedAt: receivedAt,
-            deviceId,
-            ...(timestampWarning ? {
-              timestampWarning,
-              timestampAdjusted,
-              originalTimestamp: recordTimestamp,
-              originalTimestampDate: record.timestampDate
-            } : {})
+            deviceId
           };
           device.syncRecords.push(newRecord);
           try {
@@ -8986,25 +8988,18 @@ class BLEService {
               }
               const receivedAt = new Date();
               const receivedAtSeconds = Math.floor(receivedAt.getTime() / 1000);
-              // Adjust when device RTC is ahead of phone: record time must not be after received time
-              let adjustedTimestamp = recordTimestamp;
-              let timestampAdjusted = false;
-              let timestampWarning = null;
+              // Log when device RTC is ahead of phone; we still store and show exact time from tag
               if (recordTimestamp && recordTimestamp > receivedAtSeconds) {
                 const timeDiff = recordTimestamp - receivedAtSeconds;
-                timestampWarning = `Device RTC is ${timeDiff} seconds ahead`;
-                console.warn(`⚠️ [TIMESTAMP VALIDATION] ${deviceId}: Record timestamp is ${timeDiff} seconds in the future`, {
+                console.warn(`⚠️ [TIMESTAMP VALIDATION] ${deviceId}: Record timestamp is ${timeDiff} seconds in the future (showing exact tag time)`, {
                   recordTimestamp,
                   receivedAtSeconds,
                   timestampDate: record.timestampDate,
                   receivedAt: receivedAt.toISOString(),
                   timeDiffSeconds: timeDiff
                 });
-                adjustedTimestamp = receivedAtSeconds;
-                timestampAdjusted = true;
-                console.log(`📝 [TIMESTAMP FIX] ${deviceId}: Adjusted future timestamp by ${timeDiff}s (record time cannot be after received time)`);
               }
-              // Dedupe by RECORDED TIME only (device time), never received or synced/adjusted time.
+              // Dedupe by RECORDED TIME only (device time), never received or synced time.
               const recordedTimeSeconds = recordTimestamp;
               const existingRecordIndex = device.syncRecords.findIndex(r => {
                 const existingRecordedTime = this.getRecordedTimeSeconds(r);
@@ -9014,21 +9009,16 @@ class BLEService {
               });
               if (existingRecordIndex >= 0) {
                 invalidRecordsCount++;
+                const dupMsg = `time=${recordTimestamp}, steps=${record.steps}, temp=${record.temperature}${record.timestampDate ? ` (${record.timestampDate})` : ''}`;
+                console.log(`⏭️ [DUPLICATE DETECTION] ${deviceId}: Skipping duplicate record (historical batch) — ${dupMsg}`);
+                this.addConnectionLog(deviceId, `Duplicate removed: ${dupMsg}`);
                 return;
               }
               validRecordsCount++;
-              const finalTimestamp = adjustedTimestamp || recordTimestamp;
+              // Always use exact time from tag for display (no adjustment)
+              const finalTimestamp = recordTimestamp;
               let finalTimestampDate = record.timestampDate;
               if (!finalTimestampDate && finalTimestamp) {
-                const date = new Date(finalTimestamp * 1000);
-                const year = date.getFullYear();
-                const month = String(date.getMonth() + 1).padStart(2, '0');
-                const day = String(date.getDate()).padStart(2, '0');
-                const hours = String(date.getHours()).padStart(2, '0');
-                const minutes = String(date.getMinutes()).padStart(2, '0');
-                const seconds = String(date.getSeconds()).padStart(2, '0');
-                finalTimestampDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-              } else if (timestampAdjusted && finalTimestamp) {
                 const date = new Date(finalTimestamp * 1000);
                 const year = date.getFullYear();
                 const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -9046,13 +9036,7 @@ class BLEService {
                 steps: record.steps,
                 receivedAt: receivedAt,
                 deviceId,
-                source: 'native',
-                ...(timestampWarning ? {
-                  timestampWarning,
-                  timestampAdjusted,
-                  originalTimestamp: recordTimestamp,
-                  originalTimestampDate: record.timestampDate
-                } : {})
+                source: 'native'
               };
               device.syncRecords.push(newRecord);
             });
