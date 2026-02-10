@@ -13,8 +13,7 @@ import CoreBluetooth
 import React
 import UserNotifications
 import UIKit
-import NordicDFU
-
+import iOSMcuManagerLibrary
 // MARK: - Protocol Constants
 
 /// BLE protocol constants as per Smart Device Design (SDD) specification
@@ -105,7 +104,7 @@ struct PowerProfileConstants {
 // MARK: - Main BLE Module Class
 
 /// Core BLE module bridging iOS CoreBluetooth to React Native
-/// Handles device discovery, connection, pairing, data sync, and DFU updates
+/// Handles device discovery, connection, pairing, and data sync
 /// Implements SDD v1.3/v1.4 protocol specification for Smart Health Tag devices
 @objc(BridgingCodeModule)
 class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeripheralDelegate {
@@ -131,13 +130,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       "ServicesDiscovered",              // BLE services discovered
       "CharacteristicsDiscovered",       // BLE characteristics discovered
       "RSSIUpdate",                      // Signal strength update
-      "DFUStateChanged",                 // DFU firmware update state changed
-      "DFUCompleted",                    // DFU update completed
-      "DFUAborted",                      // DFU update aborted
-      "DFUError",                        // DFU update error
-      "DFUProgress",                     // DFU update progress
       "RTCRead",                         // Real-time clock read from device
-      "ConnectionLog"                    // Connection-related logs (notifications enabled, etc.)
+      "ConnectionLog",                   // Connection-related logs (notifications enabled, etc.)
+      "DFUStateChanged",                 // McuMgr DFU state (STARTED, UPLOAD, CONFIRM, RESET, COMPLETED, CANCELED)
+      "DFUProgress",                     // McuMgr DFU progress (percent, current, total)
+      "DFUError"                         // McuMgr DFU error
     ]
   }
   // MARK: - BLE Service UUIDs
@@ -407,6 +404,119 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   /// Used to ensure all critical notifications are enabled before sending commands (matching nRF Connect pattern)
   private var deviceNotificationStates: [String: Set<String>] = [:]
   
+  // MARK: - McuMgr DFU (SMP / MCUboot - matches Android and nRF Connect)
+  
+  /// Current McuMgr DFU manager (one at a time)
+  private var mcuMgrDfuManager: FirmwareUpgradeManager?
+  /// Device ID for the ongoing DFU (used in events and to skip reconnect)
+  private var currentMcuMgrDfuDeviceId: String?
+  /// Delegate wrapper for DFU callbacks (retained by manager)
+  private var mcuMgrDfuDelegate: DFUEventForwarder?
+  
+  /// Returns true if the device is currently in McuMgr DFU (do not reconnect/restore)
+  private func isDeviceInMcuMgrDfu(_ deviceId: String) -> Bool {
+    guard let current = currentMcuMgrDfuDeviceId else { return false }
+    return current == deviceId
+  }
+  
+  /// Forwarder for McuMgr DFU delegate callbacks to React Native events (must be retained by manager)
+  private class DFUEventForwarder: FirmwareUpgradeDelegate {
+    weak var module: BridgingCodeModule?
+    let deviceId: String
+    init(module: BridgingCodeModule, deviceId: String) {
+      self.module = module
+      self.deviceId = deviceId
+    }
+    func upgradeDidStart(controller: FirmwareUpgradeController) {
+      DispatchQueue.main.async {
+        self.module?.sendEvent(withName: "DFUStateChanged", body: [
+          "deviceId": self.deviceId,
+          "state": "STARTED",
+          "progress": 0
+        ])
+      }
+    }
+    func upgradeStateDidChange(from previousState: FirmwareUpgradeState, to newState: FirmwareUpgradeState) {
+      let stateName = dfuStateName(newState)
+      let progress = (newState == .confirm || newState == .reset || newState == .success) ? 100 : 0
+      DispatchQueue.main.async {
+        self.module?.sendEvent(withName: "DFUStateChanged", body: [
+          "deviceId": self.deviceId,
+          "state": stateName,
+          "progress": progress
+        ])
+      }
+    }
+    func upgradeDidComplete() {
+      DispatchQueue.main.async {
+        self.module?.sendEvent(withName: "DFUStateChanged", body: [
+          "deviceId": self.deviceId,
+          "state": "COMPLETED",
+          "progress": 100
+        ])
+        self.module?.currentMcuMgrDfuDeviceId = nil
+        self.module?.mcuMgrDfuManager = nil
+        self.module?.mcuMgrDfuDelegate = nil
+        self.module?.manualDisconnectInProgress.remove(self.deviceId)
+      }
+    }
+    func upgradeDidFail(inState state: FirmwareUpgradeState, with error: Error) {
+      let errMsg = error.localizedDescription
+      let errCode = (error as NSError).domain
+      DispatchQueue.main.async {
+        self.module?.sendEvent(withName: "DFUError", body: [
+          "deviceId": self.deviceId,
+          "errorCode": errCode,
+          "message": errMsg
+        ])
+        self.module?.currentMcuMgrDfuDeviceId = nil
+        self.module?.mcuMgrDfuManager = nil
+        self.module?.mcuMgrDfuDelegate = nil
+        self.module?.manualDisconnectInProgress.remove(self.deviceId)
+      }
+    }
+    func upgradeDidCancel(state: FirmwareUpgradeState) {
+      DispatchQueue.main.async {
+        self.module?.sendEvent(withName: "DFUStateChanged", body: [
+          "deviceId": self.deviceId,
+          "state": "CANCELED",
+          "progress": 0
+        ])
+        self.module?.currentMcuMgrDfuDeviceId = nil
+        self.module?.mcuMgrDfuManager = nil
+        self.module?.mcuMgrDfuDelegate = nil
+        self.module?.manualDisconnectInProgress.remove(self.deviceId)
+      }
+    }
+    func uploadProgressDidChange(bytesSent: Int, imageSize: Int, timestamp: Date) {
+      let percent = imageSize > 0 ? Int(100 * bytesSent / imageSize) : 0
+      DispatchQueue.main.async {
+        self.module?.sendEvent(withName: "DFUProgress", body: [
+          "deviceId": self.deviceId,
+          "progress": percent,
+          "current": bytesSent,
+          "total": imageSize
+        ])
+      }
+    }
+    private func dfuStateName(_ state: FirmwareUpgradeState) -> String {
+      switch state {
+      case .none: return "NONE"
+      case .requestMcuMgrParameters: return "REQUEST_MCU_MGR_PARAMETERS"
+      case .bootloaderInfo: return "BOOTLOADER_INFO"
+      case .eraseAppSettings: return "ERASE_APP_SETTINGS"
+      case .validate: return "VALIDATE"
+      case .upload: return "UPLOAD"
+      case .test: return "TEST"
+      case .confirm: return "CONFIRM"
+      case .reset: return "RESET"
+      case .success: return "SUCCESS"
+      case .resetIntoFirmwareLoader: return "RESET_INTO_FIRMWARE_LOADER"
+      @unknown default: return String(describing: state).uppercased()
+      }
+    }
+  }
+  
   // MARK: - Time Synchronization
   
   /// Flag indicating if device RTC (real-time clock) is valid
@@ -480,6 +590,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   /// Grand total of records received across all files
   private var syncGrandTotalReceived: [String: Int] = [:]
+  
+  /// Grace period after sync complete: don't overwrite deviceRecordCounts with tag value (tag may report stale count before flash cleared)
+  private let SYNC_COMPLETE_GRACE_PERIOD_SECONDS: TimeInterval = 10
   
   /// Flag: true when record path (500 boundary) already sent STOP+Start — skip duplicate in DATA_SYNC_COMPLETE handler
   private var recordPathChunkAdvanced: [String: Bool] = [:]
@@ -1811,7 +1924,30 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     if notificationNum > 1 {
     }
     NSLog("═══════════════════════════════════════════════════════")
-    deviceRecordCounts[deviceId] = Int(recordCount)
+    // During grace period after sync complete, don't overwrite with higher tag count (tag may report stale value)
+    // While sync is in progress, don't overwrite — tag may report mid-transfer value (e.g. 201 = progress)
+    let shouldUpdateRecordCount: Bool
+    if let lastSyncTime = lastSyncCompleteTime[deviceId] {
+      let timeSinceSync = Date().timeIntervalSince(lastSyncTime)
+      if timeSinceSync < SYNC_COMPLETE_GRACE_PERIOD_SECONDS {
+        let current = deviceRecordCounts[deviceId] ?? 0
+        if Int(recordCount) > current {
+          NSLog("   [GRACE] Ignoring tag record count \(recordCount) (keeping \(current)) until grace period ends")
+        }
+        shouldUpdateRecordCount = false
+      } else {
+        lastSyncCompleteTime.removeValue(forKey: deviceId)
+        shouldUpdateRecordCount = (syncState != "syncing")
+      }
+    } else {
+      shouldUpdateRecordCount = (syncState != "syncing")
+    }
+    if shouldUpdateRecordCount {
+      deviceRecordCounts[deviceId] = Int(recordCount)
+    } else if syncState == "syncing" {
+      let current = deviceRecordCounts[deviceId] ?? 0
+      NSLog("   [SYNC IN PROGRESS] Ignoring tag record count \(recordCount) (keeping \(current)) until sync finishes")
+    }
     let timestampMs = UInt64(timestamp) * 1000
     let deviceData: [String: Any] = [
       "deviceId": deviceId,
@@ -2451,7 +2587,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     NSLog("Data Sync Requested: \(wasRequested ? "YES ✅" : "NO ❌")")
     NSLog("Data Sync State: \(syncState)")
     NSLog("Data Type: 0x\(String(format: "%02X", dataType))")
-    NSLog("Is Push-Generated: \(isPushGeneratedRecord ? "YES ✅ (v1.5 live record)" : "NO ❌")")
+    NSLog("Is Push-Generated: \(isPushGeneratedRecord ? "YES ✅ (v1.5 live record)" : "No (sync record)")")
     NSLog("Is Sync Complete: \(isSyncComplete ? "YES ✅ (type 0x02)" : "NO ❌")")
     NSLog("Should Accept Data: \(shouldAcceptData ? "YES ✅" : "NO ❌ (UNSOLICITED)")")
     NSLog("Total data length: \(data.count) bytes")
@@ -2521,11 +2657,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         let previousTotal = self.syncTotalRecords[deviceId] ?? 0
         let deviceStatusTotal = self.deviceRecordCounts[deviceId] ?? 0
         let grandTotalReceived = self.syncGrandTotalReceived[deviceId] ?? 0
-        // SDD v1.5: We send sync_start with min(500, deviceRecordCount) and sync up to 500 records per file.
-        // The device's sync_start may report "records in this batch" or a small value; never use that to shrink
-        // our total — use device status total as floor so we do at most ceil(total/500) sync cycles.
+        // SDD v1.5: Use device status total as floor only when sync_start reported a full chunk (500).
+        // When device reports a small batch (e.g. 10 from manual Start Sync(10)), use as-is so we don't
+        // expand to device status (e.g. 201) and pull extra chunks — user wanted only 10.
         var newTotal = Int(totalRecords)
-        if deviceStatusTotal > 0 && newTotal < deviceStatusTotal {
+        if deviceStatusTotal > 0 && newTotal < deviceStatusTotal && newTotal >= RECORDS_PER_FILE {
           newTotal = deviceStatusTotal
           NSLog("📦 [MULTI-FILE] Device sync_start reported \(totalRecords); using device status total \(deviceStatusTotal) (SDD: sync up to 500 per start)")
         }
@@ -2620,40 +2756,28 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           self.deviceRecordCounts[deviceId] = remainingRecords
           NSLog("✅ Updated record count to \(remainingRecords) after file #\(currentFileNum)")
           
-          // SDD v1.5 CHUNKED SYNC PROTOCOL:
-          // - If actualCount == 500 AND record-path already sent STOP: Skip (duplicate prevention)
-          // - If actualCount < 500: Device sent DATA_SYNC_COMPLETE, now send STOP (last incomplete chunk)
-          // - If actualCount == 500 AND no record-path flag: Send STOP (edge case: exactly 500 total)
+          // SDD v1.5: STOP must use tag's actual count (from 0x02) so tag only clears records it sent.
           DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
             
-            if actualCount == RECORDS_PER_FILE && (self.recordPathChunkAdvanced[deviceId] == true) {
-              NSLog("✅ [DATA_SYNC_COMPLETE] STOP already sent at 500 boundary — skipping duplicate")
-              self.recordPathChunkAdvanced.removeValue(forKey: deviceId)
-            } else {
-              // Device sent DATA_SYNC_COMPLETE → send STOP now
-              let recordsToConfirm = UInt16(actualCount)
-              let cleanupSuccess = self.sendDataSyncStopCommand(deviceId: deviceId, recordsAcknowledged: recordsToConfirm)
-              if cleanupSuccess {
-                if actualCount < RECORDS_PER_FILE {
-                  NSLog("✅ [LAST CHUNK] DATA_SYNC_STOP(\(recordsToConfirm)) sent after DATA_SYNC_COMPLETE - chunk #\(currentFileNum) (incomplete chunk)")
-                } else {
-                  NSLog("✅ [DATA_SYNC_COMPLETE] DATA_SYNC_STOP(\(recordsToConfirm)) sent - chunk #\(currentFileNum)")
-                }
+            let recordsToConfirm = UInt16(actualCount)
+            let cleanupSuccess = self.sendDataSyncStopCommand(deviceId: deviceId, recordsAcknowledged: recordsToConfirm)
+            if cleanupSuccess {
+              if actualCount < RECORDS_PER_FILE {
+                NSLog("✅ [LAST CHUNK] DATA_SYNC_STOP(\(recordsToConfirm)) sent after DATA_SYNC_COMPLETE (tag count) - chunk #\(currentFileNum)")
               } else {
-                NSLog("❌ Failed to send DATA_SYNC_STOP command")
+                NSLog("✅ [DATA_SYNC_COMPLETE] DATA_SYNC_STOP(\(recordsToConfirm)) sent (tag count) - chunk #\(currentFileNum)")
               }
+            } else {
+              NSLog("❌ Failed to send DATA_SYNC_STOP command")
             }
+            self.recordPathChunkAdvanced.removeValue(forKey: deviceId)
             
-            // Industry-correct (match Android): Schedule next START only after STOP ACK (BB 09) — no overlapping GATT ops.
             if hasMoreChunks {
               let nextFileNum = currentFileNum + 1
               self.pendingStartNextChunkAfterStopResponse[deviceId] = { [weak self] in
                 guard let self = self else { return }
-                if self.recordPathChunkAdvanced.removeValue(forKey: deviceId) == true {
-                  NSLog("✅ [DATA_SYNC_COMPLETE] Record path already sent START — skipping duplicate")
-                  return
-                }
+                self.recordPathChunkAdvanced.removeValue(forKey: deviceId)
                 self.syncCurrentFileNumber[deviceId] = nextFileNum
                 self.syncRecordsReceived[deviceId] = 0
                 NSLog("📦 [CHUNKED SYNC] Chunk #\(currentFileNum) complete (\(actualCount) records). Progress: \(grandTotal)/\(totalRecords). Starting chunk #\(nextFileNum)...")
@@ -2817,9 +2941,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         NSLog("📊 Records in current chunk: \(newTotal) / \(RECORDS_PER_FILE)")
         
         if newTotal >= RECORDS_PER_FILE {
-          // SDD v1.5 CHUNKED SYNC PROTOCOL: Hit 500 boundary, send STOP immediately
+          // SDD v1.5: Do NOT send STOP here. Wait for tag's DATA_SYNC_COMPLETE (0x02) and send STOP(actualCount) so tag only clears records it sent.
           NSLog("⚠️ [500 BOUNDARY HIT] Chunk has \(newTotal) records (current=\(currentReceived), new=\(records.count))")
-          NSLog("   Progress: \((currentGrandTotal + RECORDS_PER_FILE))/\(totalExpected) — Enforcing 500 limit, will send STOP immediately")
+          NSLog("   Waiting for tag 0x02, then STOP(actualCount); next START after STOP ACK.")
           
           let excessRecords = newTotal - RECORDS_PER_FILE
           let cumulativeForBoundary = currentGrandTotal + min(newTotal, RECORDS_PER_FILE)
@@ -2855,12 +2979,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           
           syncRecordsReceived[deviceId] = excessRecords
           
-          // CRITICAL: Send STOP(500) immediately when 500 boundary hit — do NOT wait for device 0x02
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+          DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            _ = self.sendDataSyncStopCommand(deviceId: deviceId, recordsAcknowledged: UInt16(RECORDS_PER_FILE))
-            NSLog("✅ [500 BOUNDARY] DATA_SYNC_STOP(500) sent immediately — NOT waiting for DATA_SYNC_COMPLETE")
-            
             var totalRecords = self.syncTotalRecords[deviceId] ?? 0
             if totalRecords <= 0 { totalRecords = self.deviceRecordCounts[deviceId] ?? 0 }
             let grandTotal = (self.syncGrandTotalReceived[deviceId] ?? 0) + RECORDS_PER_FILE
@@ -2868,49 +2988,18 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
             let hasMoreChunks = (grandTotal < totalRecords)
             
             if hasMoreChunks {
-              // Mark that record path handled this chunk — skip duplicate processing in DATA_SYNC_COMPLETE
               self.recordPathChunkAdvanced[deviceId] = true
               let currentFileNum = self.syncCurrentFileNumber[deviceId] ?? 1
               let nextFileNum = currentFileNum + 1
               self.syncCurrentFileNumber[deviceId] = nextFileNum
-              NSLog("📦 [CHUNKED SYNC] Chunk #\(currentFileNum) complete (500 records). Progress: \(grandTotal)/\(totalRecords). Next START after STOP ACK (BB 09).")
-              
-              // Industry-correct (match Android): Schedule next START only after STOP ACK — no overlapping GATT ops.
+              NSLog("📦 [500 BOUNDARY] Chunk #\(currentFileNum) hit 500 records. Waiting for tag 0x02, then STOP(actualCount); next START after STOP ACK.")
               self.pendingStartNextChunkAfterStopResponse[deviceId] = { [weak self] in
                 guard let self = self else { return }
                 _ = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
                 NSLog("✅ [CHUNKED SYNC] Started chunk #\(nextFileNum) sync for \(deviceId)")
               }
-            } else {
-              // Sync complete via 500-boundary path (total was exactly N×500)
-              let totalSynced = min(grandTotal, totalRecords)
-              NSLog("✅ [CHUNKED SYNC] Sync complete at 500 boundary (total=\(totalSynced)). Emitting sync_complete.")
-              let currentFileNum = self.syncCurrentFileNumber[deviceId] ?? 1
-              
-              DispatchQueue.main.async {
-                self.sendEvent(withName: "DataTransfer", body: [
-                  "deviceId": deviceId,
-                  "type": "sync_complete",
-                  "success": true,
-                  "recordsTransmitted": totalSynced,
-                  "chunkNumber": currentFileNum,
-                  "grandTotal": totalSynced,
-                  "totalExpected": totalRecords,
-                  "hasMoreChunks": false
-                ])
-              }
-              
-              // Cleanup
-              self.hasCompletedInitialSync[deviceId] = true
-              self.systemCommandsSent[deviceId] = false
-              self.dataSyncRequested[deviceId] = false
-              self.syncTotalRecords.removeValue(forKey: deviceId)
-              self.syncRecordsReceived.removeValue(forKey: deviceId)
-              self.syncCurrentFileNumber.removeValue(forKey: deviceId)
-              self.syncGrandTotalReceived.removeValue(forKey: deviceId)
-              self.recordPathChunkAdvanced.removeValue(forKey: deviceId)
-              self.pendingStartNextChunkAfterStopResponse.removeValue(forKey: deviceId)
             }
+            // If !hasMoreChunks: sync_complete and cleanup happen when tag sends 0x02 and we send STOP(actualCount) in DATA_SYNC_COMPLETE handler.
           }
         } else {
           // Not at 500 boundary yet, continue receiving
@@ -3410,7 +3499,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     }
     if bytes.count > 2 {
       let version = bytes[2]
-      if version > 10 {
+      if version > 100 {
         return false
       }
     }
@@ -3534,7 +3623,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       isCorrupted = true
       corruptionReason = "Record count too high: \(recordCount) (SDD max \(MAX_TOTAL_RECORDS))"
     }
-    if version > 10 {
+    if version > 100 {
     }
     if isCorrupted {
       NSLog("⚠️ MANUFACTURER DATA VALIDATION FAILED!")
@@ -3911,8 +4000,143 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     ]
     resolve(status)
   }
+  
+  // MARK: - McuMgr DFU (React Native API - matches Android SampleBridgeAndroid)
+  
+  /// Start MCUboot DFU over SMP (McuMgr). Same flow as Android: release app connection, wait 5s, then McuMgr connects and runs validate → upload → confirm → reset.
+  @objc(startMcuMgrDfu:firmwarePath:resolver:rejecter:)
+  func startMcuMgrDfu(deviceId: String, firmwarePath: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    if currentMcuMgrDfuDeviceId != nil {
+      reject("DFU_IN_PROGRESS", "A DFU is already in progress for \(currentMcuMgrDfuDeviceId!)", nil)
+      return
+    }
+    guard let manager = centralManager else {
+      reject("NO_MANAGER", "Central manager not initialized", nil)
+      return
+    }
+    let peripheral = connectedPeripherals.first { $0.identifier.uuidString == deviceId }
+      ?? scannedDevices[deviceId]
+      ?? manager.retrievePeripherals(withIdentifiers: [UUID(uuidString: deviceId)].compactMap { $0 }).first
+    guard let peripheral = peripheral else {
+      reject("DEVICE_NOT_FOUND", "Device not found. Connect or scan first.", nil)
+      return
+    }
+    // Android-style: resolve to readable firmware (file:// or content-style). Parse URI, then either use path if it exists or read bytes and copy to Caches (like Android readFirmwareFileBytes + content://).
+    let fileURL: URL
+    if firmwarePath.hasPrefix("file://") {
+      guard let parsed = URL(string: firmwarePath), parsed.scheme == "file" else {
+        reject("INVALID_FIRMWARE", "Invalid file URI: \(firmwarePath)", nil)
+        return
+      }
+      fileURL = parsed
+    } else {
+      fileURL = URL(fileURLWithPath: firmwarePath)
+    }
+    let resolvedURL: URL
+    if FileManager.default.fileExists(atPath: fileURL.path) {
+      resolvedURL = fileURL
+    } else {
+      // Path not found (e.g. Inbox cleared, or App Group path) – try to read bytes then write to Caches (mirrors Android openInputStream/read).
+      let needsSecurityScope = fileURL.startAccessingSecurityScopedResource()
+      defer { if needsSecurityScope { fileURL.stopAccessingSecurityScopedResource() } }
+      guard let data = try? Data(contentsOf: fileURL), !data.isEmpty else {
+        reject("INVALID_FIRMWARE", "Could not read firmware file: \(firmwarePath)", nil)
+        return
+      }
+      let cachesDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+      let dfuDir = cachesDir.appendingPathComponent("DFU", isDirectory: true)
+      try? FileManager.default.createDirectory(at: dfuDir, withIntermediateDirectories: true)
+      let tempFile = dfuDir.appendingPathComponent("firmware_\(UUID().uuidString).bin", isDirectory: false)
+      do {
+        try data.write(to: tempFile)
+      } catch {
+        reject("INVALID_FIRMWARE", "Could not write firmware copy: \(error.localizedDescription)", nil)
+        return
+      }
+      resolvedURL = tempFile
+    }
+    currentMcuMgrDfuDeviceId = deviceId
+    // Notify JS that we released the connection for DFU (same as Android)
+    sendEvent(withName: "DeviceDisconnected", body: [
+      "deviceId": deviceId,
+      "connectionState": "disconnected",
+      "reason": "released_for_dfu"
+    ])
+    // Disconnect and clean up app-side state so McuMgr can have the only link
+    manualDisconnectInProgress.insert(deviceId)
+    connectedPeripherals.removeAll { $0.identifier.uuidString == deviceId }
+    connectingPeripherals.removeValue(forKey: deviceId)
+    connectionTimeoutTimers[deviceId]?.cancel()
+    connectionTimeoutTimers.removeValue(forKey: deviceId)
+    connectionRetryAttempts.removeValue(forKey: deviceId)
+    serviceDiscoveryTimers[deviceId]?.invalidate()
+    serviceDiscoveryTimers.removeValue(forKey: deviceId)
+    reconnectTimers[deviceId]?.invalidate()
+    reconnectTimers.removeValue(forKey: deviceId)
+    reconnectBackoff.removeValue(forKey: deviceId)
+    reconnectAttempts.removeValue(forKey: deviceId)
+    manager.cancelPeripheralConnection(peripheral)
+    let urlToUse = resolvedURL
+    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+      Thread.sleep(forTimeInterval: 5.0)
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        self.performMcuMgrDfuStart(peripheral: peripheral, deviceId: deviceId, fileURL: urlToUse, resolver: resolve, rejecter: reject)
+      }
+    }
+  }
+  
+  private func performMcuMgrDfuStart(peripheral: CBPeripheral, deviceId: String, fileURL: URL, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    do {
+      let package = try McuMgrPackage(from: fileURL)
+      let transport = McuMgrBleTransport(peripheral)
+      // When negotiated MTU is small (e.g. 73), the library would fail with "Insufficient MTU" when sending
+      // packets larger than MTU. Enable chunking so payloads are split to MTU-sized pieces (same as when
+      // reassembly is used on the device).
+      transport.chunkSendDataToMtuSize = true
+      let delegate = DFUEventForwarder(module: self, deviceId: deviceId)
+      mcuMgrDfuDelegate = delegate
+      let upgradeManager = FirmwareUpgradeManager(transport: transport, delegate: delegate)
+      var config = FirmwareUpgradeConfiguration(estimatedSwapTime: 7.0, eraseAppSettings: false, pipelineDepth: 1)
+      config.upgradeMode = .confirmOnly
+      mcuMgrDfuManager = upgradeManager
+      upgradeManager.start(package: package, using: config)
+      let imageSize = (try? Data(contentsOf: fileURL))?.count ?? 0
+      resolve([
+        "status": "started",
+        "deviceId": deviceId,
+        "firmwarePath": fileURL.path,
+        "imageSize": imageSize
+      ] as [String: Any])
+    } catch {
+      currentMcuMgrDfuDeviceId = nil
+      mcuMgrDfuManager = nil
+      mcuMgrDfuDelegate = nil
+      manualDisconnectInProgress.remove(deviceId)
+      reject("DFU_START_ERROR", error.localizedDescription, error)
+    }
+  }
+  
+  @objc(cancelMcuMgrDfu:rejecter:)
+  func cancelMcuMgrDfu(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let manager = mcuMgrDfuManager else {
+      reject("NO_DFU_IN_PROGRESS", "No DFU in progress", nil)
+      return
+    }
+    manager.cancel()
+    let deviceId = currentMcuMgrDfuDeviceId ?? "unknown"
+    currentMcuMgrDfuDeviceId = nil
+    mcuMgrDfuManager = nil
+    mcuMgrDfuDelegate = nil
+    manualDisconnectInProgress.remove(deviceId)
+    resolve(["status": "cancelled", "deviceId": deviceId])
+  }
+  
   private func findDeviceData(deviceId: String) -> CBPeripheral? {
-    return findPeripheral(deviceId)
+    if let p = connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) { return p }
+    if let p = scannedDevices[deviceId] { return p }
+    guard let manager = centralManager, let uuid = UUID(uuidString: deviceId) else { return nil }
+    return manager.retrievePeripherals(withIdentifiers: [uuid]).first
   }
   private func cleanupPeripheralConnection(deviceId: String) {
     if let index = connectedPeripherals.firstIndex(where: { $0.identifier.uuidString == deviceId }) {
@@ -5589,224 +5813,5 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       } else {
       }
     }
-  }
-  // MARK: - DFU (Device Firmware Update) Properties
-  
-  /// Nordic DFU service controller for managing firmware updates
-  private var dfuController: DFUServiceController?
-  
-  /// Peripheral currently undergoing DFU update
-  private var currentDfuPeripheral: CBPeripheral?
-  
-  // MARK: - DFU Operations (React Native API)
-  
-  /// Send command to device to enter DFU (bootloader) mode
-  /// - Device will reboot into bootloader mode (~3 seconds)
-  /// - After reboot, device advertises with DFU service UUID
-  /// - Parameters:
-  ///   - deviceId: UUID string of the device
-  ///   - resolver: Promise resolver returning DFU mode entry status
-  ///   - rejecter: Promise rejecter for device not found/connected
-  @objc func enterDFUMode(_ deviceId: String, 
-                          resolver: @escaping RCTPromiseResolveBlock,
-                          rejecter: @escaping RCTPromiseRejectBlock) {
-    guard let peripheral = findPeripheral(deviceId) else {
-      rejecter("DEVICE_NOT_FOUND", "Device not found: \(deviceId)", nil)
-      return
-    }
-    guard peripheral.state == .connected else {
-      rejecter("DEVICE_NOT_CONNECTED", "Device not connected: \(deviceId)", nil)
-      return
-    }
-    guard let systemCommandChar = findCharacteristic(SYSTEM_COMMAND_CHAR_UUID, in: peripheral) else {
-      rejecter("CHARACTERISTIC_NOT_FOUND", "System Command characteristic not found", nil)
-      return
-    }
-    let command: [UInt8] = [
-      0xAA,  
-      0x0A,  
-      0x00,  
-      0x00   
-    ]
-    let commandData = Data(command)
-    peripheral.writeValue(commandData, for: systemCommandChar, type: .withResponse)
-    resolver([
-      "status": "entering_dfu",
-      "message": "Device rebooting into DFU mode",
-      "deviceId": deviceId,
-      "estimatedRebootTimeMs": 3000
-    ])
-  }
-  @objc func startDFU(_ deviceId: String,
-                      firmwarePath: String,
-                      resolver: @escaping RCTPromiseResolveBlock,
-                      rejecter: @escaping RCTPromiseRejectBlock) {
-    DispatchQueue.main.async { [weak self] in
-      guard let self = self else { return }
-      guard let firmwareURL = URL(string: firmwarePath),
-            FileManager.default.fileExists(atPath: firmwareURL.path) else {
-        rejecter("INVALID_FIRMWARE", "Firmware file not found at: \(firmwarePath)", nil)
-        return
-      }
-      guard let peripheral = self.findPeripheral(deviceId) else {
-        rejecter("DEVICE_NOT_FOUND", "Device not found: \(deviceId)", nil)
-        return
-      }
-      self.currentDfuPeripheral = peripheral
-      do {
-        let firmware = try DFUFirmware(urlToZipFile: firmwareURL)
-        let dfuInitiator = DFUServiceInitiator()
-          .with(firmware: firmware)
-        dfuInitiator.delegate = self
-        dfuInitiator.progressDelegate = self
-        dfuInitiator.logger = self
-        dfuInitiator.enableUnsafeExperimentalButtonlessServiceInSecureDfu = true
-        self.dfuController = dfuInitiator.start(target: peripheral)
-        resolver([
-          "status": "started",
-          "deviceId": deviceId,
-          "firmwarePath": firmwarePath
-        ])
-      } catch {
-        rejecter("DFU_INIT_ERROR", error.localizedDescription, error)
-      }
-    }
-  }
-  @objc func cancelDFU(_ resolver: @escaping RCTPromiseResolveBlock,
-                       rejecter: @escaping RCTPromiseRejectBlock) {
-    guard let controller = dfuController else {
-      rejecter("NO_DFU_IN_PROGRESS", "No DFU operation in progress", nil)
-      return
-    }
-    _ = controller.abort()
-    resolver([
-      "status": "cancelled",
-      "deviceId": currentDfuPeripheral?.identifier.uuidString ?? "unknown"
-    ])
-  }
-  @objc func isDeviceInDFUMode(_ deviceId: String,
-                                resolver: @escaping RCTPromiseResolveBlock,
-                                rejecter: @escaping RCTPromiseRejectBlock) {
-    guard let peripheral = findPeripheral(deviceId) else {
-      resolver(false)
-      return
-    }
-    if let services = peripheral.services {
-      for service in services {
-        if service.uuid == DFU_SERVICE_UUID {
-          resolver(true)
-          return
-        }
-      }
-    }
-    resolver(false)
-  }
-  @objc func getDFUServiceUUID(_ resolver: @escaping RCTPromiseResolveBlock,
-                                rejecter: @escaping RCTPromiseRejectBlock) {
-    resolver([
-      "uuid": "00001530-1212-efde-1523-785feabcd123",
-      "description": "Nordic DFU Service (Bootloader)"
-    ])
-  }
-  private func findCharacteristic(_ uuid: CBUUID, in peripheral: CBPeripheral) -> CBCharacteristic? {
-    guard let services = peripheral.services else { return nil }
-    for service in services {
-      guard let characteristics = service.characteristics else { continue }
-      for characteristic in characteristics {
-        if characteristic.uuid == uuid {
-          return characteristic
-        }
-      }
-    }
-    return nil
-  }
-  private func findPeripheral(_ deviceId: String) -> CBPeripheral? {
-    return connectedPeripherals.first { $0.identifier.uuidString == deviceId }
-      ?? connectingPeripherals[deviceId]
-  }
-}
-// MARK: - DFU Delegate Extensions
-
-/// Extension implementing Nordic DFU service delegate for firmware updates
-extension BridgingCodeModule: DFUServiceDelegate {
-  
-  /// Called when DFU state changes during firmware update process
-  /// - Emits state change events to React Native layer
-  /// - Parameter state: New DFU state (connecting, starting, uploading, validating, completed, aborted)
-  func dfuStateDidChange(to state: DFUState) {
-    let stateString: String
-    switch state {
-    case .connecting:
-      stateString = "connecting"
-    case .starting:
-      stateString = "starting"
-    case .enablingDfuMode:
-      stateString = "enabling_dfu"
-    case .uploading:
-      stateString = "uploading"
-    case .validating:
-      stateString = "validating"
-    case .disconnecting:
-      stateString = "disconnecting"
-    case .completed:
-      stateString = "completed"
-    case .aborted:
-      stateString = "aborted"
-    @unknown default:
-      stateString = "unknown"
-    }
-    sendEvent(withName: "DFUStateChanged", body: [
-      "state": stateString,
-      "deviceId": currentDfuPeripheral?.identifier.uuidString ?? ""
-    ])
-  }
-  func dfuError(_ error: DFUError, didOccurWithMessage message: String) {
-    sendEvent(withName: "DFUError", body: [
-      "error": message,
-      "errorCode": error.rawValue,
-      "deviceId": currentDfuPeripheral?.identifier.uuidString ?? ""
-    ])
-  }
-}
-/// Extension implementing DFU progress delegate for firmware update progress tracking
-extension BridgingCodeModule: DFUProgressDelegate {
-  
-  /// Called when DFU upload progress changes
-  /// - Calculates overall progress across multiple firmware parts
-  /// - Emits progress events with speed metrics to React Native layer
-  /// - Parameters:
-  ///   - part: Current part being uploaded (1-based)
-  ///   - totalParts: Total number of firmware parts
-  ///   - progress: Progress percentage for current part (0-100)
-  ///   - currentSpeedBytesPerSecond: Instantaneous upload speed
-  ///   - avgSpeedBytesPerSecond: Average upload speed
-  func dfuProgressDidChange(for part: Int, outOf totalParts: Int,
-                           to progress: Int, currentSpeedBytesPerSecond: Double,
-                           avgSpeedBytesPerSecond: Double) {
-    // Calculate overall progress across all parts
-    let overallProgress = (Float(part - 1) / Float(totalParts)) * 100.0 + 
-                         (Float(progress) / Float(totalParts))
-    sendEvent(withName: "DFUProgress", body: [
-      "progress": Int(overallProgress),
-      "part": part,
-      "totalParts": totalParts,
-      "currentSpeed": currentSpeedBytesPerSecond,
-      "avgSpeed": avgSpeedBytesPerSecond,
-      "deviceId": currentDfuPeripheral?.identifier.uuidString ?? ""
-    ])
-  }
-}
-/// Extension implementing DFU logger delegate for firmware update logging
-/// - Currently logs are suppressed (empty implementation)
-/// - Can be enabled for debugging by adding NSLog statements
-extension BridgingCodeModule: LoggerDelegate {
-  
-  /// Called when DFU library wants to log a message
-  /// - Parameters:
-  ///   - level: Log level (verbose, debug, info, warning, error)
-  ///   - message: Log message content
-  func logWith(_ level: LogLevel, message: String) {
-    // Logging suppressed for production
-    // Uncomment to enable DFU logging: NSLog("[DFU \(level)] \(message)")
   }
 }

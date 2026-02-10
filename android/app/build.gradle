@@ -139,9 +139,11 @@ dependencies {
     // Additional AndroidX dependencies
     implementation "androidx.core:core:1.12.0"
     implementation "androidx.appcompat:appcompat:1.6.1"
-    
-    // Nordic DFU Library for OTA firmware updates
-    implementation 'no.nordicsemi.android:dfu:2.3.0'
+
+    // McuMgr (MCUboot DFU over SMP) - Zephyr/nRF Connect SDK style, not Nordic Secure DFU (FE59)
+    // Ref: https://github.com/NordicSemiconductor/Android-nRF-Connect-Device-Manager
+    // 2.5.0: compatible with Kotlin 2.0.x; 2.7.x requires Kotlin 2.2 (metadata 2.2.0)
+    implementation "no.nordicsemi.android:mcumgr-ble:2.5.0"
 }
 
 apply from: file("../../node_modules/react-native-vector-icons/fonts.gradle")

@@ -110,12 +110,17 @@ import javax.crypto.spec.SecretKeySpec;
 import javax.crypto.spec.IvParameterSpec;
 import com.reactnativeboilerplate.BLEConnectionManager.BLEConnectionCallback;
 import com.reactnativeboilerplate.BLEConnectionManager.ConnectionState;
-import no.nordicsemi.android.dfu.DfuProgressListener;
-import no.nordicsemi.android.dfu.DfuProgressListenerAdapter;
-import no.nordicsemi.android.dfu.DfuServiceInitiator;
-import no.nordicsemi.android.dfu.DfuServiceListenerHelper;
-import no.nordicsemi.android.dfu.DfuBaseService;
 import android.net.Uri;
+import java.io.InputStream;
+import java.io.FileInputStream;
+import java.io.File;
+
+// MCUboot DFU over SMP (McuMgr) - matches nRF Connect / Zephyr flow (not Nordic Secure DFU FE59)
+import io.runtime.mcumgr.ble.McuMgrBleTransport;
+import io.runtime.mcumgr.dfu.FirmwareUpgradeCallback;
+import io.runtime.mcumgr.dfu.FirmwareUpgradeController;
+import io.runtime.mcumgr.dfu.mcuboot.FirmwareUpgradeManager;
+import io.runtime.mcumgr.exception.McuMgrException;
 
 /**
  * DescriptorWriteRequest
@@ -456,9 +461,6 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     /** Standard BLE Generic Access Service UUID (0x1800) */
     private static final String GENERIC_ACCESS_SERVICE_UUID = "00001800-0000-1000-8000-00805f9b34fb";
     
-    /** Nordic DFU (Device Firmware Update) service UUID */
-    private static final String DFU_SERVICE_UUID = "8ec90003-f315-4f60-9fb8-838830daea50";
-    
     // ============================================================================
     // CONSTANTS - BLE Characteristic UUIDs
     // ============================================================================
@@ -557,9 +559,6 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     
     /** Command: Stop ongoing data synchronization */
     private static final byte CMD_DATA_SYNC_STOP = 0x09;
-    
-    /** Command: Enter DFU (Device Firmware Update) mode */
-    private static final byte CMD_ENTER_DFU_MODE = 0x0A;
     
     /** Command: Restart the device */
     private static final byte CMD_SYSTEM_RESTART = 0x10;
@@ -1561,6 +1560,25 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
     private BLEConnectionManager connectionManager;
     
     // ============================================================================
+    // INSTANCE VARIABLES - MCUboot DFU (SMP / McuMgr)
+    // ============================================================================
+    
+    /** SMP Service UUID (MCUboot DFU over BLE - matches nRF Connect / Zephyr) */
+    private static final String SMP_SERVICE_UUID = "8D53DC1D-1DB7-4CD3-868B-8A527460AA84";
+    /** SMP Characteristic UUID (McuMgr transport channel) */
+    private static final String SMP_CHAR_UUID = "DA2E7828-FBCE-4E01-AE9E-261174997C48";
+    
+    /** Current McuMgr DFU manager (one at a time) */
+    private FirmwareUpgradeManager mcuMgrDfuManager = null;
+    /** Device ID currently undergoing DFU */
+    private String currentMcuMgrDfuDeviceId = null;
+    
+    /** True if this device is currently in McuMgr DFU; do not reconnect/restore or we steal the connection and kill upload. */
+    private boolean isDeviceInMcuMgrDfu(String deviceId) {
+        return deviceId != null && deviceId.equals(currentMcuMgrDfuDeviceId);
+    }
+    
+    // ============================================================================
     // INSTANCE VARIABLES - Power Management
     // ============================================================================
     
@@ -2078,6 +2096,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 String deviceId = device.getAddress();
                 String deviceName = device.getName() != null ? device.getName() : "Unknown";                if (bondedDeviceIds.contains(deviceId)) {
                     Log.d(TAG, "✅ System-connected device is bonded: " + deviceId);
+                    if (isDeviceInMcuMgrDfu(deviceId)) {
+                        Log.d(TAG, "⏭️ [SYSTEM_RESTORE] Skipping - device in McuMgr DFU: " + deviceId);
+                        continue;
+                    }
                     if (connectedGatts.containsKey(deviceId)) {
                         // ✅ FIX: Skip system restore if device is currently in auto-connect flow
                         // Auto-connect already handles initialization, so skip duplicate processing
@@ -2208,6 +2230,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
      * @throws SecurityException if BLUETOOTH_CONNECT permission not granted (Android 12+)
      */
     private void restoreSystemConnectedDevice(String deviceId, BluetoothDevice device) {
+        if (isDeviceInMcuMgrDfu(deviceId)) {
+            Log.d(TAG, "⏭️ Skipping restoreSystemConnectedDevice - device in McuMgr DFU: " + deviceId);
+            return;
+        }
         Log.d(TAG, "🔄 Restoring system-connected device: " + deviceId);
         try {
             // Prevent duplicate restore attempts
@@ -2501,6 +2527,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 
             } else {
                 // Device is bonded but not connected
+                if (isDeviceInMcuMgrDfu(deviceId)) {
+                    Log.d(TAG, "  ⏭️ Skipping restore - device in McuMgr DFU: " + deviceId);
+                    continue;
+                }
                 hasDisconnectedBondedDevices = true;
                 Log.d(TAG, "  🔄 Found disconnected bonded device - attempting reconnection: " + deviceId);
                 
@@ -2555,6 +2585,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
      * @throws SecurityException if BLUETOOTH_CONNECT permission missing (Android 12+)
      */
     private void restoreConnectionToDevice(String deviceId, BluetoothDevice device) {
+        if (isDeviceInMcuMgrDfu(deviceId)) {
+            Log.d(TAG, "⏭️ Skipping restoreConnectionToDevice - device in McuMgr DFU: " + deviceId);
+            return;
+        }
         Log.d(TAG, "🔄 Restoring connection to device: " + deviceId);
         try {
             // Check if device is already connected
@@ -4276,6 +4310,11 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 @Override
                 public void run() {
                     if (commandSequenceProceeded.contains(deviceId)) return;
+                    // Skip if device disconnected (e.g. for McuMgr DFU) — avoids "Failed to send Set System Time: Device not connected"
+                    if (connectedGatts.get(deviceId) == null) {
+                        Log.d(TAG, "⚠️ [FALLBACK TIMEOUT] Skipping command sequence - device no longer connected (e.g. DFU)");
+                        return;
+                    }
                     Log.w(TAG, "⚠️ [FALLBACK TIMEOUT] Command sequence not started after 15s - triggering once");
                     proceedWithCommandSequenceAfterDeviceStatusRead(deviceId);
                 }
@@ -4401,6 +4440,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
      * - RTC valid → sendDataAcquisitionAndLiveNotifications ("ready" only; JS decides and calls startDataSync)
      */
     private void proceedWithCommandSequenceAfterDeviceStatusRead(String deviceId) {
+        if (connectedGatts.get(deviceId) == null) {
+            Log.d(TAG, "📌 [COMMAND SEQUENCE] Skipping - device not connected (e.g. disconnected for DFU)");
+            return;
+        }
         if (!commandSequenceProceeded.add(deviceId)) {
             Log.d(TAG, "📌 [COMMAND SEQUENCE] Already proceeded for " + deviceId + " - skipping duplicate (SDD v1.5)");
             return;
@@ -4461,15 +4504,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             onNotificationEnabled(deviceId);
         } else {
             Log.e(TAG, "❌ [GATT QUEUE] Descriptor write FAILED (status=" + status + ") for: " + req.charUuid);
-            WritableMap logEvent = Arguments.createMap();
-            logEvent.putString("deviceId", deviceId);
-            logEvent.putString("action", "Notification Enable Failed");
-            logEvent.putString("characteristic", charName);
-            logEvent.putString("uuid", req.charUuid);
-            logEvent.putInt("gattStatus", status);
-            logEvent.putString("status", "failed");
-            logEvent.putString("platform", "Android");
-            sendEvent("ConnectionLog", logEvent);
+            // Only log "Notification Enable Failed" to user after all retries are exhausted (see handleDescriptorWriteFailure)
             handleDescriptorWriteFailure(deviceId, req);
         }
     }
@@ -4519,6 +4554,16 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         } else {
             Log.e(TAG, "❌ Descriptor write failed after retries for: " + request.charUuid + " - marking as complete and proceeding");
             notificationEnableAttempts.remove(key);
+            String charName = getCharacteristicName(request.charUuid);
+            WritableMap logEvent = Arguments.createMap();
+            logEvent.putString("deviceId", deviceId);
+            logEvent.putString("action", "Notification Enable Failed");
+            logEvent.putString("characteristic", charName);
+            logEvent.putString("uuid", request.charUuid);
+            logEvent.putInt("gattStatus", 257); // GATT failure / auth error (same as callback when all retries exhausted)
+            logEvent.putString("status", "failed");
+            logEvent.putString("platform", "Android");
+            sendEvent("ConnectionLog", logEvent);
             onNotificationEnabled(deviceId);
         }
     }
@@ -4612,10 +4657,6 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             return false;
         }
         int version = data[0] & 0xFF;
-        if (version > 10) {
-            Log.w(TAG, "⚠️ [VALIDATION] Suspicious version number: " + version + " (expected 0-10)");
-            return false;
-        }
         if (data.length > 1) {
             int deviceStatus = data[1] & 0xFF;
             if (deviceStatus > 1) {
@@ -5087,7 +5128,6 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
         Log.d(TAG, "   Sync State: " + syncState);
         if (notificationNum > 1) {
         }
-        deviceRecordCounts.put(deviceData.deviceId, recordCount);
         long timestampMs = timestampSeconds * 1000L;
         deviceData.timestamp = timestampMs;
         Long lastSyncTime = lastSyncCompleteTimestamps.get(deviceData.deviceId);
@@ -5097,13 +5137,28 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             inGracePeriod = timeSinceSync < SYNC_COMPLETE_GRACE_PERIOD_MS;
             if (inGracePeriod) {
                 Log.d(TAG, "   Reason: Firmware needs time to clear flash. Will accept updates after " + ((SYNC_COMPLETE_GRACE_PERIOD_MS - timeSinceSync)/1000) + "s");
+                // Don't overwrite deviceRecordCounts with tag value during grace — tag may report stale count (e.g. 201) before flash cleared
+                int current = deviceRecordCounts.getOrDefault(deviceData.deviceId, 0);
+                if (recordCount > current) {
+                    Log.d(TAG, "   [GRACE] Ignoring tag record count " + recordCount + " (keeping " + current + ") until grace period ends");
+                }
                 return; 
             } else {
                 lastSyncCompleteTimestamps.remove(deviceData.deviceId);
             }
         }
+        // Don't overwrite deviceRecordCounts from Device Status while sync is in progress — tag may report
+        // mid-transfer value (e.g. 201 = progress) and we'd lose the real total (500). Logs showed
+        // "Records Available: 201" from a read that completed ~0.8s after 500 sync; we stored 201 and
+        // then manual Start Sync(10) used it and synced 201. Only accept tag count when idle or complete.
+        if ("syncing".equals(syncState)) {
+            int current = deviceRecordCounts.getOrDefault(deviceData.deviceId, 0);
+            Log.d(TAG, "   [SYNC IN PROGRESS] Ignoring tag record count " + recordCount + " (keeping " + current + ") until sync finishes");
+        } else {
+            deviceRecordCounts.put(deviceData.deviceId, recordCount);
+        }
         // Industry flow: during history sync, JS must not trigger StartSync from device status (SDD v1.5)
-        boolean historySyncInProgress = "syncing".equals(dataSyncState.getOrDefault(deviceData.deviceId, "idle"));
+        boolean historySyncInProgress = "syncing".equals(syncState);
         WritableMap simpleDeviceData = Arguments.createMap();
         simpleDeviceData.putString("deviceId", deviceData.deviceId);
         simpleDeviceData.putInt("batteryVoltage", batteryVoltage);  
@@ -5233,7 +5288,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Log.d(TAG, "Data Sync Requested: " + (isRequested ? "YES ✅" : "NO ❌"));
             Log.d(TAG, "Data Sync State: " + syncState);
             Log.d(TAG, "Data Type: 0x" + String.format("%02X", transferType));
-            Log.d(TAG, "Is Push-Generated: " + (isPushGeneratedRecord ? "YES ✅ (v1.5 live record)" : "NO ❌"));
+            Log.d(TAG, "Is Push-Generated: " + (isPushGeneratedRecord ? "YES ✅ (v1.5 live record)" : "No (sync record)"));
             Log.d(TAG, "Should Accept Data: " + (shouldAcceptData ? "YES ✅" : "NO ❌ (UNSOLICITED)"));
         }
         if (!shouldAcceptData) {
@@ -5313,11 +5368,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             Log.d(TAG, "📦 [MULTI-FILE] Keeping sync total " + existingTotal + " (device sync_start reported " + totalRecords + ")");
             totalRecords = existingTotal;
         }
-        // SDD v1.5: We send sync_start with min(500, deviceRecordCount) and sync up to 500 records per file.
-        // The device's sync_start notification may report "records in this batch" or a small value; never use
-        // that to shrink our total — use device status total as floor so we do at most ceil(total/500) sync
-        // cycles, not hundreds of mini start/stop cycles.
-        if (deviceStatusTotal > 0 && totalRecords < deviceStatusTotal) {
+        // SDD v1.5: Use device status total as floor only when sync_start reported a full chunk (500).
+        // When device reports a small batch (e.g. 10 from manual Start Sync(10)), use as-is so we don't
+        // expand to device status (e.g. 201) and pull extra chunks — user wanted only 10.
+        if (deviceStatusTotal > 0 && totalRecords < deviceStatusTotal && totalRecords >= RECORDS_PER_FILE) {
             Log.d(TAG, "📦 [MULTI-FILE] Device sync_start reported " + totalRecords + "; using device status total " + deviceStatusTotal + " (SDD: sync up to 500 per start)");
             totalRecords = deviceStatusTotal;
         }
@@ -5383,12 +5437,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 // from tag until the very last chunk). So we never "force" hasMoreChunks when we received 0x02.
                 Log.d(TAG, "📦 [SYNC COMPLETE] totalRecords=" + totalRecords + ", grandTotal=" + grandTotal + ", hasMoreChunks=" + hasMoreChunks + " (actualCount=" + actualCount + ")");
                 if (actualCount > RECORDS_PER_FILE) {
-                    int excessRecords = actualCount - RECORDS_PER_FILE;                    if (totalRecords < grandTotal + excessRecords) {
+                    int excessRecords = actualCount - RECORDS_PER_FILE;
+                    if (totalRecords < grandTotal + excessRecords) {
                         syncTotalRecords.put(deviceId, grandTotal + excessRecords);
                     }
-                }
-                if (hasMoreChunks) {
-                } else {
                 }
                 int remainingRecords = Math.max(0, totalRecords - grandTotal);
                 deviceRecordCounts.put(deviceId, remainingRecords);
@@ -5442,31 +5494,24 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     sendEvent("deviceDataUpdate", deviceDataUpdateEvent);
                 }
 
-                // SDD v1.5 CHUNKED SYNC PROTOCOL:
-                // - If actualCount == 500 AND record-path already sent STOP: Skip (duplicate prevention)
-                // - If actualCount < 500: Device sent DATA_SYNC_COMPLETE, now send STOP (last incomplete chunk)
-                // - If actualCount == 500 AND no record-path flag: Send STOP (edge case: exactly 500 total)
-                if (actualCount == RECORDS_PER_FILE && Boolean.TRUE.equals(recordPathChunkAdvanced.get(deviceId))) {
-                    Log.d(TAG, "✅ [DATA_SYNC_COMPLETE] STOP already sent at 500 boundary — skipping duplicate");
-                    recordPathChunkAdvanced.remove(deviceId); // Clear flag
-                } else {
-                    // Device sent DATA_SYNC_COMPLETE → send STOP now
-                    int recordsAcknowledged = recordsInThisChunk;
-                    byte[] stopPayload = new byte[]{
-                        (byte)(recordsAcknowledged & 0xFF),
-                        (byte)((recordsAcknowledged >> 8) & 0xFF)
-                    };
-                    boolean success = sendSystemCommand(deviceId, CMD_DATA_SYNC_STOP, stopPayload);
-                    if (success) {
-                        if (actualCount < RECORDS_PER_FILE) {
-                            Log.d(TAG, "✅ [LAST CHUNK] DATA_SYNC_STOP(" + recordsAcknowledged + ") sent after DATA_SYNC_COMPLETE - chunk #" + currentFileNum + " (incomplete chunk)");
-                        } else {
-                            Log.d(TAG, "✅ [DATA_SYNC_COMPLETE] DATA_SYNC_STOP(" + recordsAcknowledged + ") sent - chunk #" + currentFileNum);
-                        }
+                // SDD v1.5: STOP must use tag's actual count (from 0x02) so tag only clears records it sent.
+                // If we sent STOP(requested) when tag sent fewer, tag would clear too many and we'd lose records.
+                int recordsAcknowledged = recordsInThisChunk;
+                byte[] stopPayload = new byte[]{
+                    (byte)(recordsAcknowledged & 0xFF),
+                    (byte)((recordsAcknowledged >> 8) & 0xFF)
+                };
+                boolean success = sendSystemCommand(deviceId, CMD_DATA_SYNC_STOP, stopPayload);
+                if (success) {
+                    if (actualCount < RECORDS_PER_FILE) {
+                        Log.d(TAG, "✅ [LAST CHUNK] DATA_SYNC_STOP(" + recordsAcknowledged + ") sent after DATA_SYNC_COMPLETE (tag count) - chunk #" + currentFileNum);
                     } else {
-                        Log.e(TAG, "❌ Failed to send DATA_SYNC_STOP command");
+                        Log.d(TAG, "✅ [DATA_SYNC_COMPLETE] DATA_SYNC_STOP(" + recordsAcknowledged + ") sent (tag count) - chunk #" + currentFileNum);
                     }
+                } else {
+                    Log.e(TAG, "❌ Failed to send DATA_SYNC_STOP command");
                 }
+                recordPathChunkAdvanced.remove(deviceId);
                 
                 // SDD v1.5: Schedule next chunk start ONLY after STOP response (BB 09).
                 // This prevents GATT queue collision (STOP/START commands overlapping).
@@ -5480,13 +5525,7 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                     // Has more chunks → schedule next START after STOP ACK
                     Runnable startNextChunkRunnable = () -> {
                         try {
-                            // SDD v1.5: If record path already advanced (hit 500 boundary), skip duplicate START
-                            if (Boolean.TRUE.equals(recordPathChunkAdvanced.remove(deviceId))) {
-                                Log.d(TAG, "✅ [DATA_SYNC_COMPLETE] Record path already sent START — skipping duplicate");
-                                return;
-                            }
-                            // When actualCount==500 and hasMoreChunks, we must start the next chunk here.
-                            // (Record path may not have run yet if 0x02 arrived first, or its runnable was overwritten by ours.)
+                            recordPathChunkAdvanced.remove(deviceId); // clear if set by 500-boundary path
                             int nextFileNum = currentFileNumFinal + 1;
                             syncCurrentFileNumber.put(deviceId, nextFileNum);
                             syncRecordsReceived.put(deviceId, 0);
@@ -5757,9 +5796,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             // Persist the "overflow" so the next chunk accounting starts correctly.
             syncRecordsReceived.put(deviceId, excessRecords);
 
-            // SDD v1.5 CHUNKED SYNC PROTOCOL:
-            // When we hit 500 records boundary, send STOP immediately WITHOUT waiting for DATA_SYNC_COMPLETE.
-            // Device only sends DATA_SYNC_COMPLETE for: (a) last chunk < 500, or (b) exactly 500 when no more data.
+            // SDD v1.5: Do NOT send STOP here. Wait for tag's DATA_SYNC_COMPLETE (0x02) and send STOP(actualCount)
+            // so tag only clears the records it actually sent. Sending STOP(500) when tag sent fewer would lose records.
             int totalExpectedRecordPathVal = syncTotalRecords.getOrDefault(deviceId, 0);
             if (totalExpectedRecordPathVal <= 0) {
                 totalExpectedRecordPathVal = deviceRecordCounts.getOrDefault(deviceId, 0);
@@ -5770,30 +5808,18 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             final boolean hasMoreChunks = (newGrandTotal < totalExpectedRecordPath);
 
             mainHandler.post(() -> {
-                // CRITICAL: Send STOP(500) immediately when 500 boundary hit — do NOT wait for device 0x02.
-                byte[] stopPayload = new byte[]{
-                    (byte)(RECORDS_PER_FILE & 0xFF),
-                    (byte)((RECORDS_PER_FILE >> 8) & 0xFF)
-                };
-                boolean success = sendSystemCommand(deviceId, CMD_DATA_SYNC_STOP, stopPayload);
-                if (success) {
-                    Log.d(TAG, "✅ [500 BOUNDARY] DATA_SYNC_STOP(500) sent immediately — NOT waiting for DATA_SYNC_COMPLETE");
-                } else {
-                    Log.e(TAG, "❌ [500 BOUNDARY] Failed to send DATA_SYNC_STOP command");
-                }
-
+                // Do NOT send STOP here. Wait for tag's DATA_SYNC_COMPLETE (0x02) and send STOP(actualCount) in parseSyncCompleteData
+                // so tag only clears the records it actually sent. Sending STOP(500) when tag sent fewer would lose records.
                 syncGrandTotalReceived.put(deviceId, newGrandTotal);
 
                 if (hasMoreChunks) {
-                    // Mark that record path handled this chunk — skip duplicate processing in parseSyncCompleteData
                     recordPathChunkAdvanced.put(deviceId, true);
                     int currentFileNum = syncCurrentFileNumber.getOrDefault(deviceId, 1);
                     int nextFileNum = currentFileNum + 1;
                     syncCurrentFileNumber.put(deviceId, nextFileNum);
                     syncRecordsReceived.put(deviceId, 0);
-                    Log.d(TAG, "📦 [CHUNKED SYNC] Chunk #" + currentFileNum + " complete (500 records). Progress: " + newGrandTotal + "/" + totalExpectedRecordPath + ". Next START after STOP ACK (BB 09).");
+                    Log.d(TAG, "📦 [500 BOUNDARY] Chunk #" + currentFileNum + " hit 500 records. Waiting for tag 0x02, then STOP(actualCount); next START after STOP ACK.");
 
-                    // Wait for STOP ACK (BB 09) before starting next chunk — prevents GATT queue collision
                     Runnable startNextRunnable = () -> {
                         boolean startSuccess = sendDataSyncStartCommand(deviceId, 0);
                         if (startSuccess) {
@@ -5803,59 +5829,8 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                         }
                     };
                     pendingStartNextChunkAfterStopResponse.put(deviceId, startNextRunnable);
-                } else {
-                    // Sync complete via 500-boundary path (total was exactly N×500)
-                    SyncLockState lockState = historySyncLock.remove(deviceId);
-                    if (lockState != null) {
-                        long duration = System.currentTimeMillis() - lockState.startTime;
-                        Log.d(TAG, "🔓 [SYNC LOCK] Released for " + deviceId + " - sync complete at 500 boundary after " + (duration / 1000) + "s");
-                    }
-                    int currentFileNum = syncCurrentFileNumber.getOrDefault(deviceId, 1);
-                    int remainingRecords = Math.max(0, totalExpectedRecordPath - newGrandTotal);
-                    Log.d(TAG, "✅ [CHUNKED SYNC] Sync complete at 500 boundary (total=" + newGrandTotal + "). Emitting sync_complete to JS.");
-
-                    WritableMap syncCompleteEventData = Arguments.createMap();
-                    syncCompleteEventData.putString("type", "sync_complete");
-                    syncCompleteEventData.putBoolean("success", true);
-                    syncCompleteEventData.putInt("recordsTransmitted", newGrandTotal);
-                    syncCompleteEventData.putInt("chunkNumber", currentFileNum);
-                    syncCompleteEventData.putInt("grandTotal", newGrandTotal);
-                    syncCompleteEventData.putInt("totalExpected", totalExpectedRecordPath);
-                    syncCompleteEventData.putBoolean("hasMoreChunks", false);
-                    syncCompleteEventData.putString("deviceId", deviceId);
-                    sendEvent("DataTransfer", syncCompleteEventData);
-
-                    WritableMap deviceDataUpdateEvent = Arguments.createMap();
-                    deviceDataUpdateEvent.putString("deviceId", deviceId);
-                    deviceDataUpdateEvent.putString("type", "sync_complete");
-                    deviceDataUpdateEvent.putInt("recordCount", remainingRecords);
-                    deviceDataUpdateEvent.putInt("recordsTransmitted", newGrandTotal);
-                    deviceDataUpdateEvent.putInt("totalRecords", newGrandTotal);
-
-                    WritableMap deviceDataMapForEvent = Arguments.createMap();
-                    DeviceData deviceDataObj = deviceDataMap.get(deviceId);
-                    if (deviceDataObj != null) {
-                        deviceDataMapForEvent.putInt("recordCount", newGrandTotal);
-                        Integer batteryLevel = deviceDataObj.batteryLevel;
-                        if (batteryLevel != null) {
-                            deviceDataMapForEvent.putInt("batteryLevel", batteryLevel);
-                        }
-                    } else {
-                        deviceDataMapForEvent.putInt("recordCount", newGrandTotal);
-                    }
-                    deviceDataUpdateEvent.putMap("deviceData", deviceDataMapForEvent);
-                    sendEvent("deviceDataUpdate", deviceDataUpdateEvent);
-
-                    lastSyncCompleteTimestamps.put(deviceId, System.currentTimeMillis());
-                    dataSyncRequested.put(deviceId, false);
-                    syncCommandSentFlags.put(deviceId, false);
-                    syncTotalRecords.remove(deviceId);
-                    syncRecordsReceived.remove(deviceId);
-                    syncCurrentFileNumber.remove(deviceId);
-                    syncGrandTotalReceived.remove(deviceId);
-                    recordPathChunkAdvanced.remove(deviceId);
-                    dataSyncState.put(deviceId, "complete");
                 }
+                // If !hasMoreChunks: sync_complete and cleanup happen when tag sends 0x02 and we send STOP(actualCount) in parseSyncCompleteData.
             });
         }
     }
@@ -7096,6 +7071,10 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
                 Log.d("SampleBridgeAndroid", "🎯 TARGET DEVICE FOUND (bonded): " + deviceName + " (" + deviceId + ")");
                 if (!shouldAllowConnection(deviceId, false)) {
                     Log.d("SampleBridgeAndroid", "🚫 Connection blocked for device: " + deviceName + " - device is forgotten or manually disconnected");
+                    return;
+                }
+                if (isDeviceInMcuMgrDfu(deviceId)) {
+                    Log.d("SampleBridgeAndroid", "⏭️ Skipping connect - device in McuMgr DFU: " + deviceId);
                     return;
                 }
                 if (connectedGatts.containsKey(deviceId) || connectingDevices.contains(deviceId)) {
@@ -12795,609 +12774,267 @@ public class SampleBridgeAndroid extends ReactContextBaseJavaModule {
             promise.reject("PAIRING_ERROR", e.getMessage());
         }
     }
+    
     // ============================================================================
-    // DFU (DEVICE FIRMWARE UPDATE) IMPLEMENTATION
+    // MCUboot DFU over SMP (McuMgr) - Zephyr / nRF Connect style (not Nordic Secure DFU)
+    // Flow aligned with nRF Connect app: disconnect only after full DFU complete (device reset).
     // ============================================================================
     
     /**
-     * Current device address undergoing DFU
-     * - Tracks active DFU operation
-     * - Null when no DFU in progress
-     * - Used to prevent concurrent DFU operations
-     */
-    private String currentDfuDeviceAddress = null;
-    
-    /**
-     * DFU progress listener for event callbacks
-     * - Registered with Nordic DFU library
-     * - Receives DFU state changes and progress updates
-     * - Emits events to React Native
-     */
-    private DfuProgressListener dfuProgressListener = null;
-    
-    /**
-     * Enter DFU (Device Firmware Update) mode
-     * 
-     * Purpose:
-     * - Sends command to reboot device into DFU bootloader
-     * - Required before starting firmware update
-     * - Device disconnects and restarts in DFU mode
-     * 
-     * DFU Mode Entry Flow:
-     * 1. Validate device is connected
-     * 2. Find System Command characteristic
-     * 3. Send Enter DFU Mode command (0xAA0A0000)
-     * 4. Device receives command
-     * 5. Device disconnects
-     * 6. Device reboots into DFU bootloader (~3 seconds)
-     * 7. Device advertises with DFU service UUID
-     * 8. App can now connect and start DFU
-     * 
-     * Command Format:
-     * - Byte 0: 0xAA (REQUEST_ID)
-     * - Byte 1: 0x0A (CMD_START_DFU)
-     * - Byte 2: 0x00 (Length = 0)
-     * - Byte 3: 0x00 (No payload)
-     * 
-     * Device Behavior:
-     * - Saves current state to flash
-     * - Disconnects BLE connection
-     * - Resets MCU
-     * - Boots into DFU bootloader
-     * - Starts advertising as DFU device
-     * 
-     * DFU Service:
-     * - UUID: 0x0000fe59-0000-1000-8000-00805f9b34fb (Nordic DFU)
-     * - Secure DFU: Signed firmware images
-     * - Supports Zip packages with init packet
-     * 
-     * Timing:
-     * - Command send: < 100ms
-     * - Device disconnect: Immediate
-     * - Reboot time: ~3 seconds
-     * - DFU advertisement: After reboot
-     * 
-     * Error Handling:
-     * - DEVICE_NOT_CONNECTED: Device not in connected map
-     * - CHARACTERISTIC_NOT_FOUND: System Command char missing
-     * - WRITE_FAILED: BLE write operation failed
-     * - ENTER_DFU_ERROR: General exception
-     * 
-     * Next Steps:
-     * 1. Wait 3+ seconds for device reboot
-     * 2. Scan for device with DFU service UUID
-     * 3. Connect to device in DFU mode
-     * 4. Call startDFU() with firmware file path
-     * 
-     * @param deviceId Device MAC address
-     * @param promise React Native promise
-     *                Resolves with status and estimated reboot time
-     *                Rejects on error
+     * Start MCUboot DFU over SMP. Matches nRF Connect app flow step-by-step:
+     * 1. Release app BLE connection (so only one central connection; peripheral accepts single link).
+     * 2. McuMgr connects → discovers SMP service → enables notifications → device ready.
+     * 3. Request McuMgr params / bootloader info (optional; may be "not supported").
+     * 4. Validate (image state / list).
+     * 5. Upload image (or skip if already in slot).
+     * 6. Confirm image.
+     * 7. Reset device.
+     * 8. Disconnect happens only after step 7 — when device reboots (connection drops). We do not
+     *    disconnect earlier; the library sends Reset and the link goes away when the device resets.
+     *
+     * Device must expose SMP service 8D53DC1D-... and characteristic DA2E7828-... (McuMgr transport).
+     *
+     * @param deviceId   BLE MAC address
+     * @param firmwarePath File path (file://...) or content URI to a .bin image
+     * @param promise   Resolves when DFU start is initiated; progress via events
      */
     @ReactMethod
-    public void enterDFUMode(String deviceId, Promise promise) {
-        try {
-            // Validate device is connected
-            BluetoothGatt gatt = connectedGatts.get(deviceId);
-            if (gatt == null) {
-                promise.reject("DEVICE_NOT_CONNECTED", "Device not connected: " + deviceId);
-                return;
-            }
-            
-            // Find System Command characteristic
-            BluetoothGattCharacteristic systemCommandChar = findCharacteristic(gatt, SYSTEM_COMMAND_CHAR_UUID);
-            if (systemCommandChar == null) {
-                promise.reject("CHARACTERISTIC_NOT_FOUND", "System Command characteristic not found");
-                return;
-            }
-            
-            // Build Enter DFU Mode command
-            byte[] command = new byte[]{
-                (byte) 0xAA,  // REQUEST_ID
-                (byte) 0x0A,  // CMD_START_DFU
-                (byte) 0x00,  // Length = 0
-                (byte) 0x00   // No payload
-            };
-            
-            // Set characteristic value
-            systemCommandChar.setValue(command);
-            
-            // Send command to device
-            boolean success = gatt.writeCharacteristic(systemCommandChar);
-            
-            if (success) {
-                // Command sent successfully
+    public void startMcuMgrDfu(String deviceId, String firmwarePath, Promise promise) {
+        if (currentMcuMgrDfuDeviceId != null) {
+            promise.reject("DFU_IN_PROGRESS", "A DFU is already in progress for " + currentMcuMgrDfuDeviceId);
+            return;
+        }
+        executeOnBLEThread(() -> {
+            try {
+                // Set immediately so restoreExistingConnections and any other path skip this device during DFU
+                currentMcuMgrDfuDeviceId = deviceId;
+                BluetoothAdapter adapter = bluetoothAdapter;
+                if (adapter == null) {
+                    currentMcuMgrDfuDeviceId = null;
+                    promise.reject("BLUETOOTH_UNAVAILABLE", "Bluetooth not available");
+                    return;
+                }
+                // Step 1 (nRF-aligned): Release app BLE connection so McuMgr can have the only link.
+                // We do NOT disconnect at the end — disconnect happens only when device resets after Reset command.
+                Log.i(TAG, "📤 [McuMgr DFU] Step 1: Releasing app connection so DFU can use the link (disconnect only after full DFU + device reset)");
+                synchronized (gattLock) {
+                    BluetoothGatt gatt = connectedGatts.get(deviceId);
+                    if (gatt != null) {
+                        connectionManager.disconnectDevice(deviceId, gatt);
+                        connectedGatts.remove(deviceId);
+                    }
+                }
+                mainHandler.post(() -> {
+                    // Notify JS so UI shows "Disconnected" immediately (connection manager callback may not emit)
+                    DeviceData deviceData = deviceDataMap.get(deviceId);
+                    if (deviceData != null) {
+                        WritableMap map = createDeviceInfoMap(deviceData);
+                        map.putString("connectionState", "disconnected");
+                        map.putString("reason", "released_for_dfu");
+                        sendEvent("DeviceDisconnected", map);
+                        Log.d(TAG, "📢 [McuMgr DFU] Sent DeviceDisconnected so UI updates (released for DFU)");
+                    }
+                    failGattQueueOnDisconnect(deviceId);
+                    cleanupDeviceResources(deviceId);
+                    Log.d(TAG, "🧹 [McuMgr DFU] Cleared GATT queue and resources for " + deviceId);
+                });
+                connectionManager.cancelDisconnectTimeout(deviceId);
+                Log.d(TAG, "📤 [McuMgr DFU] Step 2: Waiting 5s for link release and any in-flight connection to settle (align with nRF behavior)...");
+                try { Thread.sleep(5000); } catch (InterruptedException ignored) {}
+                Log.d(TAG, "📤 [McuMgr DFU] Step 3: Creating transport, reading firmware (McuMgr will connect → discover SMP → validate → upload → confirm → reset; disconnect when device reboots)");
+                BluetoothDevice device = adapter.getRemoteDevice(deviceId);
+                byte[] imageData = readFirmwareFileBytes(firmwarePath);
+                if (imageData == null || imageData.length == 0) {
+                    currentMcuMgrDfuDeviceId = null;
+                    promise.reject("INVALID_FIRMWARE", "Could not read firmware file: " + firmwarePath);
+                    return;
+                }
+                final int imageSizeBytes = imageData.length;
+                final long dfuStartTimeMs = System.currentTimeMillis();
+                // Per Nordic Android-nRF-Connect-Device-Manager: setEstimatedSwapTime, setWindowCapacity (1 = one
+                // request at a time, more reliable; 2+ needs MCUMGR_BUF_COUNT on device).
+                final FirmwareUpgradeManager.Settings settings = new FirmwareUpgradeManager.Settings.Builder()
+                    .setEstimatedSwapTime(7000)
+                    .setWindowCapacity(1)
+                    .build();
+                // One automatic retry on transaction timeout (Nordic issue #58: "retrying typically succeeds")
+                final int[] dfuRetryCount = {0};
+                final int maxDfuRetries = 1;
+                final Runnable[] startUploadRef = new Runnable[1];
+                startUploadRef[0] = new Runnable() {
+                    @Override
+                    public void run() {
+                        Log.i(TAG, "📤 [McuMgr DFU] Starting upload: device=" + deviceId + " imageSize=" + imageSizeBytes + " bytes (" + (imageSizeBytes / 1024) + " KB) windowCapacity=1 (attempt " + (dfuRetryCount[0] + 1) + ")");
+                        McuMgrBleTransport tr = new McuMgrBleTransport(getReactApplicationContext(), device);
+                        FirmwareUpgradeCallback<FirmwareUpgradeManager.State> cb = new FirmwareUpgradeCallback<FirmwareUpgradeManager.State>() {
+                            private int lastLoggedPercent = -1;
+                            @Override
+                            public void onUpgradeStarted(FirmwareUpgradeController controller) {
+                                long elapsed = System.currentTimeMillis() - dfuStartTimeMs;
+                                Log.i(TAG, "📤 [McuMgr DFU] onUpgradeStarted (elapsed " + elapsed + " ms)");
+                                sendDfuStateEvent(deviceId, "STARTED", 0);
+                            }
+                            @Override
+                            public void onStateChanged(FirmwareUpgradeManager.State previous, FirmwareUpgradeManager.State current) {
+                                long elapsed = System.currentTimeMillis() - dfuStartTimeMs;
+                                Log.i(TAG, "📤 [McuMgr DFU] State " + (previous != null ? previous.name() : "?") + " -> " + current.name() + " (elapsed " + elapsed + " ms)");
+                                if (current == FirmwareUpgradeManager.State.RESET) {
+                                    Log.i(TAG, "📤 [McuMgr DFU] Reset sent; disconnect will happen when device reboots (nRF-aligned)");
+                                }
+                                sendDfuStateEvent(deviceId, current.name(), 0);
+                            }
+                            @Override
+                            public void onUploadProgressChanged(int current, int total, long timestamp) {
+                                int percent = total > 0 ? (int) (100 * current / total) : 0;
+                                long elapsed = System.currentTimeMillis() - dfuStartTimeMs;
+                                if (percent >= lastLoggedPercent + 5 || percent == 0 || percent == 100) {
+                                    lastLoggedPercent = percent;
+                                    Log.i(TAG, "📤 [McuMgr DFU] progress " + percent + "% (" + current + "/" + total + " bytes) elapsed " + elapsed + " ms");
+                                }
+                                sendDfuProgressEvent(deviceId, percent, current, total);
+                            }
+                            @Override
+                            public void onUpgradeCompleted() {
+                                long elapsed = System.currentTimeMillis() - dfuStartTimeMs;
+                                Log.i(TAG, "✅ [McuMgr DFU] Upgrade complete (elapsed " + elapsed + " ms); Reset sent — disconnect when device reboots (nRF-aligned)");
+                                sendDfuStateEvent(deviceId, "COMPLETED", 100);
+                                currentMcuMgrDfuDeviceId = null;
+                                mcuMgrDfuManager = null;
+                            }
+                            @Override
+                            public void onUpgradeFailed(FirmwareUpgradeManager.State state, McuMgrException error) {
+                                long elapsed = System.currentTimeMillis() - dfuStartTimeMs;
+                                String errMsg = error != null ? error.getMessage() : "";
+                                String errClass = error != null ? error.getClass().getSimpleName() : "UNKNOWN";
+                                boolean isTimeout = errMsg != null && errMsg.toLowerCase().contains("timed out");
+                                Log.e(TAG, "❌ [McuMgr DFU] onUpgradeFailed state=" + (state != null ? state.name() : "null") + " error=" + errClass + " msg=" + errMsg + " (elapsed " + elapsed + " ms, last progress " + lastLoggedPercent + "%)");
+                                if (isTimeout && dfuRetryCount[0] < maxDfuRetries) {
+                                    dfuRetryCount[0]++;
+                                    mcuMgrDfuManager = null;
+                                    Log.i(TAG, "🔄 [McuMgr DFU] Transaction timeout — automatic retry " + dfuRetryCount[0] + "/" + maxDfuRetries + " in 2s (nRF issue #58: retry often succeeds)");
+                                    if (bleHandler != null) {
+                                        bleHandler.postDelayed(startUploadRef[0], 2000);
+                                    } else {
+                                        executorService.schedule(startUploadRef[0], 2, java.util.concurrent.TimeUnit.SECONDS);
+                                    }
+                                    return;
+                                }
+                                sendDfuErrorEvent(deviceId, errClass, errMsg);
+                                currentMcuMgrDfuDeviceId = null;
+                                mcuMgrDfuManager = null;
+                            }
+                            @Override
+                            public void onUpgradeCanceled(FirmwareUpgradeManager.State state) {
+                                long elapsed = System.currentTimeMillis() - dfuStartTimeMs;
+                                Log.w(TAG, "⚠️ [McuMgr DFU] onUpgradeCanceled state=" + (state != null ? state.name() : "null") + " (elapsed " + elapsed + " ms)");
+                                sendDfuStateEvent(deviceId, "CANCELED", 0);
+                                currentMcuMgrDfuDeviceId = null;
+                                mcuMgrDfuManager = null;
+                            }
+                        };
+                        mcuMgrDfuManager = new FirmwareUpgradeManager(tr, cb);
+                        mcuMgrDfuManager.setMode(FirmwareUpgradeManager.Mode.CONFIRM_ONLY);
+                        try {
+                            mcuMgrDfuManager.start(imageData, settings);
+                        } catch (McuMgrException e) {
+                            Log.e(TAG, "❌ [McuMgr DFU] start() threw", e);
+                            sendDfuErrorEvent(deviceId, e.getClass().getSimpleName(), e.getMessage());
+                            currentMcuMgrDfuDeviceId = null;
+                            mcuMgrDfuManager = null;
+                        }
+                    }
+                };
+                Log.i(TAG, "📤 [McuMgr DFU] Calling FirmwareUpgradeManager.start() now (McuMgr will connect and then upload)");
+                startUploadRef[0].run();
+                long postStartMs = System.currentTimeMillis() - dfuStartTimeMs;
+                Log.d(TAG, "📤 [McuMgr DFU] start() returned (took " + postStartMs + " ms); progress will come via callbacks");
                 WritableMap result = Arguments.createMap();
-                result.putString("status", "entering_dfu");
-                result.putString("message", "Device rebooting into DFU mode");
+                result.putString("status", "started");
                 result.putString("deviceId", deviceId);
-                result.putInt("estimatedRebootTimeMs", 3000);
+                result.putString("firmwarePath", firmwarePath);
+                result.putInt("imageSize", imageData.length);
                 promise.resolve(result);
-            } else {
-                // Write initiation failed
-                Log.e(TAG, "❌ [DFU] Failed to send Enter DFU Mode command");
-                promise.reject("WRITE_FAILED", "Failed to write Enter DFU Mode command");
+            } catch (Exception e) {
+                Log.e(TAG, "❌ [McuMgr DFU] start failed", e);
+                currentMcuMgrDfuDeviceId = null;
+                mcuMgrDfuManager = null;
+                promise.reject("DFU_START_ERROR", e.getMessage());
             }
-        } catch (Exception e) {
-            Log.e(TAG, "❌ [DFU] Error entering DFU mode: " + e.getMessage());
-            promise.reject("ENTER_DFU_ERROR", e.getMessage());
-        }
+        });
     }
+    
     /**
-     * Start DFU (Device Firmware Update) process
-     * 
-     * Purpose:
-     * - Initiates firmware update using Nordic DFU library
-     * - Updates device firmware from application or bootloader
-     * - Supports secure DFU with signed packages
-     * - Provides progress callbacks to React Native
-     * 
-     * Prerequisites:
-     * 1. Device must be in DFU mode (call enterDFUMode first)
-     * 2. Device must be advertising with DFU service UUID
-     * 3. Firmware file must be valid Zip package
-     * 4. File must be accessible via provided URI
-     * 
-     * DFU Process Flow:
-     * 1. Parse firmware file URI
-     * 2. Setup progress listener
-     * 3. Configure DFU service initiator
-     * 4. Start DFU service
-     * 5. Service connects to device
-     * 6. Service validates firmware signature
-     * 7. Service transfers firmware
-     * 8. Device validates and installs firmware
-     * 9. Device reboot with new firmware
-     * 
-     * DFU Configuration:
-     * - Device Name: "Smart Health Tag" (for notifications)
-     * - Keep Bond: true (preserve pairing after update)
-     * - Force DFU: false (don't force unsafe updates)
-     * - Packet Receipt Notifications: Enabled (every 12 packets)
-     * - Buttonless DFU: Enabled (experimental)
-     * 
-     * Packet Receipt Notifications:
-     * - Acknowledgment every 12 packets
-     * - Improves reliability on unstable connections
-     * - Trade-off: Slower but more reliable
-     * 
-     * Buttonless DFU:
-     * - Allows DFU without manual mode entry
-     * - Device switches to DFU automatically
-     * - Experimental feature - may not work on all devices
-     * 
-     * Firmware Package Format:
-     * - Zip file containing:
-     *   - manifest.json (metadata)
-     *   - application.bin (firmware binary)
-     *   - application.dat (init packet with signature)
-     * - Must be signed with private key matching device's public key
-     * 
-     * Progress Events:
-     * - DFUStateChanged: State transitions (connecting, uploading, etc.)
-     * - DFUProgress: Progress percentage, speed, parts
-     * - DFUCompleted: Update successful
-     * - DFUAborted: Update cancelled
-     * - DFUError: Update failed with error
-     * 
-     * Error Handling:
-     * - INVALID_FIRMWARE_PATH: File URI parsing failed
-     * - DFU_START_ERROR: Service initialization failed
-     * - Progress listener receives detailed error codes
-     * 
-     * Performance:
-     * - Typical speed: 2-5 KB/s (depends on packet receipt config)
-     * - 100 KB firmware: 20-50 seconds
-     * - Connection quality affects speed significantly
-     * 
-     * Security:
-     * - Secure DFU verifies firmware signature
-     * - Prevents unauthorized firmware installation
-     * - Device rejects unsigned or tampered packages
-     * 
-     * @param deviceAddress Device MAC address (in DFU mode)
-     * @param firmwarePath File URI path to firmware Zip package
-     * @param promise React Native promise
-     *                Resolves when DFU service starts
-     *                Rejects on initialization error
+     * Cancel ongoing McuMgr DFU.
      */
     @ReactMethod
-    public void startDFU(String deviceAddress, String firmwarePath, Promise promise) {
+    public void cancelMcuMgrDfu(Promise promise) {
         try {
-            // Parse firmware file URI
-            Uri fileUri = Uri.parse(firmwarePath);
-            if (fileUri == null) {
-                promise.reject("INVALID_FIRMWARE_PATH", "Invalid firmware file path");
+            if (mcuMgrDfuManager == null) {
+                promise.reject("NO_DFU_IN_PROGRESS", "No DFU in progress");
                 return;
             }
-            
-            // Track current DFU device
-            currentDfuDeviceAddress = deviceAddress;
-            
-            // Setup progress listener for events
-            setupDfuProgressListener();
-            
-            // Configure DFU service
-            final DfuServiceInitiator starter = new DfuServiceInitiator(deviceAddress)
-                    .setDeviceName("Smart Health Tag")  // Display name in notifications
-                    .setKeepBond(true)  // Preserve pairing after update
-                    .setForceDfu(false)  // Don't force unsafe updates
-                    .setPacketsReceiptNotificationsEnabled(true)  // Enable ACKs for reliability
-                    .setPacketsReceiptNotificationsValue(12)  // ACK every 12 packets
-                    .setUnsafeExperimentalButtonlessServiceInSecureDfuEnabled(true);  // Allow buttonless DFU
-            
-            // Set firmware package
-            starter.setZip(fileUri);
-            
-            // Start DFU service (runs in background)
-            starter.start(getReactApplicationContext(), DfuServiceWrapper.class);
-            
-            // Resolve promise (DFU continues in background)
-            WritableMap result = Arguments.createMap();
-            result.putString("status", "started");
-            result.putString("deviceId", deviceAddress);
-            result.putString("firmwarePath", firmwarePath);
-            promise.resolve(result);
-        } catch (Exception e) {
-            Log.e(TAG, "❌ [DFU] Error starting DFU: " + e.getMessage());
-            promise.reject("DFU_START_ERROR", e.getMessage());
-        }
-    }
-    @ReactMethod
-    public void cancelDFU(Promise promise) {
-        try {
-            if (currentDfuDeviceAddress == null) {
-                promise.reject("NO_DFU_IN_PROGRESS", "No DFU operation in progress");
-                return;
-            }
-            Intent stopIntent = new Intent(getReactApplicationContext(), DfuServiceWrapper.class);
-            getReactApplicationContext().stopService(stopIntent);
-            currentDfuDeviceAddress = null;
+            mcuMgrDfuManager.cancel();
             WritableMap result = Arguments.createMap();
             result.putString("status", "cancelled");
-            result.putString("deviceId", currentDfuDeviceAddress);
+            result.putString("deviceId", currentMcuMgrDfuDeviceId);
             promise.resolve(result);
         } catch (Exception e) {
-            Log.e(TAG, "❌ [DFU] Error cancelling DFU: " + e.getMessage());
             promise.reject("DFU_CANCEL_ERROR", e.getMessage());
         }
     }
-    @ReactMethod
-    public void isDeviceInDFUMode(String deviceId, Promise promise) {
-        try {
-            BluetoothGatt gatt = connectedGatts.get(deviceId);
-            if (gatt == null) {
-                promise.resolve(false);
-                return;
-            }
-            List<BluetoothGattService> services = gatt.getServices();
-            for (BluetoothGattService service : services) {
-                if (service.getUuid().toString().equalsIgnoreCase(DFU_SERVICE_UUID)) {
-                    promise.resolve(true);
-                    return;
-                }
-            }
-            promise.resolve(false);
-        } catch (Exception e) {
-            Log.e(TAG, "❌ [DFU] Error checking DFU mode: " + e.getMessage());
-            promise.reject("DFU_CHECK_ERROR", e.getMessage());
-        }
-    }
-    @ReactMethod
-    public void getDFUServiceUUID(Promise promise) {
-        try {
-            WritableMap result = Arguments.createMap();
-            result.putString("uuid", DFU_SERVICE_UUID);
-            result.putString("description", "Nordic DFU Service (Bootloader)");
-            promise.resolve(result);
-        } catch (Exception e) {
-            promise.reject("DFU_UUID_ERROR", e.getMessage());
-        }
-    }
+    
     /**
-     * Setup DFU progress listener for callbacks
-     * 
-     * Purpose:
-     * - Registers listener with Nordic DFU library
-     * - Receives DFU state changes and progress updates
-     * - Converts DFU callbacks to React Native events
-     * - Provides real-time feedback to UI
-     * 
-     * Listener Registration:
-     * - Unregisters existing listener (if any)
-     * - Creates new listener adapter
-     * - Registers with DFU service helper
-     * - Receives callbacks on background thread
-     * 
-     * DFU State Flow:
-     * 1. onDeviceConnecting: Connecting to device
-     * 2. onDeviceConnected: Connected successfully
-     * 3. onEnablingDfuMode: Switching to DFU mode (buttonless)
-     * 4. onDfuProcessStarting: Preparing firmware transfer
-     * 5. onDfuProcessStarted: Firmware transfer started
-     * 6. onProgressChanged: Progress updates (0-100%)
-     * 7. onFirmwareValidating: Device validating firmware
-     * 8. onDeviceDisconnecting: Disconnecting after transfer
-     * 9. onDeviceDisconnected: Disconnected
-     * 10. onDfuCompleted: Update successful (device reboots)
-     * 
-     * Progress Information:
-     * - progress: Percentage complete (0-100)
-     * - currentSpeed: Current transfer speed (bytes/sec)
-     * - avgSpeed: Average transfer speed (bytes/sec)
-     * - currentPart: Current part number (for multi-part updates)
-     * - totalParts: Total number of parts
-     * 
-     * Events Emitted:
-     * 
-     * DFUStateChanged:
-     * - state: Current state name
-     * - deviceId: Device MAC address
-     * - progress: Current progress percentage
-     * 
-     * DFUProgress:
-     * - deviceId: Device MAC address
-     * - progress: Percentage complete
-     * - currentSpeed: Current speed (bytes/sec)
-     * - avgSpeed: Average speed (bytes/sec)
-     * - part: Current part number
-     * - totalParts: Total parts
-     * 
-     * DFUCompleted:
-     * - state: "completed"
-     * - deviceId: Device MAC address
-     * - progress: 100
-     * - Clears currentDfuDeviceAddress
-     * 
-     * DFUAborted:
-     * - state: "aborted"
-     * - deviceId: Device MAC address
-     * - progress: 0
-     * - Clears currentDfuDeviceAddress
-     * 
-     * DFUError:
-     * - deviceId: Device MAC address
-     * - errorCode: DFU error code
-     * - errorType: DFU error type
-     * - message: Human-readable error message
-     * - Clears currentDfuDeviceAddress
-     * 
-     * Error Codes (Common):
-     * - 4101: File not found
-     * - 4102: File error
-     * - 4103: Connection timeout
-     * - 4104: GATT error
-     * - 4105: Initialization error
-     * - 4106: Invalid firmware
-     * - 4107: Signature mismatch
-     * 
-     * Threading:
-     * - Callbacks received on background thread
-     * - Events sent to React Native on JS thread
-     * - No synchronization needed for event emission
-     * 
-     * Cleanup:
-     * - Listener unregistered on module destroy
-     * - currentDfuDeviceAddress cleared on completion/error
-     * - Allows new DFU operations after completion
+     * Read firmware file into byte array. Supports file:// and content:// URIs.
      */
-    private void setupDfuProgressListener() {
-        // Unregister existing listener (if any)
-        if (dfuProgressListener != null) {
-            DfuServiceListenerHelper.unregisterProgressListener(getReactApplicationContext(), dfuProgressListener);
-        }
-        
-        // Create new progress listener
-        dfuProgressListener = new DfuProgressListenerAdapter() {
-            @Override
-            public void onDeviceConnecting(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "connecting", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onDeviceConnected(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "connected", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onDfuProcessStarting(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "starting", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onDfuProcessStarted(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "uploading", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onEnablingDfuMode(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "enabling_dfu", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onProgressChanged(String deviceAddress, int percent, float speed, 
-                                         float avgSpeed, int currentPart, int partsTotal) {
-                WritableMap params = Arguments.createMap();
-                params.putString("deviceId", deviceAddress);
-                params.putInt("progress", percent);
-                params.putDouble("currentSpeed", speed);
-                params.putDouble("avgSpeed", avgSpeed);
-                params.putInt("part", currentPart);
-                params.putInt("totalParts", partsTotal);
-                sendEvent("DFUProgress", params);
-            }
-            
-            @Override
-            public void onFirmwareValidating(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "validating", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onDeviceDisconnecting(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "disconnecting", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onDeviceDisconnected(String deviceAddress) {
-                sendDfuEvent("DFUStateChanged", "disconnected", deviceAddress, 0);
-            }
-            
-            @Override
-            public void onDfuCompleted(String deviceAddress) {
-                sendDfuEvent("DFUCompleted", "completed", deviceAddress, 100);
-                currentDfuDeviceAddress = null;  // Allow new DFU operations
-            }
-            
-            @Override
-            public void onDfuAborted(String deviceAddress) {
-                sendDfuEvent("DFUAborted", "aborted", deviceAddress, 0);
-                currentDfuDeviceAddress = null;  // Allow new DFU operations
-            }
-            
-            @Override
-            public void onError(String deviceAddress, int error, int errorType, String message) {
-                Log.e(TAG, "❌ [DFU] Error: " + message + " (Code: " + error + ", Type: " + errorType + ")");
-                
-                WritableMap params = Arguments.createMap();
-                params.putString("deviceId", deviceAddress);
-                params.putInt("errorCode", error);
-                params.putInt("errorType", errorType);
-                params.putString("message", message);
-                sendEvent("DFUError", params);
-                
-                currentDfuDeviceAddress = null;  // Allow new DFU operations
-            }
-        };
-        
-        // Register listener with DFU service
-        DfuServiceListenerHelper.registerProgressListener(getReactApplicationContext(), dfuProgressListener);
-    }
-    private void sendDfuEvent(String eventName, String state, String deviceId, int progress) {
-        WritableMap params = Arguments.createMap();
-        params.putString("state", state);
-        params.putString("deviceId", deviceId);
-        params.putInt("progress", progress);
-        sendEvent(eventName, params);
-    }
-}
-
-// ============================================================================
-// DFU SERVICE WRAPPER
-// ============================================================================
-
-/**
- * DFU Service Wrapper for Nordic DFU Library
- * 
- * Purpose:
- * - Extends Nordic DFU base service
- * - Provides configuration for DFU operations
- * - Handles notification taps during DFU
- * - Controls debug logging
- * 
- * Nordic DFU Library:
- * - Open-source library by Nordic Semiconductor
- * - Implements secure DFU protocol
- * - Supports Android and iOS
- * - Handles firmware transfer and validation
- * 
- * Service Lifecycle:
- * 1. Started by DfuServiceInitiator.start()
- * 2. Runs in foreground with notification
- * 3. Connects to device in DFU mode
- * 4. Transfers firmware
- * 5. Validates and installs firmware
- * 6. Stops when complete/aborted/error
- * 
- * Notification:
- * - Shows DFU progress to user
- * - Allows cancellation via notification action
- * - Tapping notification opens MainActivity
- * - Required for foreground service on Android O+
- * 
- * Debug Mode:
- * - Enabled in debug builds (BuildConfig.DEBUG)
- * - Provides verbose logging for troubleshooting
- * - Disabled in release builds for performance
- * 
- * Thread Safety:
- * - Service runs on background thread
- * - BLE operations executed sequentially
- * - Progress callbacks on main thread
- * 
- * Error Handling:
- * - Service handles all DFU errors internally
- * - Errors reported via progress listener
- * - Service stops gracefully on error
- * 
- * Resource Management:
- * - Service holds partial wake lock during DFU
- * - Released when DFU completes
- * - Prevents device sleep during update
- * 
- * Security:
- * - Verifies firmware signature before installation
- * - Uses device's public key for verification
- * - Rejects unsigned or tampered firmware
- * 
- * Note:
- * - Must be declared in AndroidManifest.xml
- * - Requires FOREGROUND_SERVICE permission
- * - Requires WAKE_LOCK permission for partial wake lock
- */
-class DfuServiceWrapper extends DfuBaseService {
-    /**
-     * Get notification target activity
-     * 
-     * Purpose:
-     * - Specifies activity to launch when notification tapped
-     * - Opens MainActivity to show DFU progress
-     * - Returns null if MainActivity class not found
-     * 
-     * Implementation:
-     * - Uses reflection to find MainActivity
-     * - Handles ClassNotFoundException gracefully
-     * - Returns null on error (notification still works)
-     * 
-     * Activity Launch:
-     * - Tapping notification launches MainActivity
-     * - Activity should handle DFU state display
-     * - Allows user to monitor progress from notification
-     * 
-     * @return MainActivity class or null if not found
-     */
-    @Override
-    protected Class<? extends android.app.Activity> getNotificationTarget() {
+    private byte[] readFirmwareFileBytes(String path) {
+        if (path == null || path.isEmpty()) return null;
         try {
-            return (Class<? extends android.app.Activity>) Class.forName("com.reactnativeboilerplate.MainActivity");
-        } catch (ClassNotFoundException e) {
+            Uri uri = path.startsWith("file://") ? Uri.parse(path) : Uri.parse(path);
+            InputStream is;
+            if ("file".equals(uri.getScheme())) {
+                String filePath = uri.getPath();
+                if (filePath == null) return null;
+                File f = new File(filePath);
+                if (!f.exists()) return null;
+                is = new FileInputStream(f);
+            } else {
+                is = getReactApplicationContext().getContentResolver().openInputStream(uri);
+            }
+            if (is == null) return null;
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = is.read(buf)) > 0) bos.write(buf, 0, n);
+            is.close();
+            return bos.toByteArray();
+        } catch (Exception e) {
+            Log.e(TAG, "❌ [McuMgr DFU] read firmware file failed: " + e.getMessage());
             return null;
         }
     }
     
-    /**
-     * Check if debug mode is enabled
-     * 
-     * Purpose:
-     * - Controls verbose logging in DFU library
-     * - Enabled in debug builds for troubleshooting
-     * - Disabled in release builds for performance
-     * 
-     * Debug Logging Includes:
-     * - BLE connection details
-     * - GATT operations (read/write)
-     * - Firmware transfer progress
-     * - Packet receipt notifications
-     * - Error details and stack traces
-     * 
-     * Performance Impact:
-     * - Minimal overhead in debug mode
-     * - No impact in release mode
-     * - Logs written to logcat only
-     * 
-     * @return true if debug build, false if release build
-     */
-    @Override
-    protected boolean isDebug() {
-        return BuildConfig.DEBUG;
+    private void sendDfuStateEvent(String deviceId, String state, int progress) {
+        WritableMap params = Arguments.createMap();
+        params.putString("deviceId", deviceId);
+        params.putString("state", state);
+        params.putInt("progress", progress);
+        sendEvent("DFUStateChanged", params);
+    }
+    
+    private void sendDfuProgressEvent(String deviceId, int progress, int current, int total) {
+        WritableMap params = Arguments.createMap();
+        params.putString("deviceId", deviceId);
+        params.putInt("progress", progress);
+        params.putInt("current", current);
+        params.putInt("total", total);
+        sendEvent("DFUProgress", params);
+    }
+    
+    private void sendDfuErrorEvent(String deviceId, String errorCode, String message) {
+        WritableMap params = Arguments.createMap();
+        params.putString("deviceId", deviceId);
+        params.putString("errorCode", errorCode != null ? errorCode : "UNKNOWN");
+        params.putString("message", message != null ? message : "");
+        sendEvent("DFUError", params);
     }
 }

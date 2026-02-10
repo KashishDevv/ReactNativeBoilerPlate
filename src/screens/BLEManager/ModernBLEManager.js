@@ -53,7 +53,6 @@ const ModernBLEManager = ({ navigation }) => {
   const [phoneBatteryLevel, setPhoneBatteryLevel] = useState(null);
   const [bleState, setBleState] = useState(BLE_STATES.UNKNOWN);
   const [refreshing, setRefreshing] = useState(false);
-  const [demoModeEnabled, setDemoModeEnabled] = useState(false);
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
   const rssiScanTimerRef = React.useRef(null);
@@ -103,15 +102,6 @@ const ModernBLEManager = ({ navigation }) => {
       }
     };
     requestPermissionsEarly();
-    const loadDemoModeState = async () => {
-      try {
-        const enabled = BLEService.isDemoModeEnabled();
-        setDemoModeEnabled(enabled);
-      } catch (error) {
-        console.log('Could not load demo mode state:', error);
-      }
-    };
-    loadDemoModeState();
     (async () => {
       try {
         const connected = await BLEService.getConnectedDevices();
@@ -1088,7 +1078,7 @@ const ModernBLEManager = ({ navigation }) => {
           }
         ]}
       >
-        { }
+        {null}
         <View style={[
           styles.connectionIndicator,
           { backgroundColor: getConnectionIndicatorColor(item.connectionState) }
@@ -1098,60 +1088,60 @@ const ModernBLEManager = ({ navigation }) => {
             <View style={styles.deviceNameContainer}>
               <Text style={styles.deviceName}>{item.name || 'Unknown Device'}</Text>
               <View style={styles.deviceBadgesContainer}>
-                {item.isFreshDiscovery && (
+                {item.isFreshDiscovery ? (
                   <View style={styles.freshDiscoveryBadge}>
-                    { }
+                    {null}
                   </View>
-                )}
+                ) : null}
               </View>
             </View>
             <Text style={styles.deviceId}>{item.id}</Text>
-            { }
-            {item.manufacturerData && (
+            {null}
+            {item.manufacturerData ? (
               <View style={styles.manufacturerDataContainer}>
-                {item.manufacturerData.recordCount !== undefined && item.manufacturerData.recordCount > 0 && (
+                {item.manufacturerData.recordCount !== undefined && item.manufacturerData.recordCount > 0 ? (
                   <Text style={styles.manufacturerDataText}>
                     📊 {String(item.manufacturerData.recordCount)} records
                   </Text>
-                )}
-                {item.manufacturerData.deviceStatus && (
+                ) : null}
+                {item.manufacturerData.deviceStatus ? (
                   <Text style={[
                     styles.manufacturerDataText,
                     { color: item.manufacturerData.deviceStatus === 'Good' ? '#4CAF50' : '#FF9800' }
                   ]}>
                     ⚙️ {item.manufacturerData.deviceStatus}
                   </Text>
-                )}
-                {item.manufacturerData.version !== undefined && (
+                ) : null}
+                {item.manufacturerData.version != null && item.manufacturerData.version !== '' ? (
                   <Text style={styles.manufacturerDataText}>
                     📋 v{String(item.manufacturerData.version)}
                   </Text>
-                )}
-                {item.manufacturerData.macId && (
+                ) : null}
+                {item.manufacturerData.macId ? (
                   <Text style={[styles.manufacturerDataText, { fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: 11 }]}>
                     📍 MAC ID: {item.manufacturerData.macId}
                   </Text>
-                )}
-                {item.manufacturerData.connectIndication !== undefined && (
+                ) : null}
+                {item.manufacturerData.connectIndication !== undefined ? (
                   <Text style={[
                     styles.manufacturerDataText,
                     { color: item.manufacturerData.connectIndication ? '#2196F3' : '#757575' }
                   ]}>
                     🔗 {item.manufacturerData.connectIndication ? 'Connect' : 'Standby'}
                   </Text>
-                )}
-                {!item.deviceData?.batteryLevel && item.manufacturerData.batteryLevel > 0 && (
+                ) : null}
+                {!item.deviceData?.batteryLevel && item.manufacturerData.batteryLevel > 0 ? (
                   <Text style={styles.manufacturerDataText}>
                     {`🔋 ${item.manufacturerData.batteryLevel}% (${item.manufacturerData.batteryMillivolts || 'N/A'}mV)`}
                   </Text>
-                )}
-                {item.deviceData?.batteryLevel > 0 && (
+                ) : null}
+                {item.deviceData?.batteryLevel > 0 ? (
                   <Text style={styles.manufacturerDataText}>
                     {`🔋 ${item.deviceData.batteryLevel}%`}
                   </Text>
-                )}
+                ) : null}
               </View>
-            )}
+            ) : null}
           </View>
           <View style={styles.deviceMeta}>
             <View style={styles.rssiContainer}>
@@ -1162,80 +1152,73 @@ const ModernBLEManager = ({ navigation }) => {
             </View>
           </View>
         </View>
-        { }
-        {item.isDemoTag && (
-          <View style={styles.demoBadge}>
-            <Text style={styles.demoBadgeText}>🏷️ DEMO</Text>
-          </View>
-        )}
-        { }
         {(item.deviceData?.batteryLevel !== null && item.deviceData?.batteryLevel !== undefined ||
           item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined ||
           item.deviceData?.steps !== null && item.deviceData?.steps !== undefined ||
-          item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined) && (
+          item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined) ? (
             <View>
-              { }
+              {null}
               <View style={styles.dataRow}>
-                { }
-                {item.deviceData?.dataSource && (
+                {null}
+                {item.deviceData?.dataSource ? (
                   <View style={styles.dataSourceBadge}>
                     <Text style={styles.dataSourceText}>
                       {item.deviceData.dataSource === 'live' ? '🟢 LIVE' :
                         item.deviceData.dataSource === 'synced' ? '💾 SYNCED' : '📦 CACHED'}
                     </Text>
                   </View>
-                )}
-                { }
-                {item.deviceData?.batteryLevel > 0 && (
+                ) : null}
+                {null}
+                {item.deviceData?.batteryLevel > 0 ? (
                   <View style={styles.dataItem}>
                     <Text style={styles.dataLabel}>🔋 Battery</Text>
                     <Text style={[styles.dataValue, { color: getBatteryColor(item.deviceData.batteryLevel) }]}>
                       {item.deviceData.batteryLevel}%
                     </Text>
                   </View>
-                )}
-                {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && item.deviceData?.temperature !== 0 && (
+                ) : null}
+                {item.deviceData?.temperature !== null && item.deviceData?.temperature !== undefined && item.deviceData?.temperature !== 0 ? (
                   <View style={styles.dataItem}>
                     <Text style={styles.dataLabel}>🌡️ Temp</Text>
                     <Text style={styles.dataValue}>
                       {String(item.deviceData.temperature?.toFixed(1))}°C
                     </Text>
                   </View>
-                )}
-                {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined && (
+                ) : null}
+                {item.deviceData?.steps !== null && item.deviceData?.steps !== undefined ? (
                   <View style={styles.dataItem}>
                     <Text style={styles.dataLabel}>👟 Latest</Text>
                     <Text style={styles.dataValue}>
                       {String(item.deviceData.steps?.toLocaleString())}
                     </Text>
                   </View>
-                )}
+                ) : null}
               </View>
-              { }
+              {null}
               {(item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined ||
-                (item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined)) && (
+                (item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined)) ? (
                   <View style={styles.dataRow}>
-                    {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined && (
+                    {item.deviceData?.totalSteps !== null && item.deviceData?.totalSteps !== undefined ? (
                       <View style={styles.dataItem}>
                         <Text style={styles.dataLabel}>🏃 Total</Text>
                         <Text style={[styles.dataValue, styles.totalStepsValue]}>
                           {item.deviceData.totalSteps.toLocaleString()}
                         </Text>
                       </View>
-                    )}
-                    { }
-                    {item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined && (
+                    ) : null}
+                    {null}
+                    {item.deviceData?.recordCount !== null && item.deviceData?.recordCount !== undefined ? (
                       <View style={styles.dataItem}>
                         <Text style={styles.dataLabel}>📊 Records</Text>
                         <Text style={[styles.dataValue, { color: item.deviceData.recordCount > 0 ? Colors.primary : Colors.lightText }]}>
                           {item.deviceData.recordCount}
                         </Text>
                       </View>
-                    )}
+                    ) : null}
                   </View>
-                )}
+                ) : null}
             </View>
-          )}
+          ) : null}
         <View style={styles.buttonContainer}>
           <TouchableOpacity
             style={getConnectionButtonStyle(item)}
@@ -1251,7 +1234,7 @@ const ModernBLEManager = ({ navigation }) => {
               </Text>
             )}
           </TouchableOpacity>
-          {item.connectionState === CONNECTION_STATES.CONNECTED && (
+          {item.connectionState === CONNECTION_STATES.CONNECTED ? (
             <TouchableOpacity
               style={styles.detailsButton}
               onPress={() => navigation.navigate('DeviceDetails', { deviceId: item.id })}
@@ -1259,9 +1242,9 @@ const ModernBLEManager = ({ navigation }) => {
             >
               <Text style={styles.detailsButtonText}>View Details</Text>
             </TouchableOpacity>
-          )}
-          { }
-          {item.connectionState === CONNECTION_STATES.CONNECTED && (
+          ) : null}
+          {null}
+          {item.connectionState === CONNECTION_STATES.CONNECTED ? (
             <TouchableOpacity
               style={[
                 styles.forgetButton,
@@ -1309,11 +1292,11 @@ const ModernBLEManager = ({ navigation }) => {
                 🗑️ Forget
               </Text>
             </TouchableOpacity>
-          )}
+          ) : null}
         </View>
-        { }
-        { }
-        {item.connectionState === CONNECTION_STATES.CONNECTED && (
+        {null}
+        {null}
+        {item.connectionState === CONNECTION_STATES.CONNECTED ? (
           <View style={styles.dataButtonsContainer}>
             <TouchableOpacity
               style={styles.liveDataButton}
@@ -1355,7 +1338,7 @@ const ModernBLEManager = ({ navigation }) => {
               <Text style={styles.dataButtonText}>Historical Data</Text>
             </TouchableOpacity>
           </View>
-        )}
+        ) : null}
       </Animated.View>
     );
   };
@@ -1406,7 +1389,7 @@ const ModernBLEManager = ({ navigation }) => {
   return (
     <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
       <StatusBar barStyle="dark-content" backgroundColor={Colors.white} />
-      { }
+      {null}
       <View style={styles.header}>
         <View style={styles.headerContent}>
           <Text style={styles.title}>Smart Tags</Text>
@@ -1415,28 +1398,6 @@ const ModernBLEManager = ({ navigation }) => {
           </Text>
         </View>
         <View style={styles.headerButtons}>
-          { }
-          <TouchableOpacity
-            style={[styles.demoButton, demoModeEnabled && styles.demoButtonActive]}
-            onPress={async () => {
-              try {
-                const newState = !demoModeEnabled;
-                await BLEService.setDemoModeEnabled(newState);
-                setDemoModeEnabled(newState);
-                const allKnownDevices = BLEService.getScannedDevices();
-                setDevices(Array.from(allKnownDevices.values()));
-              } catch (error) {
-                console.error('Error toggling demo mode:', error);
-                Alert.alert('Error', 'Failed to toggle demo mode');
-              }
-            }}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.demoButtonText}>
-              {demoModeEnabled ? '🏷️ Demo ON' : '🏷️ Demo'}
-            </Text>
-          </TouchableOpacity>
-          { }
           <TouchableOpacity
             style={[styles.scanButton, isScanning && styles.scanButtonActive]}
             onPress={isScanning ? stopScan : startScan}
@@ -1454,8 +1415,8 @@ const ModernBLEManager = ({ navigation }) => {
           </TouchableOpacity>
         </View>
       </View>
-      { }
-      { }
+      {null}
+      {null}
       {isScanning && (
         <Animated.View style={[styles.scanningIndicator, { opacity: fadeAnim }]}>
           <View style={styles.scanningContent}>
@@ -1483,15 +1444,15 @@ const ModernBLEManager = ({ navigation }) => {
         contentContainerStyle={allDevices.length === 0 ? styles.emptyListContainer : styles.listContainer}
         showsVerticalScrollIndicator={false}
       />
-      { }
-      {refreshing && allDevices.length > 0 && (
+      {null}
+      {refreshing && allDevices.length > 0 ? (
         <View style={styles.refreshOverlay}>
           <View style={styles.refreshOverlayContent}>
             <ActivityIndicator size="large" color={Colors.primary} />
             <Text style={styles.refreshOverlayText}>Refreshing...</Text>
           </View>
         </View>
-      )}
+      ) : null}
     </Animated.View>
   );
 };
@@ -1550,25 +1511,6 @@ const styles = StyleSheet.create({
   scanButtonText: {
     color: Colors.white,
     fontSize: Fonts.size.medium,
-  },
-  demoButton: {
-    backgroundColor: Colors.lightGray,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderRadius: 25,
-    minWidth: 80,
-    marginRight: Metrics.smallMargin,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  demoButtonActive: {
-    backgroundColor: Colors.warning,
-  },
-  demoButtonText: {
-    color: Colors.white,
-    fontSize: Fonts.size.small,
-    fontFamily: Fonts.type.bold,
-    fontFamily: Fonts.type.bold,
   },
   headerButtons: {
     flexDirection: 'row',
@@ -1725,19 +1667,6 @@ const styles = StyleSheet.create({
   },
   freshDiscoveryText: {
     color: Colors.primary,
-    fontSize: Fonts.size.tiny,
-    fontFamily: Fonts.type.bold,
-  },
-  demoBadge: {
-    backgroundColor: Colors.warning,
-    paddingHorizontal: Metrics.smallMargin,
-    paddingVertical: 4,
-    borderRadius: 12,
-    alignSelf: 'flex-start',
-    marginBottom: Metrics.smallMargin,
-  },
-  demoBadgeText: {
-    color: Colors.white,
     fontSize: Fonts.size.tiny,
     fontFamily: Fonts.type.bold,
   },

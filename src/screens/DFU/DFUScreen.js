@@ -1,678 +1,594 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
+  ScrollView,
   TouchableOpacity,
-  StyleSheet,
   ActivityIndicator,
   Alert,
-  ScrollView,
+  StyleSheet,
   Platform,
+  RefreshControl,
 } from 'react-native';
+import { pick, keepLocalCopy, types } from '@react-native-documents/picker';
 import BLEService from '../../services/ble/BLEService';
 import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
 import { Metrics } from '../../theme/Metrics';
 
-const DFUScreen = ({ route, navigation }) => {
-  const { deviceId, deviceName, currentFirmwareVersion } = route.params;
+const LATEST_VERSION = '1.0.11';
 
-  const [checking, setChecking] = useState(true);
-  const [updateInfo, setUpdateInfo] = useState(null);
-  
-  const [dfuInProgress, setDfuInProgress] = useState(false);
-  const [dfuProgress, setDfuProgress] = useState(0);
+/** Parse "x.y.z" into { major, minor, patch }. Invalid or missing parts become 0. */
+function parseVersion(v) {
+  if (!v || typeof v !== 'string') return { major: 0, minor: 0, patch: 0 };
+  const parts = v.trim().split('.').map((n) => parseInt(n, 10) || 0);
+  return {
+    major: parts[0] ?? 0,
+    minor: parts[1] ?? 0,
+    patch: parts[2] ?? 0,
+  };
+}
+
+/** Compare two version strings. Returns < 0 if a < b, 0 if equal, > 0 if a > b. */
+function compareVersions(a, b) {
+  const va = parseVersion(a);
+  const vb = parseVersion(b);
+  if (va.major !== vb.major) return va.major - vb.major;
+  if (va.minor !== vb.minor) return va.minor - vb.minor;
+  return va.patch - vb.patch;
+}
+
+/** Increment patch: "1.0.11" -> "1.0.12". */
+function incrementPatchVersion(v) {
+  const { major, minor, patch } = parseVersion(v);
+  return `${major}.${minor}.${patch + 1}`;
+}
+
+/** Format raw DFU error (e.g. "timeout 13", "Timeout 15") into a user-friendly message and optional raw line. */
+function formatDfuError(raw) {
+  if (!raw || typeof raw !== 'string') return { primary: raw || 'Unknown error', raw: null };
+  const lower = raw.toLowerCase().trim();
+  const timeoutMatch = lower.match(/timeout\s*[(\s]*(\d+)/);
+  if (timeoutMatch) {
+    const code = timeoutMatch[1];
+    return {
+      primary: 'Firmware update timed out. Keep the device close and try again. If it keeps failing, use a .bin file that matches this device.',
+      raw: `Error: ${raw}`,
+    };
+  }
+  if (lower.includes('timeout')) {
+    return {
+      primary: 'Firmware update timed out. Keep the device close and try again.',
+      raw: `Error: ${raw}`,
+    };
+  }
+  return { primary: raw, raw: null };
+}
+
+const DFUScreen = ({ route, navigation }) => {
+  const { deviceId, deviceName } = route.params || {};
+  const [currentVersion, setCurrentVersion] = useState(null);
+  const [latestVersion, setLatestVersion] = useState(null);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [checkingVersion, setCheckingVersion] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
   const [dfuState, setDfuState] = useState('');
-  const [downloadingFirmware, setDownloadingFirmware] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [dfuError, setDfuError] = useState(null);
+  const [updating, setUpdating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updateResult, setUpdateResult] = useState(null);
+
+  const fetchCurrentVersion = useCallback(async () => {
+    if (!deviceId) return;
+    if (!BLEService.isDeviceConnected(deviceId)) {
+      setCurrentVersion(null);
+      return;
+    }
+    setCheckingVersion(true);
+    setDfuError(null);
+    try {
+      const result = await BLEService.getFirmwareVersion(deviceId);
+      if (result?.success && result?.data != null) {
+        setCurrentVersion(typeof result.data === 'string' ? result.data : String(result.data));
+      } else {
+        setCurrentVersion(null);
+      }
+    } catch (e) {
+      setCurrentVersion(null);
+    } finally {
+      setCheckingVersion(false);
+    }
+  }, [deviceId]);
+
+  const checkForUpdates = useCallback(async () => {
+    setCheckingUpdate(true);
+    setDfuError(null);
+    try {
+      await new Promise((r) => setTimeout(r, 800));
+      const current = currentVersion || '0.0.0';
+      const isUpToDate = compareVersions(current, LATEST_VERSION) >= 0;
+      if (isUpToDate) {
+        setLatestVersion(LATEST_VERSION);
+        setUpdateAvailable(false);
+      } else {
+        const nextVersion = incrementPatchVersion(currentVersion);
+        setLatestVersion(nextVersion);
+        setUpdateAvailable(true);
+      }
+    } catch (e) {
+      setLatestVersion(null);
+      setUpdateAvailable(false);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }, [currentVersion]);
 
   useEffect(() => {
     navigation.setOptions({
-      title: `Firmware Update - ${deviceName || deviceId}`,
+      title: deviceName ? `Firmware Update – ${deviceName}` : 'Firmware Update',
     });
-    
-    checkForUpdates();
-    
-    return () => {
-      // Cleanup event listeners
-      BLEService.removeAllListeners('DFUProgress');
-      BLEService.removeAllListeners('DFUStateChanged');
-      BLEService.removeAllListeners('DFUError');
-      BLEService.removeAllListeners('DFUCompleted');
-      BLEService.removeAllListeners('DFUAborted');
+    fetchCurrentVersion();
+  }, [deviceId, deviceName, fetchCurrentVersion]);
+
+  const onStateRef = React.useRef(null);
+  const onProgressRef = React.useRef(null);
+  const onErrorRef = React.useRef(null);
+
+  useEffect(() => {
+    onStateRef.current = (e) => {
+      if (e?.deviceId === deviceId) {
+        setDfuState(e?.state || '');
+        if (e?.state === 'COMPLETED') {
+          setProgress(100);
+          setUpdating(false);
+          setDfuError(null);
+          setUpdateResult('success');
+          setCurrentVersion(null);
+        } else if (e?.state === 'CANCELED') {
+          setUpdating(false);
+          setUpdateResult(null);
+        }
+      }
     };
+    onProgressRef.current = (e) => {
+      if (e?.deviceId === deviceId) setProgress(e?.progress ?? 0);
+    };
+    onErrorRef.current = (e) => {
+      if (e?.deviceId === deviceId) {
+        const raw = e?.message || e?.errorCode || 'Unknown error';
+        setDfuError(raw);
+        setUpdating(false);
+        setUpdateResult('failed');
+      }
+    };
+    const onState = (e) => onStateRef.current?.(e);
+    const onProgress = (e) => onProgressRef.current?.(e);
+    const onError = (e) => onErrorRef.current?.(e);
+    BLEService.on('DFUStateChanged', onState);
+    BLEService.on('DFUProgress', onProgress);
+    BLEService.on('DFUError', onError);
+    return () => {
+      BLEService.off('DFUStateChanged', onState);
+      BLEService.off('DFUProgress', onProgress);
+      BLEService.off('DFUError', onError);
+    };
+  }, [deviceId, fetchCurrentVersion]);
+
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setDfuError(null);
+    setUpdateResult(null);
+    await fetchCurrentVersion();
+    setRefreshing(false);
+  }, [fetchCurrentVersion]);
+
+  const pickFile = useCallback(async () => {
+    try {
+      // Use types.allFiles so iOS gets UTI 'public.item' (not '*/*' which is invalid on iOS)
+      const [file] = await pick({ type: [types.allFiles] });
+      if (!file?.uri) return;
+      const name = file.name ?? file.fileName ?? 'firmware';
+      const isBin = name.toLowerCase().endsWith('.bin');
+      if (!isBin) {
+        Alert.alert('Invalid file', 'Please select a .bin firmware file.');
+        return;
+      }
+      const [localCopy] = await keepLocalCopy({
+        files: [{ uri: file.uri, fileName: name }],
+        destination: 'cachesDirectory',
+      });
+      // keepLocalCopy returns { localUri, status } on success (not "uri") - use localUri so native gets a stable path in Caches
+      const uriToUse = localCopy?.status === 'success' && localCopy?.localUri
+        ? localCopy.localUri
+        : file.uri;
+      if (localCopy?.status === 'error' && localCopy?.copyError) {
+        console.warn('[DFU] keepLocalCopy error:', localCopy.copyError, '- using pick URI as fallback');
+      }
+      setSelectedFile({
+        uri: uriToUse,
+        name,
+        size: file.size,
+      });
+      setDfuError(null);
+    } catch (e) {
+      if (e?.code !== 'DOCUMENT_PICKER_CANCELED') {
+        Alert.alert('Error', e?.message || 'Failed to pick file');
+      }
+    }
   }, []);
 
-  const checkForUpdates = async () => {
+  const startUpdate = useCallback(async () => {
+    if (!selectedFile || !deviceId) return;
+    setUpdating(true);
+    setDfuError(null);
+    setUpdateResult(null);
+    setProgress(0);
+    setDfuState('STARTING');
     try {
-      setChecking(true);
-      
-      // Get device info
-      const device = BLEService.getDevice(deviceId);
-      const currentVersion = currentFirmwareVersion || device?.firmwareVersion || '1.0.0';
-      
-      console.log('🔍 [DFU] Checking for updates for device:', deviceId);
-      console.log('   Current version:', currentVersion);
-      
-      const result = await BLEService.checkForFirmwareUpdate(deviceId, currentVersion);
-      
-      setUpdateInfo({
-        currentVersion,
-        ...result
-      });
-      
-    } catch (error) {
-      console.error('❌ [DFU] Error checking for updates:', error);
-      Alert.alert('Error', 'Failed to check for updates. Please try again.');
-    } finally {
-      setChecking(false);
+      await BLEService.startMcuMgrDfu(deviceId, selectedFile.uri);
+    } catch (e) {
+      setDfuError(e?.message || 'Start update failed');
+      setUpdating(false);
     }
-  };
+  }, [deviceId, selectedFile]);
 
-  const startUpdate = async () => {
-    if (!updateInfo?.updateAvailable) {
-      return;
-    }
-
-    Alert.alert(
-      'Firmware Update',
-      `Update from ${updateInfo.currentVersion} to ${updateInfo.latestVersion}?\n\n` +
-      `⚠️ Important:\n` +
-      `• Ensure device has >30% battery\n` +
-      `• Keep device within range\n` +
-      `• Do not disconnect during update\n` +
-      `• Update takes ~2-3 minutes`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Update Now', 
-          style: 'default',
-          onPress: async () => {
-            await performUpdate();
-          }
-        }
-      ]
-    );
-  };
-
-  const performUpdate = async () => {
+  const cancelUpdate = useCallback(async () => {
     try {
-      setDownloadingFirmware(true);
-      setDownloadProgress(0);
-      
-      // Step 1: Download firmware
-      console.log('📥 [DFU] Downloading firmware version:', updateInfo.latestVersion);
-      
-      const firmwarePath = await BLEService.downloadFirmware(
-        updateInfo.latestVersion,
-        updateInfo.downloadUrl || 'https://your-server.com/firmware'
-      );
-      
-      setDownloadingFirmware(false);
-      setDfuInProgress(true);
-      setDfuProgress(0);
-      setDfuState('preparing');
-
-      // Step 2: Enter DFU mode (send 0x0A command)
-      console.log('🔧 [DFU] Entering DFU mode...');
-      setDfuState('entering_dfu');
-      
-      await BLEService.enterDFUMode(deviceId);
-      
-      // Step 3: Wait for device to reboot into DFU mode
-      console.log('⏳ [DFU] Waiting for device to reboot...');
-      setDfuState('waiting_for_reboot');
-      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
-
-      // Step 4: Start DFU transfer
-      console.log('📤 [DFU] Starting firmware transfer...');
-      setDfuState('transferring');
-      
-      await BLEService.startDFU(deviceId, firmwarePath, {
-        onProgress: (data) => {
-          console.log(`📊 [DFU] Progress: ${data.progress}%`);
-          setDfuProgress(data.progress);
-          
-          // Map DFU state to user-friendly messages
-          if (data.progress < 10) {
-            setDfuState('initializing');
-          } else if (data.progress < 95) {
-            setDfuState('uploading');
-          } else {
-            setDfuState('finalizing');
-          }
-        },
-        onStateChange: (data) => {
-          console.log('🔧 [DFU] State changed:', data.state);
-          setDfuState(data.state);
-        },
-        onError: (error) => {
-          console.error('❌ [DFU] Error:', error);
-          setDfuInProgress(false);
-          setDfuState('');
-          
-          Alert.alert(
-            'Update Failed',
-            error.message || 'An error occurred during the firmware update.',
-            [
-              { text: 'OK', onPress: () => navigation.goBack() }
-            ]
-          );
-        },
-        onComplete: () => {
-          console.log('🎉 [DFU] Update completed successfully!');
-          setDfuInProgress(false);
-          setDfuProgress(100);
-          
-          Alert.alert(
-            'Success!',
-            `Firmware updated successfully!\n\nNew version: ${updateInfo.latestVersion}\n\nDevice will restart now.`,
-            [
-              { text: 'OK', onPress: () => navigation.goBack() }
-            ]
-          );
-        },
-        onAborted: () => {
-          console.log('🛑 [DFU] Update aborted');
-          setDfuInProgress(false);
-          
-          Alert.alert(
-            'Update Cancelled',
-            'Firmware update was cancelled.',
-            [
-              { text: 'OK' }
-            ]
-          );
-        }
-      });
-
-    } catch (error) {
-      console.error('❌ [DFU] Update flow error:', error);
-      setDfuInProgress(false);
-      setDownloadingFirmware(false);
-      
-      Alert.alert(
-        'Error',
-        error.message || 'Failed to start firmware update. Please try again.'
-      );
+      await BLEService.cancelMcuMgrDfu();
+    } catch (e) {
+      Alert.alert('Cancel failed', e?.message || 'Could not cancel');
     }
-  };
+  }, []);
 
-  const cancelUpdate = async () => {
-    Alert.alert(
-      'Cancel Update?',
-      'Are you sure you want to cancel the firmware update?\n\nThis may leave your device in an unstable state.',
-      [
-        { text: 'No', style: 'cancel' },
-        { 
-          text: 'Yes, Cancel', 
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await BLEService.cancelDFU();
-              setDfuInProgress(false);
-              
-              Alert.alert(
-                'Cancelled',
-                'Firmware update has been cancelled. Please reconnect to your device.',
-                [
-                  { text: 'OK', onPress: () => navigation.goBack() }
-                ]
-              );
-            } catch (error) {
-              Alert.alert('Error', 'Failed to cancel update');
-            }
-          }
-        }
-      ]
-    );
-  };
-
-  const getStateDisplayText = (state) => {
-    const stateMap = {
-      'preparing': 'Preparing update...',
-      'entering_dfu': 'Entering update mode...',
-      'waiting_for_reboot': 'Device rebooting...',
-      'connecting': 'Connecting to bootloader...',
-      'connected': 'Connected to bootloader',
-      'starting': 'Starting update...',
-      'enabling_dfu': 'Enabling update mode...',
-      'uploading': 'Uploading firmware...',
-      'transferring': 'Transferring firmware...',
-      'initializing': 'Initializing transfer...',
-      'finalizing': 'Finalizing update...',
-      'validating': 'Validating firmware...',
-      'disconnecting': 'Completing update...',
-      'disconnected': 'Update complete',
-      'completed': 'Update successful!',
-      'aborted': 'Update cancelled'
-    };
-    
-    return stateMap[state] || state;
-  };
-
-  // Loading state
-  if (checking) {
-    return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color={Colors.primary} />
-        <Text style={styles.statusText}>Checking for updates...</Text>
-      </View>
-    );
-  }
-
-  // DFU in progress state
-  if (dfuInProgress || downloadingFirmware) {
-    return (
-      <View style={styles.centerContainer}>
-        <View style={styles.updateContainer}>
-          <Text style={styles.title}>
-            {downloadingFirmware ? '📥 Downloading Firmware' : '🔄 Updating Firmware'}
-          </Text>
-          
-          <View style={styles.progressContainer}>
-            <View style={styles.progressBar}>
-              <View 
-                style={[
-                  styles.progressFill, 
-                  { width: `${downloadingFirmware ? downloadProgress : dfuProgress}%` }
-                ]} 
-              />
+  return (
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} tintColor={Colors.primary} />
+      }
+    >
+      {/* Version card */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <Text style={styles.cardTitle}>Firmware version</Text>
+          {latestVersion != null && (
+            <View style={[styles.chip, updateAvailable ? styles.chipUpdate : styles.chipOk]}>
+              <Text style={styles.chipText}>
+                {updateAvailable ? 'Update available' : 'No updates available'}
+              </Text>
             </View>
-            <Text style={styles.progressText}>
-              {downloadingFirmware ? downloadProgress : dfuProgress}%
-            </Text>
-          </View>
-
-          <Text style={styles.stateText}>
-            {downloadingFirmware ? 'Downloading update package...' : getStateDisplayText(dfuState)}
-          </Text>
-
-          <View style={styles.warningBox}>
-            <Text style={styles.warningTitle}>⚠️ Important</Text>
-            <Text style={styles.warningText}>
-              • Keep device close and within range{'\n'}
-              • Do not disconnect or close app{'\n'}
-              • Device will restart after update{'\n'}
-              • This may take 2-3 minutes
-            </Text>
-          </View>
-
-          {dfuInProgress && !downloadingFirmware && (
-            <TouchableOpacity style={styles.cancelButton} onPress={cancelUpdate}>
-              <Text style={styles.cancelButtonText}>Cancel Update</Text>
-            </TouchableOpacity>
           )}
         </View>
-      </View>
-    );
-  }
-
-  // Main content
-  return (
-    <ScrollView 
-      style={styles.container}
-      contentContainerStyle={styles.contentContainer}
-    >
-      <View style={styles.header}>
-        <Text style={styles.deviceName}>{deviceName || deviceId}</Text>
-        <Text style={styles.deviceIdText}>{deviceId}</Text>
-      </View>
-
-      <View style={styles.versionCard}>
-        <Text style={styles.label}>Current Firmware Version</Text>
-        <Text style={styles.version}>{updateInfo?.currentVersion || '1.0.0'}</Text>
-      </View>
-
-      {updateInfo?.updateAvailable ? (
-        <View>
-          <View style={styles.updateCard}>
-            <View style={styles.updateHeader}>
-              <Text style={styles.updateIcon}>🎉</Text>
-              <Text style={styles.updateTitle}>Update Available</Text>
-            </View>
-            
-            <View style={styles.versionCard}>
-              <Text style={styles.label}>New Version</Text>
-              <Text style={[styles.version, styles.newVersion]}>
-                {updateInfo.latestVersion}
-              </Text>
-            </View>
-
-            {updateInfo.releaseNotes && (
-              <View style={styles.releaseNotesCard}>
-                <Text style={styles.releaseNotesTitle}>What's New</Text>
-                <Text style={styles.releaseNotes}>{updateInfo.releaseNotes}</Text>
-              </View>
-            )}
-
-            {updateInfo.critical && (
-              <View style={styles.criticalBanner}>
-                <Text style={styles.criticalText}>
-                  🔴 Critical Update - Security Fix
-                </Text>
-              </View>
-            )}
-
-            <TouchableOpacity style={styles.updateButton} onPress={startUpdate}>
-              <Text style={styles.updateButtonText}>
-                {updateInfo.critical ? 'Install Critical Update' : 'Update Now'}
-              </Text>
-            </TouchableOpacity>
-
-            <View style={styles.infoBox}>
-              <Text style={styles.infoText}>
-                📱 Update duration: ~2-3 minutes{'\n'}
-                🔋 Requires 30%+ battery{'\n'}
-                📡 Stay within BLE range
-              </Text>
-            </View>
-          </View>
+        <View style={styles.versionRow}>
+          <Text style={styles.versionLabel}>Current (device)</Text>
+          {checkingVersion ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <Text style={styles.versionValue}>{currentVersion ?? '—'}</Text>
+          )}
         </View>
-      ) : (
-        <View style={styles.upToDateCard}>
-          <Text style={styles.upToDateIcon}>✅</Text>
-          <Text style={styles.upToDateText}>You're Up to Date!</Text>
-          <Text style={styles.upToDateSubtext}>
-            Your device is running the latest firmware
+        <View style={[styles.versionRow, styles.versionRowLast]}>
+          <Text style={styles.versionLabel}>Latest available</Text>
+          {checkingUpdate ? (
+            <ActivityIndicator size="small" color={Colors.primary} />
+          ) : (
+            <Text style={styles.versionValue}>{latestVersion ?? '—'}</Text>
+          )}
+        </View>
+        <TouchableOpacity
+          style={styles.btnOutline}
+          onPress={checkForUpdates}
+          disabled={checkingUpdate}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.btnOutlineText}>
+            {checkingUpdate ? 'Checking…' : 'Check for updates'}
           </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Firmware file card */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Firmware file</Text>
+        <Text style={styles.hint}>
+          Select a .bin file for MCUboot update.
+        </Text>
+        <TouchableOpacity
+          style={[styles.filePicker, selectedFile && styles.filePickerFilled]}
+          onPress={pickFile}
+          disabled={updating}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.filePickerText} numberOfLines={1}>
+            {selectedFile ? selectedFile.name : 'Choose .bin file'}
+          </Text>
+          {selectedFile?.size != null && (
+            <Text style={styles.fileSize}>
+              {(selectedFile.size / 1024).toFixed(1)} KB
+            </Text>
+          )}
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.btnPrimary, (!selectedFile || updating) && styles.btnDisabled]}
+          onPress={startUpdate}
+          disabled={!selectedFile || updating}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.btnPrimaryText}>
+            {updating ? 'Updating…' : 'Start firmware update'}
+          </Text>
+        </TouchableOpacity>
+        {updating && (
+          <TouchableOpacity style={styles.btnCancel} onPress={cancelUpdate} activeOpacity={0.7}>
+            <Text style={styles.btnCancelText}>Cancel update</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Progress & result card */}
+      {(updating || dfuState || progress > 0 || updateResult) && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Status</Text>
+          {updateResult === 'success' && (
+            <View style={styles.resultChipSuccess}>
+              <Text style={styles.resultChipText}>✓ Success</Text>
+            </View>
+          )}
+          {updateResult === 'failed' && (
+            <View style={styles.resultChipFailed}>
+              <Text style={styles.resultChipText}>✕ Failed</Text>
+            </View>
+          )}
+          {!updateResult && dfuState ? (
+            <Text style={styles.stateLabel}>{dfuState}</Text>
+          ) : null}
+          {(progress > 0 || updating) && (
+            <View style={styles.progressWrap}>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${progress}%` }]} />
+              </View>
+              <Text style={styles.progressPercent}>{progress}%</Text>
+            </View>
+          )}
         </View>
       )}
 
-      <TouchableOpacity style={styles.checkButton} onPress={checkForUpdates}>
-        <Text style={styles.checkButtonText}>Check for Updates</Text>
-      </TouchableOpacity>
-
-      <View style={styles.infoSection}>
-        <Text style={styles.infoSectionTitle}>About Firmware Updates</Text>
-        <Text style={styles.infoSectionText}>
-          • Updates fix bugs and add features{'\n'}
-          • Updates improve device performance{'\n'}
-          • Critical updates address security issues{'\n'}
-          • Your device will restart after update
-        </Text>
-      </View>
+      {/* Error card */}
+      {dfuError ? (() => {
+        const { primary, raw } = formatDfuError(dfuError);
+        return (
+          <View style={styles.errorCard}>
+            <Text style={styles.errorTitle}>Update failed</Text>
+            <Text style={styles.errorText}>{primary}</Text>
+            {raw ? <Text style={styles.errorRaw}>{raw}</Text> : null}
+          </View>
+        );
+      })() : null}
     </ScrollView>
   );
 };
+
+const CARD_RADIUS = 16;
+const SECTION_GAP = 20;
+const BOTTOM_PAD = 48;
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
   },
-  centerContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: Colors.background,
-  },
-  contentContainer: {
+  content: {
     padding: Metrics.baseMargin,
+    paddingBottom: BOTTOM_PAD,
   },
-  header: {
-    marginBottom: Metrics.baseMargin * 2,
-    alignItems: 'center',
-  },
-  deviceName: {
-    fontSize: Fonts.size.h5,
-    fontWeight: '600',
-    color: Colors.text,
-    marginBottom: Metrics.smallMargin,
-  },
-  deviceIdText: {
-    fontSize: Fonts.size.small,
-    color: Colors.textSecondary,
-  },
-  versionCard: {
+  card: {
     backgroundColor: Colors.white,
+    borderRadius: CARD_RADIUS,
     padding: Metrics.baseMargin,
-    borderRadius: 12,
-    marginBottom: Metrics.baseMargin,
+    marginBottom: SECTION_GAP,
     ...Platform.select({
       ios: {
-        shadowColor: '#000',
+        shadowColor: Colors.shadow,
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
       },
-      android: {
-        elevation: 3,
-      },
+      android: { elevation: 3 },
     }),
   },
-  label: {
-    fontSize: Fonts.size.small,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-  },
-  version: {
-    fontSize: Fonts.size.h6,
-    fontWeight: '600',
-    color: Colors.text,
-  },
-  newVersion: {
-    color: Colors.primary,
-  },
-  updateCard: {
-    backgroundColor: Colors.white,
-    padding: Metrics.baseMargin,
-    borderRadius: 12,
-    marginBottom: Metrics.baseMargin,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 3,
-      },
-    }),
-  },
-  updateHeader: {
+  cardHeader: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Metrics.baseMargin,
-  },
-  updateIcon: {
-    fontSize: 32,
-    marginRight: Metrics.baseMargin,
-  },
-  updateTitle: {
-    fontSize: Fonts.size.h6,
-    fontWeight: '600',
-    color: Colors.text,
-  },
-  releaseNotesCard: {
-    backgroundColor: Colors.lightGray,
-    padding: Metrics.baseMargin,
-    borderRadius: 8,
-    marginBottom: Metrics.baseMargin,
-  },
-  releaseNotesTitle: {
-    fontSize: Fonts.size.medium,
-    fontWeight: '600',
-    color: Colors.text,
     marginBottom: Metrics.smallMargin,
   },
-  releaseNotes: {
-    fontSize: Fonts.size.small,
-    color: Colors.text,
-    lineHeight: 20,
-  },
-  criticalBanner: {
-    backgroundColor: '#FFE5E5',
-    padding: Metrics.baseMargin,
-    borderRadius: 8,
-    marginBottom: Metrics.baseMargin,
-    borderLeftWidth: 4,
-    borderLeftColor: '#FF3B30',
-  },
-  criticalText: {
-    fontSize: Fonts.size.medium,
+  cardTitle: {
+    fontSize: 17,
+    fontFamily: Fonts.type?.bold || Fonts.type?.regular || undefined,
     fontWeight: '600',
-    color: '#FF3B30',
+    color: Colors.text,
   },
-  updateButton: {
+  chip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 20,
+  },
+  chipUpdate: {
+    backgroundColor: Colors.warningLight,
+  },
+  chipOk: {
+    backgroundColor: Colors.successLight,
+  },
+  chipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  versionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  versionRowLast: {
+    borderBottomWidth: 0,
+  },
+  versionLabel: {
+    fontSize: 14,
+    color: Colors.lightText,
+    fontFamily: Fonts.type?.regular || undefined,
+  },
+  versionValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  hint: {
+    fontSize: 13,
+    color: Colors.lightText,
+    marginBottom: 12,
+    lineHeight: 18,
+  },
+  btnOutline: {
+    backgroundColor: 'transparent',
+    paddingVertical: 12,
+    paddingHorizontal: Metrics.baseMargin,
+    borderRadius: 12,
+    marginTop: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+  },
+  btnOutlineText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.primary,
+    textAlign: 'center',
+  },
+  filePicker: {
+    borderWidth: 2,
+    borderStyle: 'dashed',
+    borderColor: Colors.border,
+    borderRadius: 12,
+    paddingVertical: 20,
+    paddingHorizontal: Metrics.baseMargin,
+    marginBottom: 12,
+    alignItems: 'center',
+    backgroundColor: Colors.backgroundSecondary,
+  },
+  filePickerFilled: {
+    borderColor: Colors.primaryLight,
+    backgroundColor: Colors.primaryLight,
+  },
+  filePickerText: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: Colors.text,
+  },
+  fileSize: {
+    fontSize: 12,
+    color: Colors.lightText,
+    marginTop: 4,
+  },
+  btnPrimary: {
     backgroundColor: Colors.primary,
-    padding: Metrics.baseMargin,
+    paddingVertical: 16,
+    paddingHorizontal: Metrics.baseMargin,
     borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: Metrics.baseMargin,
   },
-  updateButtonText: {
-    color: Colors.white,
-    fontSize: Fonts.size.medium,
+  btnDisabled: {
+    opacity: 0.5,
+  },
+  btnPrimaryText: {
+    fontSize: 16,
     fontWeight: '600',
+    color: Colors.white,
+    textAlign: 'center',
   },
-  checkButton: {
-    backgroundColor: Colors.lightGray,
-    padding: Metrics.baseMargin,
-    borderRadius: 12,
+  btnCancel: {
+    marginTop: 12,
+    paddingVertical: 12,
     alignItems: 'center',
-    marginBottom: Metrics.baseMargin,
   },
-  checkButtonText: {
-    color: Colors.text,
-    fontSize: Fonts.size.medium,
+  btnCancelText: {
+    fontSize: 14,
+    color: Colors.error,
     fontWeight: '500',
   },
-  upToDateCard: {
-    backgroundColor: '#E8F5E9',
-    padding: Metrics.baseMargin * 2,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: Metrics.baseMargin,
+  resultChipSuccess: {
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.successLight,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginBottom: 10,
   },
-  upToDateIcon: {
-    fontSize: 48,
-    marginBottom: Metrics.baseMargin,
+  resultChipFailed: {
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.errorLight,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginBottom: 10,
   },
-  upToDateText: {
-    fontSize: Fonts.size.h6,
-    fontWeight: '600',
-    color: '#4CAF50',
-    marginBottom: Metrics.smallMargin,
-  },
-  upToDateSubtext: {
-    fontSize: Fonts.size.small,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-  },
-  infoBox: {
-    backgroundColor: Colors.lightGray,
-    padding: Metrics.baseMargin,
-    borderRadius: 8,
-  },
-  infoText: {
-    fontSize: Fonts.size.small,
-    color: Colors.text,
-    lineHeight: 20,
-  },
-  infoSection: {
-    backgroundColor: Colors.white,
-    padding: Metrics.baseMargin,
-    borderRadius: 12,
-    marginTop: Metrics.baseMargin,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 3,
-      },
-    }),
-  },
-  infoSectionTitle: {
-    fontSize: Fonts.size.medium,
+  resultChipText: {
+    fontSize: 15,
     fontWeight: '600',
     color: Colors.text,
-    marginBottom: Metrics.smallMargin,
   },
-  infoSectionText: {
-    fontSize: Fonts.size.small,
-    color: Colors.textSecondary,
-    lineHeight: 20,
-  },
-  updateContainer: {
-    width: '100%',
-    maxWidth: 400,
-    padding: Metrics.baseMargin * 2,
-  },
-  title: {
-    fontSize: Fonts.size.h5,
-    fontWeight: 'bold',
-    marginBottom: Metrics.baseMargin * 2,
-    textAlign: 'center',
+  stateLabel: {
+    fontSize: 14,
+    fontWeight: '600',
     color: Colors.text,
+    marginBottom: 10,
   },
-  progressContainer: {
-    width: '100%',
-    marginVertical: Metrics.baseMargin * 2,
+  progressWrap: {
+    marginTop: 4,
   },
-  progressBar: {
-    height: 8,
+  progressTrack: {
+    height: 10,
     backgroundColor: Colors.lightGray,
-    borderRadius: 4,
+    borderRadius: 5,
     overflow: 'hidden',
-    width: '100%',
+    marginBottom: 8,
   },
   progressFill: {
     height: '100%',
     backgroundColor: Colors.primary,
+    borderRadius: 5,
   },
-  progressText: {
-    textAlign: 'center',
-    fontSize: Fonts.size.h4,
-    fontWeight: 'bold',
-    marginTop: Metrics.baseMargin,
-    color: Colors.text,
+  progressPercent: {
+    fontSize: 13,
+    color: Colors.lightText,
+    textAlign: 'right',
   },
-  stateText: {
-    textAlign: 'center',
-    fontSize: Fonts.size.medium,
-    color: Colors.textSecondary,
-    marginBottom: Metrics.baseMargin * 2,
-  },
-  warningBox: {
-    backgroundColor: '#FFF3E0',
+  errorCard: {
+    backgroundColor: Colors.errorLight,
+    borderRadius: CARD_RADIUS,
     padding: Metrics.baseMargin,
-    borderRadius: 8,
-    marginBottom: Metrics.baseMargin * 2,
-    width: '100%',
+    borderLeftWidth: 4,
+    borderLeftColor: Colors.error,
   },
-  warningTitle: {
-    fontSize: Fonts.size.medium,
+  errorTitle: {
+    fontSize: 15,
     fontWeight: '600',
-    color: '#FF9500',
-    marginBottom: Metrics.smallMargin,
+    color: Colors.error,
+    marginBottom: 6,
   },
-  warningText: {
-    fontSize: Fonts.size.small,
-    color: '#8B6B00',
+  errorText: {
+    fontSize: 14,
+    color: Colors.error,
     lineHeight: 20,
   },
-  cancelButton: {
-    backgroundColor: '#FF3B30',
-    padding: Metrics.baseMargin,
-    borderRadius: 12,
-    alignItems: 'center',
-    width: '100%',
-  },
-  cancelButtonText: {
-    color: Colors.white,
-    fontSize: Fonts.size.medium,
-    fontWeight: '600',
-  },
-  statusText: {
-    marginTop: Metrics.baseMargin,
-    fontSize: Fonts.size.medium,
-    color: Colors.textSecondary,
+  errorRaw: {
+    fontSize: 12,
+    color: Colors.darkGray,
+    marginTop: 8,
   },
 });
 

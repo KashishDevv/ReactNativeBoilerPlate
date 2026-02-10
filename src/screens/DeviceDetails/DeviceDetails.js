@@ -406,6 +406,20 @@ const DeviceDetails = ({ route, navigation }) => {
           {device.connectionState}
         </Text>
       </View>
+      <TouchableOpacity
+        style={styles.firmwareUpdateCardButton}
+        onPress={() => {
+          navigation.navigate('DFU', {
+            deviceId,
+            deviceName: device?.name || 'Device',
+          });
+        }}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.firmwareUpdateCardButtonIcon}>⬆️</Text>
+        <Text style={styles.firmwareUpdateCardButtonText}>Firmware Update</Text>
+        <Text style={styles.firmwareUpdateCardButtonSubtext}>Update device firmware via .bin file</Text>
+      </TouchableOpacity>
       {/* Smart Tag Display - Commented Out */}
       {/* <View style={styles.infoRow}>
         <Text style={styles.infoLabel}>Smart Tag:</Text>
@@ -413,20 +427,6 @@ const DeviceDetails = ({ route, navigation }) => {
           {device.deviceData?.isSmartTag ? 'Yes' : 'No'}
         </Text>
       </View> */}
-      
-      {/* Firmware Update Button - Commented Out */}
-      {/* <TouchableOpacity
-        style={styles.firmwareUpdateButton}
-        onPress={() => {
-          navigation.navigate('DFU', {
-            deviceId: device.id,
-            deviceName: device.name,
-            currentFirmwareVersion: device.firmwareVersion || '1.0.0'
-          });
-        }}
-      >
-        <Text style={styles.firmwareUpdateButtonText}>🔧 Check for Firmware Updates</Text>
-      </TouchableOpacity> */}
     </View>
   );
 
@@ -713,9 +713,7 @@ const DeviceDetails = ({ route, navigation }) => {
         keyboardType,
         onConfirm: (value) => {
           setInputModalVisible(false);
-          if (value && value.trim()) {
-            onConfirm(value.trim());
-          }
+          onConfirm((value && value.trim()) ? value.trim() : '');
         },
         onCancel: () => {
           setInputModalVisible(false);
@@ -981,6 +979,116 @@ const DeviceDetails = ({ route, navigation }) => {
           }}
         >
           <Text style={styles.debugButtonText}>📊 Set Data Interval</Text>
+        </TouchableOpacity>
+
+        {/* Start Sync - with number of records */}
+        <TouchableOpacity
+          style={[styles.debugButton, {backgroundColor: '#009688'}]}
+          onPress={() => {
+            showInputDialog(
+              'Start Sync',
+              'Enter number of records to request (1–500).\n\nTag will send up to this many records in this chunk.',
+              '500',
+              async (value) => {
+                try {
+                  const count = parseInt(value, 10);
+                  if (isNaN(count) || count < 1 || count > 500) {
+                    Alert.alert('Error', 'Please enter a number between 1 and 500');
+                    return;
+                  }
+                  console.log(`📤 [UI] Starting sync with ${count} records...`);
+                  const result = await BLEService.startDataSyncWithRecordCount(deviceId, count);
+                  Alert.alert(
+                    'Start Sync',
+                    result?.success ? `DATA_SYNC_START(${count}) sent. Waiting for records.` : `Failed: ${result?.error || 'Unknown error'}`
+                  );
+                } catch (error) {
+                  console.error('📤 [UI] Start sync error:', error);
+                  Alert.alert('Start Sync', 'Failed: ' + error.message);
+                }
+              },
+              'numeric'
+            );
+          }}
+        >
+          <Text style={styles.debugButtonText}>📤 Start Sync</Text>
+        </TouchableOpacity>
+
+        {/* Stop Sync - with number of records */}
+        <TouchableOpacity
+          style={[styles.debugButton, {backgroundColor: '#607D8B'}]}
+          onPress={() => {
+            showInputDialog(
+              'Stop Sync',
+              'Enter number of records to acknowledge (0–500).\n\nTag will clear this many records from flash. Use the count the tag actually sent in that chunk.',
+              '500',
+              async (value) => {
+                try {
+                  const count = parseInt(value, 10);
+                  if (isNaN(count) || count < 0 || count > 500) {
+                    Alert.alert('Error', 'Please enter a number between 0 and 500');
+                    return;
+                  }
+                  console.log(`⏹️ [UI] Sending DATA_SYNC_STOP(${count})...`);
+                  const result = await BLEService.stopDataSync(deviceId, true, count);
+                  Alert.alert(
+                    'Stop Sync',
+                    result?.success ? `DATA_SYNC_STOP(${count}) sent.` : `Failed: ${result?.error || 'Unknown error'}`
+                  );
+                } catch (error) {
+                  console.error('⏹️ [UI] Stop sync error:', error);
+                  Alert.alert('Stop Sync', 'Failed: ' + error.message);
+                }
+              },
+              'numeric'
+            );
+          }}
+        >
+          <Text style={styles.debugButtonText}>⏹️ Stop Sync</Text>
+        </TouchableOpacity>
+
+        {/* Set Time */}
+        <TouchableOpacity
+          style={[styles.debugButton, {backgroundColor: '#673AB7'}]}
+          onPress={() => {
+            showInputDialog(
+              'Set Time',
+              'Enter Unix timestamp in seconds, or leave empty to set device time to current time.\n\nExample: empty = now; 1738886400 = Feb 2025',
+              '',
+              async (value) => {
+                try {
+                  let timestamp;
+                  if (!value || value.trim() === '') {
+                    timestamp = Math.floor(Date.now() / 1000);
+                    console.log(`🕐 [UI] Setting device time to current: ${timestamp}`);
+                    const result = await BLEService.syncDeviceTime(deviceId);
+                    Alert.alert(
+                      'Set Time',
+                      result?.success ? `Device time set to current time (${new Date(timestamp * 1000).toISOString()}).` : `Failed: ${result?.error || 'Unknown error'}`
+                    );
+                  } else {
+                    timestamp = parseInt(value.trim(), 10);
+                    if (isNaN(timestamp) || timestamp < 0) {
+                      Alert.alert('Error', 'Please enter a valid Unix timestamp (seconds) or leave empty');
+                      return;
+                    }
+                    console.log(`🕐 [UI] Setting device time to ${timestamp} (${new Date(timestamp * 1000).toISOString()})...`);
+                    const result = await BLEService.setSystemTime(deviceId, timestamp);
+                    Alert.alert(
+                      'Set Time',
+                      result?.success ? `Device time set to ${new Date(timestamp * 1000).toISOString()}.` : `Failed: ${result?.error || 'Unknown error'}`
+                    );
+                  }
+                } catch (error) {
+                  console.error('🕐 [UI] Set time error:', error);
+                  Alert.alert('Set Time', 'Failed: ' + error.message);
+                }
+              },
+              'numeric'
+            );
+          }}
+        >
+          <Text style={styles.debugButtonText}>🕐 Set Time</Text>
         </TouchableOpacity>
 
         {/* Get Firmware Version */}
@@ -1621,7 +1729,7 @@ const styles = StyleSheet.create({
     fontFamily: Fonts.type.mono,
   },
 
-  // Firmware Update Button
+  // Firmware Update Button (Device Commands - kept for reference)
   firmwareUpdateButton: {
     backgroundColor: Colors.primary,
     padding: Metrics.baseMargin,
@@ -1634,7 +1742,44 @@ const styles = StyleSheet.create({
     fontSize: Fonts.size.medium,
     fontWeight: '600',
   },
-  
+
+  // Firmware Update card button (Device Information section)
+  firmwareUpdateCardButton: {
+    backgroundColor: Colors.white,
+    marginTop: Metrics.baseMargin,
+    paddingVertical: 14,
+    paddingHorizontal: Metrics.baseMargin,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    ...(Platform.OS === 'ios' ? {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.06,
+      shadowRadius: 4,
+    } : { elevation: 2 }),
+  },
+  firmwareUpdateCardButtonIcon: {
+    fontSize: 24,
+    marginRight: 12,
+  },
+  firmwareUpdateCardButtonText: {
+    fontSize: Fonts.size.medium,
+    fontWeight: '600',
+    color: Colors.primary,
+    flex: 1,
+  },
+  firmwareUpdateCardButtonSubtext: {
+    fontSize: Fonts.size.small,
+    color: Colors.lightText,
+    width: '100%',
+    marginTop: 4,
+    marginLeft: 36,
+  },
+
   // Button Styles
   debugButtonContainer: {
     flexDirection: 'row',

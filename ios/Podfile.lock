@@ -8,8 +8,9 @@ PODS:
   - hermes-engine (0.79.5):
     - hermes-engine/Pre-built (= 0.79.5)
   - hermes-engine/Pre-built (0.79.5)
-  - iOSDFULibrary (4.14.0):
-    - ZIPFoundation (= 0.9.16)
+  - iOSMcuManagerLibrary (1.13.2):
+    - SwiftCBOR (= 0.5.0)
+    - ZIPFoundation (= 0.9.19)
   - RCT-Folly (2024.11.18.00):
     - boost
     - DoubleConversion
@@ -1334,6 +1335,30 @@ PODS:
     - React-jsiexecutor
     - React-RCTFBReactNativeSpec
     - ReactCommon/turbomodule/core
+  - react-native-document-picker (12.0.1):
+    - DoubleConversion
+    - glog
+    - hermes-engine
+    - RCT-Folly (= 2024.11.18.00)
+    - RCTRequired
+    - RCTTypeSafety
+    - React-Core
+    - React-debug
+    - React-Fabric
+    - React-featureflags
+    - React-graphics
+    - React-hermes
+    - React-ImageManager
+    - React-jsi
+    - React-NativeModulesApple
+    - React-RCTFabric
+    - React-renderercss
+    - React-rendererdebug
+    - React-utils
+    - ReactCodegen
+    - ReactCommon/turbomodule/bridging
+    - ReactCommon/turbomodule/core
+    - Yoga
   - react-native-netinfo (11.4.1):
     - React-Core
   - react-native-safe-area-context (5.6.2):
@@ -1887,8 +1912,9 @@ PODS:
     - ReactCommon/turbomodule/core
     - Yoga
   - SocketRocket (0.7.1)
+  - SwiftCBOR (0.5.0)
   - Yoga (0.0.0)
-  - ZIPFoundation (0.9.16)
+  - ZIPFoundation (0.9.19)
 
 DEPENDENCIES:
   - boost (from `../node_modules/react-native/third-party-podspecs/boost.podspec`)
@@ -1898,7 +1924,7 @@ DEPENDENCIES:
   - fmt (from `../node_modules/react-native/third-party-podspecs/fmt.podspec`)
   - glog (from `../node_modules/react-native/third-party-podspecs/glog.podspec`)
   - hermes-engine (from `../node_modules/react-native/sdks/hermes-engine/hermes-engine.podspec`)
-  - iOSDFULibrary (~> 4.14.0)
+  - iOSMcuManagerLibrary
   - RCT-Folly (from `../node_modules/react-native/third-party-podspecs/RCT-Folly.podspec`)
   - RCT-Folly/Fabric (from `../node_modules/react-native/third-party-podspecs/RCT-Folly.podspec`)
   - RCTDeprecation (from `../node_modules/react-native/ReactApple/Libraries/RCTFoundation/RCTDeprecation`)
@@ -1932,6 +1958,7 @@ DEPENDENCIES:
   - React-logger (from `../node_modules/react-native/ReactCommon/logger`)
   - React-Mapbuffer (from `../node_modules/react-native/ReactCommon`)
   - React-microtasksnativemodule (from `../node_modules/react-native/ReactCommon/react/nativemodule/microtasks`)
+  - "react-native-document-picker (from `../node_modules/@react-native-documents/picker`)"
   - "react-native-netinfo (from `../node_modules/@react-native-community/netinfo`)"
   - react-native-safe-area-context (from `../node_modules/react-native-safe-area-context`)
   - react-native-splash-screen (from `../node_modules/react-native-splash-screen`)
@@ -1977,8 +2004,9 @@ DEPENDENCIES:
 
 SPEC REPOS:
   trunk:
-    - iOSDFULibrary
+    - iOSMcuManagerLibrary
     - SocketRocket
+    - SwiftCBOR
     - ZIPFoundation
 
 EXTERNAL SOURCES:
@@ -2059,6 +2087,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/react-native/ReactCommon"
   React-microtasksnativemodule:
     :path: "../node_modules/react-native/ReactCommon/react/nativemodule/microtasks"
+  react-native-document-picker:
+    :path: "../node_modules/@react-native-documents/picker"
   react-native-netinfo:
     :path: "../node_modules/@react-native-community/netinfo"
   react-native-safe-area-context:
@@ -2152,7 +2182,7 @@ SPEC CHECKSUMS:
   fmt: a40bb5bd0294ea969aaaba240a927bd33d878cdd
   glog: 5683914934d5b6e4240e497e0f4a3b42d1854183
   hermes-engine: f03b0e06d3882d71e67e45b073bb827da1a21aae
-  iOSDFULibrary: 69d3eebb0a992b37ccfe6baa4113b30632659fa3
+  iOSMcuManagerLibrary: a2055d5e1b2aeee1bcc61180b6e4cd69dbad9c55
   RCT-Folly: e78785aa9ba2ed998ea4151e314036f6c49e6d82
   RCTDeprecation: 5f638f65935e273753b1f31a365db6a8d6dc53b5
   RCTRequired: 8b46a520ea9071e2bc47d474aa9ca31b4a935bd8
@@ -2184,6 +2214,7 @@ SPEC CHECKSUMS:
   React-logger: 85fa3509931497c72ccd2547fcc91e7299d8591e
   React-Mapbuffer: 96a2f2a176268581733be182fa6eebab1c0193be
   React-microtasksnativemodule: bda561d2648e1e52bd9e5a87f8889836bdbde2e2
+  react-native-document-picker: 686c62761cf3bbb914588c252eca45fc1991436c
   react-native-netinfo: cec9c4e86083cb5b6aba0e0711f563e2fbbff187
   react-native-safe-area-context: 0b8555c40461feb7198e999912a3446602e7c601
   react-native-splash-screen: 95994222cc95c236bd3cdc59fe45ed5f27969594
@@ -2226,9 +2257,10 @@ SPEC CHECKSUMS:
   RNScreens: f38464ec1e83bda5820c3b05ccf4908e3841c5cc
   RNVectorIcons: 1fe59cfa2d3ac94ceb9d373a59c54609471b8d56
   SocketRocket: d4aabe649be1e368d1318fdf28a022d714d65748
+  SwiftCBOR: aa87349b4ccddd19f861aa544f7c27d43dee5772
   Yoga: adb397651e1c00672c12e9495babca70777e411e
-  ZIPFoundation: d170fa8e270b2a32bef9dcdcabff5b8f1a5deced
+  ZIPFoundation: b8c29ea7ae353b309bc810586181fd073cb3312c
 
-PODFILE CHECKSUM: fb505db13f149802e333bbce73e2fb1759f37174
+PODFILE CHECKSUM: 6672b1bd6e5ac3e3bd50f70769a66abef44da09f
 
 COCOAPODS: 1.16.2

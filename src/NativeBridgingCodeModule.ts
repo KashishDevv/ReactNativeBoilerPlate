@@ -68,13 +68,6 @@ export interface Spec extends TurboModule {
   connectToKnownPeripherals(): Promise<any>;
   disconnectFromNative(deviceId: string): Promise<any>;
 
-  // DFU (Device Firmware Update) methods
-  enterDFUMode(deviceId: string): Promise<any>;
-  startDFU(deviceId: string, firmwarePath: string): Promise<any>;
-  cancelDFU(): Promise<any>;
-  isDeviceInDFUMode(deviceId: string): Promise<any>;
-  getDFUServiceUUID(): Promise<any>;
-
   // Resource Management methods
   getResourceStatus(): Promise<any>;
 

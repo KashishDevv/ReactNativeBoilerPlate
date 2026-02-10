@@ -351,6 +351,11 @@ const ConnectionLogScreen = ({ route, navigation }) => {
       const isSeconds = log.timestamp < 4102444800;
       return new Date(isSeconds ? log.timestamp * 1000 : log.timestamp);
     }
+    // Redux persistence serializes Date to ISO string; parse it so old logs keep their real time
+    if (typeof log.timestamp === 'string') {
+      const parsed = new Date(log.timestamp);
+      if (!isNaN(parsed.getTime())) return parsed;
+    }
     return new Date();
   };
 

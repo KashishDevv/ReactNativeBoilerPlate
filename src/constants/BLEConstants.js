@@ -3,14 +3,12 @@ export const BLE_SERVICES = {
   GENERIC_ACCESS: '00001800-0000-1000-8000-00805f9b34fb',
   BATTERY: '0000180f-0000-1000-8000-00805f9b34fb',
   DEVICE_INFO: '0000180a-0000-1000-8000-00805f9b34fb',
-  // Nordic DFU Service (Bootloader mode) - from SDD Section 7
-  DFU: '00001530-1212-efde-1523-785feabcd123',
-  // Buttonless DFU Service (Application mode)
-  DFU_BUTTONLESS: '8ec90003-f315-4f60-9fb8-838830daea50',
   // Smart Health Tag Data Service (from SDD - corrected UUID format)
   SMART_TAG: '0F0E0D0C-0B0A-0908-0706-050403020100',
   // Alternative service UUIDs that might be used by the device
   SMART_TAG_ALT: '0f0e0d0c-0b0a-0908-0706-050403020100',
+  // SMP (Simple Management Protocol) / McuMgr - MCUboot DFU over BLE (Zephyr/nRF Connect style)
+  SMP_SERVICE: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
   CUSTOM_SERVICE: '8D53DC1D-1DB7-4CD3-868B-8A527460AA84',
 };
 
@@ -32,9 +30,8 @@ export const BLE_CHARACTERISTICS = {
   FIRMWARE_REVISION: '00002a26-0000-1000-8000-00805f9b34fb',
   SOFTWARE_REVISION: '00002a28-0000-1000-8000-00805f9b34fb',
   SYSTEM_ID: '00002a23-0000-1000-8000-00805f9b34fb',
-
-  // Nordic DFU characteristic (Buttonless DFU without bonds) - Same as DFU service UUID
-  DFU_CONTROL_POINT: '8ec90003-f315-4f60-9fb8-838830daea50',
+  // SMP transport characteristic (McuMgr / MCUboot DFU channel)
+  SMP_CHARACTERISTIC: 'DA2E7828-FBCE-4E01-AE9E-261174997C48',
 };
 
 // Advertisement parsing
@@ -287,13 +284,4 @@ export const ERROR_TYPES = {
   TRANSIENT: 'TRANSIENT',      // Can retry (timeout, temporary disconnection)
   PERMANENT: 'PERMANENT',      // Cannot retry (device not found, pairing failed)
   USER_ACTION: 'USER_ACTION'   // Requires user action (permissions, pairing)
-};
-
-// DemoTag: Demo Tag Configuration Constants
-// TODO: Remove all DemoTag constants before production release
-export const DEMO_TAG_CONFIG = {
-  DEFAULT_DEVICE_ID: 'DEMO-TAG-00000000-0000-0000-0000-000000000001',
-  DEFAULT_DEVICE_NAME: 'Demo Smart Tag',
-  ENABLED_STORAGE_KEY: '@demo_tag_enabled',
-  DEVICE_PREFIX: 'DEMO-TAG-',
 };

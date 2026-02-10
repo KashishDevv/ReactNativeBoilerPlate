@@ -69,6 +69,9 @@ public class BLEConnectionManager {
     private Map<String, BLEConnectionCallback> connectionCallbacks = new ConcurrentHashMap<>();
     private Map<String, BLEDataCallback> dataCallbacks = new ConcurrentHashMap<>();
     
+    /** Pending disconnect timeout runnables (deviceId -> Runnable). Cancelled when disconnect callback arrives or when starting DFU. */
+    private final Map<String, Runnable> disconnectTimeoutRunnables = new ConcurrentHashMap<>();
+    
     // Bond state tracking
     private BroadcastReceiver bondStateReceiver;
     private boolean isBondReceiverRegistered = false;
@@ -716,6 +719,8 @@ public class BLEConnectionManager {
                         }
                         
                     } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                        // Cancel disconnect timeout so we don't close again in the timeout runnable
+                        cancelDisconnectTimeout(deviceId);
                         // ════════════════════════════════════════════════════════════════════
                         // BEST PRACTICE: Successful disconnect - always call close()
                         // (Source: Martijn van Welie - Making Android BLE Work Part 2)
@@ -1052,7 +1057,8 @@ public class BLEConnectionManager {
         
         // ✅ SAFETY: If callback doesn't arrive within 2 seconds, force cleanup
         final BluetoothGatt finalGatt = gatt;
-        mainHandler.postDelayed(() -> {
+        Runnable timeoutRunnable = () -> {
+            disconnectTimeoutRunnables.remove(deviceId);
             DeviceConnectionState currentState = deviceStates.get(deviceId);
             if (currentState != null && currentState.state == ConnectionState.DISCONNECTING) {
                 Log.w(TAG, "⚠️ Disconnect callback timeout, forcing cleanup: " + deviceId);
@@ -1077,9 +1083,24 @@ public class BLEConnectionManager {
                     foregroundService.removeMonitoredDevice(deviceId);
                 }
             }
-        }, 2000);
+        };
+        disconnectTimeoutRunnables.put(deviceId, timeoutRunnable);
+        mainHandler.postDelayed(timeoutRunnable, 2000);
         
         Log.d(TAG, "📤 Disconnect initiated, waiting for callback: " + deviceId);
+    }
+    
+    /**
+     * Cancel the 2s disconnect timeout for a device. Call this when disconnecting for DFU
+     * so the timeout does not fire and close our GATT after McuMgr has connected (which
+     * can kill the DFU connection on some stacks).
+     */
+    public void cancelDisconnectTimeout(String deviceId) {
+        Runnable runnable = disconnectTimeoutRunnables.remove(deviceId);
+        if (runnable != null) {
+            mainHandler.removeCallbacks(runnable);
+            Log.d(TAG, "✅ Disconnect timeout cancelled for: " + deviceId + " (e.g. DFU started)");
+        }
     }
     
     /**

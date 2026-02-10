@@ -2383,6 +2383,16 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@react-native-documents/picker@npm:^12.0.1":
+  version: 12.0.1
+  resolution: "@react-native-documents/picker@npm:12.0.1"
+  peerDependencies:
+    react: "*"
+    react-native: ">=0.79.0"
+  checksum: c09898268171317eb1452cefa7c6efd2ada24c231901efa70759f778e26a93ea9d2a7d62e5ea2862995e0b3c37bc313eeb7479190611b69c05402488b1c6de91
+  languageName: node
+  linkType: hard
+
 "@react-native/assets-registry@npm:0.79.5":
   version: 0.79.5
   resolution: "@react-native/assets-registry@npm:0.79.5"
@@ -3284,6 +3294,7 @@ __metadata:
     "@react-native-community/cli-platform-android": 18.0.0
     "@react-native-community/cli-platform-ios": 18.0.0
     "@react-native-community/netinfo": ^11.4.1
+    "@react-native-documents/picker": ^12.0.1
     "@react-native/babel-preset": 0.79.5
     "@react-native/eslint-config": 0.79.5
     "@react-native/metro-config": 0.79.5
