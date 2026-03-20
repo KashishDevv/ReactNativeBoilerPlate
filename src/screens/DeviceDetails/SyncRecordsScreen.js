@@ -10,6 +10,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BLEService from '../../services/ble/BLEService';
+import { SYNC_UI_CONFIG } from '../../constants/BLEConstants';
+import HealthDataRepository from '../../services/database/HealthDataRepository';
 import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
 
@@ -19,40 +21,54 @@ const SyncRecordsScreen = ({ route, navigation }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  const lastLoadTimeRef = React.useRef(0);
+  const syncListThrottleMs = SYNC_UI_CONFIG?.LIST_REFRESH_THROTTLE_MS ?? 500;
+
   useEffect(() => {
     loadRecords();
-    
-    // Listen for live record updates
+
     const handleDataUpdate = (eventData) => {
-      if (eventData.deviceId === deviceId && 
-          (eventData.type === 'live_record' || eventData.type === 'sync_records')) {
+      if (eventData.deviceId !== deviceId) return;
+      if (eventData.type === 'sync_records') {
+        const now = Date.now();
+        if (now - lastLoadTimeRef.current < syncListThrottleMs) return;
+        lastLoadTimeRef.current = now;
+      }
+      if (eventData.type === 'live_record' || eventData.type === 'sync_records') {
         console.log(`📊 [SyncRecords] ${eventData.type} updated, refreshing...`);
         loadRecords();
       }
     };
-    
-    // Listen for sync record updates
+
     const handleSyncUpdate = (eventData) => {
       if (eventData.deviceId === deviceId) {
         console.log('📊 [SyncRecords] Sync data updated, refreshing...');
+        lastLoadTimeRef.current = 0;
         loadRecords();
       }
     };
-    
+
     BLEService.on('deviceDataUpdate', handleDataUpdate);
     BLEService.on('syncDataUpdated', handleSyncUpdate);
-    
+
     return () => {
       BLEService.off('deviceDataUpdate', handleDataUpdate);
       BLEService.off('syncDataUpdated', handleSyncUpdate);
     };
-  }, [deviceId]);
+  }, [deviceId, syncListThrottleMs]);
 
   const loadRecords = () => {
     try {
-      // Filter by last record for history display (only show records newer than last)
-      const syncRecords = BLEService.getSyncRecordsForDisplay(deviceId);
-      
+      // Prefer local DB (6-min aggregated); fallback to in-memory sync records
+      let syncRecords = [];
+      try {
+        syncRecords = HealthDataRepository.getAggregatedRecordsForUI(deviceId, { limit: 2000 });
+      } catch (e) {
+        if (__DEV__) console.warn('[SyncRecords] DB read failed, using sync records:', e);
+      }
+      if (!syncRecords || syncRecords.length === 0) {
+        syncRecords = BLEService.getSyncRecordsForDisplay(deviceId) || [];
+      }
       if (!syncRecords || syncRecords.length === 0) {
         setRecords([]);
         setLoading(false);
@@ -120,8 +136,8 @@ const SyncRecordsScreen = ({ route, navigation }) => {
     const timestamp = getTimestampDate(item);
     const timestampStr = timestamp.toLocaleString();
     const steps = item.steps || 0;
-    const temperature = item.temperature !== null && item.temperature !== undefined 
-                      ? `${item.temperature}°C` 
+    const temperature = item.temperature !== null && item.temperature !== undefined
+                      ? `${Number(item.temperature).toFixed(1)}°C`
                       : 'N/A';
 
     return (

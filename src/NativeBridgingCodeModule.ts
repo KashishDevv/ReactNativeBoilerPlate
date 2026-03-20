@@ -49,9 +49,9 @@ export interface Spec extends TurboModule {
   ): Promise<any>;
   startCommandSequence(deviceId: string): Promise<any>;
   startDataSync(deviceId: string): Promise<any>;
+  startDataSyncWithRecordCount(deviceId: string, recordCount: number): Promise<any>;
   readDeviceStatus(deviceId: string): Promise<any>;
   getDataSyncState(deviceId: string): Promise<any>;
-  isNativePollingActive(deviceId: string): Promise<any>;
   getManufacturerInfo(): Promise<any>;
   updatePasskey(deviceId: string, passkey: string): Promise<any>;
 
@@ -71,10 +71,38 @@ export interface Spec extends TurboModule {
   // Resource Management methods
   getResourceStatus(): Promise<any>;
 
-  // Add event emitter methods
+  // White-label config (returns brand name, service UUID, manufacturer ID, accepted device names)
+  getBLEClientConfig(): Promise<any>;
+
+  // DFU methods (both platforms)
+  startMcuMgrDfu(deviceId: string, firmwarePath: string): Promise<any>;
+  cancelMcuMgrDfu(): Promise<any>;
+
+  // Android-specific methods (iOS returns stub/error)
+  refreshSystemConnectedDevices(): Promise<any>;
+  readDeviceRSSI(deviceId: string): Promise<any>;
+  cancelConnection(deviceId: string): Promise<any>;
+  getDeviceServices(deviceId: string): Promise<any>;
+  monitorCharacteristicForService(
+    deviceId: string,
+    serviceUUID: string,
+    characteristicUUID: string
+  ): Promise<any>;
+  readCharacteristicForService(
+    deviceId: string,
+    serviceUUID: string,
+    characteristicUUID: string
+  ): Promise<any>;
+  isDeviceBonded(deviceId: string): Promise<any>;
+  initiateSecurePairing(deviceId: string): Promise<any>;
+  openBluetoothSettings(): Promise<any>;
+  triggerHealthDataApiCall(deviceId: string): Promise<any>;
+  stopHealthDataApiMonitoring(deviceId: string): Promise<any>;
+  onAppStateChanged(state: string): Promise<any>;
+
+  // Event emitter methods (required for NativeEventEmitter)
   addListener(eventName: string): void;
   removeListeners(count: number): void;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('BridgingCodeModule');
-

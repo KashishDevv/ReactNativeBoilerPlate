@@ -1,7 +1,9 @@
-import { Platform, NativeModules } from 'react-native';
+import { Platform } from 'react-native';
 import AESEncryption from './AESEncryption';
+import NativeBLE from '../NativeBridgingCodeModule';
 
-const { SampleBridgeAndroid, BridgingCodeModule } = NativeModules;
+const SampleBridgeAndroid = NativeBLE;
+const BridgingCodeModule = NativeBLE;
 
 /**
  * NFC Manager for Smart Health Tag

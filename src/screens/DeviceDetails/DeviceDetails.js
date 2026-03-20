@@ -18,6 +18,7 @@ import BLEService from '../../services/ble/BLEService';
 import { 
   CONNECTION_STATES
 } from '../../constants/BLEConstants';
+import BLEAppConfig from '../../constants/BLEAppConfig';
 import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
 import { Metrics } from '../../theme/Metrics';
@@ -1251,7 +1252,7 @@ const DeviceDetails = ({ route, navigation }) => {
                       // iOS-specific alert with detailed instructions
                       Alert.alert(
                         '🔐 Passkey Updated Successfully',
-                        `New passkey: ${value}\n\nThe device will disconnect momentarily.\n\n⚠️ IMPORTANT: To reconnect, you MUST:\n\n1. Open iOS Settings → Bluetooth\n2. Find "${device?.name || 'DyreID'}"\n3. Tap (i) icon → "Forget This Device"\n4. Return to app and reconnect\n5. Enter NEW passkey when prompted\n\nThis is required because iOS caches the old passkey.`,
+                        `New passkey: ${value}\n\nThe device will disconnect momentarily.\n\n⚠️ IMPORTANT: To reconnect, you MUST:\n\n1. Open iOS Settings → Bluetooth\n2. Find "${device?.name || BLEAppConfig.getBrandName()}"\n3. Tap (i) icon → "Forget This Device"\n4. Return to app and reconnect\n5. Enter NEW passkey when prompted\n\nThis is required because iOS caches the old passkey.`,
                         [
                           {
                             text: 'Open Settings',
@@ -1269,7 +1270,7 @@ const DeviceDetails = ({ route, navigation }) => {
                       // Android: Show alert with instructions to forget/unpair device
                       Alert.alert(
                         '🔐 Passkey Updated Successfully',
-                        `New passkey: ${value}\n\nThe device will disconnect momentarily.\n\n⚠️ IMPORTANT: To reconnect, you MUST:\n\n1. Open Android Settings → Bluetooth\n2. Find "${device?.name || 'DyreID'}"\n3. Tap the settings icon → "Forget" or "Unpair"\n4. Return to app and reconnect\n5. Enter NEW passkey when prompted\n\nThis is required because Android caches the old passkey at system level.`,
+                        `New passkey: ${value}\n\nThe device will disconnect momentarily.\n\n⚠️ IMPORTANT: To reconnect, you MUST:\n\n1. Open Android Settings → Bluetooth\n2. Find "${device?.name || BLEAppConfig.getBrandName()}"\n3. Tap the settings icon → "Forget" or "Unpair"\n4. Return to app and reconnect\n5. Enter NEW passkey when prompted\n\nThis is required because Android caches the old passkey at system level.`,
                         [
                           {
                             text: 'Open Settings',

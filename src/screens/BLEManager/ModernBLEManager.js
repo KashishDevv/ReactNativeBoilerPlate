@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import BLEService from '../../services/ble/BLEService';
 import { CONNECTION_STATES, SCAN_STATES, BLE_STATES, POWER_PROFILE } from '../../constants/BLEConstants';
+import BLEAppConfig from '../../constants/BLEAppConfig';
 import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
 import { Metrics } from '../../theme/Metrics';
@@ -155,7 +156,7 @@ const ModernBLEManager = ({ navigation }) => {
       if ((device.passkeyChanged || device.needsSystemForget) && Platform.OS === 'ios') {
         Alert.alert(
           '🔐 Passkey Updated Successfully',
-          `The device passkey has been changed.\n\n⚠️ IMPORTANT: You must forget this device from iOS Settings to reconnect:\n\n1. Open iOS Settings → Bluetooth\n2. Find "${device.name || 'DyreID'}"\n3. Tap (i) icon → "Forget This Device"\n4. Return to app and reconnect with NEW passkey\n\nThis is required because iOS caches the old passkey at system level.`,
+          `The device passkey has been changed.\n\n⚠️ IMPORTANT: You must forget this device from iOS Settings to reconnect:\n\n1. Open iOS Settings → Bluetooth\n2. Find "${device.name || BLEAppConfig.getBrandName()}"\n3. Tap (i) icon → "Forget This Device"\n4. Return to app and reconnect with NEW passkey\n\nThis is required because iOS caches the old passkey at system level.`,
           [
             {
               text: 'Open Settings',
@@ -350,7 +351,9 @@ const ModernBLEManager = ({ navigation }) => {
     console.log('📞 [Modern] Device connected event listener registered');
     eventHandlersRef.current.deviceDataUpdate = (eventData) => {
       try {
-        console.log('📥 [Modern] deviceDataUpdate event received:', eventData.type, 'for device:', eventData.deviceId);
+        if (eventData.type !== 'sync_records') {
+          console.log('📥 [Modern] deviceDataUpdate event received:', eventData.type, 'for device:', eventData.deviceId);
+        }
         if (!eventData.deviceId) {
           console.warn('⚠️ [Modern] deviceDataUpdate event missing deviceId:', eventData);
           return;
@@ -479,7 +482,6 @@ const ModernBLEManager = ({ navigation }) => {
           const recordsReceived = eventData.recordsReceived || 0;
           const remainingRecords = Math.max(0, totalExpected - totalReceived);
           const deviceData = eventData.deviceData || {};
-          console.log('📊 [Modern] Sync progress received:', eventData.deviceId, `${totalReceived}/${totalExpected} records (${remainingRecords} remaining)`);
           setDevices(prevDevices => {
             return prevDevices.map(d => {
               if (d.id === eventData.deviceId) {

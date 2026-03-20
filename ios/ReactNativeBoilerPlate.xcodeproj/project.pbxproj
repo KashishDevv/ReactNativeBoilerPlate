@@ -10,7 +10,7 @@
 		020680C8D7A68BCD1F81FBA0 /* BLEError.swift in Sources */ = {isa = PBXBuildFile; fileRef = F540EE31D4192DC01AF26BEF /* BLEError.swift */; };
 		13B07FBF1A68108700A75B9A /* BuildFile in Resources */ = {isa = PBXBuildFile; };
 		520F96712DCE3699006A8CDE /* BridgingCodeModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 529078962C411AE500D5D254 /* BridgingCodeModule.swift */; };
-		520F96722DCE3699006A8CDE /* BridgingCodeModule.m in Sources */ = {isa = PBXBuildFile; fileRef = 529078942C411AD000D5D254 /* BridgingCodeModule.m */; };
+		520F96722DCE3699006A8CDE /* BridgingCodeModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = 529078942C411AD000D5D254 /* BridgingCodeModule.mm */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
 		97CDB22E601C3DC01C0AD3FD /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = DEB8A825499ECA680EBFFB21 /* PrivacyInfo.xcprivacy */; };
@@ -18,6 +18,8 @@
 		AFA6911F89A4396202D0CF88 /* libPods-ReactNativeBoilerPlate.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 0BD8D244D54F64CEC2438ED1 /* libPods-ReactNativeBoilerPlate.a */; };
 		D552DECA3169496986AC0A04 /* NunitoSans_10pt-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = ACEC8BCEF3F84043B02FFFE0 /* NunitoSans_10pt-Regular.ttf */; };
 		DFCCA02FE41DE37612B0579D /* TransactionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D342317471DFB2666C4B04E /* TransactionManager.swift */; };
+		E5F6A7B86C9D0123EF012345 /* BLEClientConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E53F6A7890BCDEF012 /* BLEClientConfig.swift */; };
+		F6A7B8C97D0E1234F0123456 /* DefaultBLEClientConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D4E5F64A7B8901CDEF0123 /* DefaultBLEClientConfig.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -26,7 +28,7 @@
 		13B07F961A680F5B00A75B9A /* ReactNativeBoilerPlate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ReactNativeBoilerPlate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = ReactNativeBoilerPlate/Info.plist; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = ReactNativeBoilerPlate/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		529078942C411AD000D5D254 /* BridgingCodeModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = BridgingCodeModule.m; sourceTree = "<group>"; };
+		529078942C411AD000D5D254 /* BridgingCodeModule.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = BridgingCodeModule.mm; sourceTree = "<group>"; };
 		529078962C411AE500D5D254 /* BridgingCodeModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgingCodeModule.swift; sourceTree = "<group>"; };
 		529078982C411AFB00D5D254 /* ReactNativeBoilerPlate-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ReactNativeBoilerPlate-Bridging-Header.h"; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ReactNativeBoilerPlate/AppDelegate.swift; sourceTree = "<group>"; };
@@ -35,6 +37,8 @@
 		9C2EDE750D4543CE82FFD702 /* Pods-ReactNativeBoilerPlate.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ReactNativeBoilerPlate.debug.xcconfig"; path = "Target Support Files/Pods-ReactNativeBoilerPlate/Pods-ReactNativeBoilerPlate.debug.xcconfig"; sourceTree = "<group>"; };
 		A41551C52E436C1000AD7C58 /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Images.xcassets; sourceTree = "<group>"; };
 		ACEC8BCEF3F84043B02FFFE0 /* NunitoSans_10pt-Regular.ttf */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = "NunitoSans_10pt-Regular.ttf"; path = "../src/assets/fonts/NunitoSans_10pt-Regular.ttf"; sourceTree = "<group>"; };
+		B2C3D4E53F6A7890BCDEF012 /* BLEClientConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BLEClientConfig.swift; sourceTree = "<group>"; };
+		C3D4E5F64A7B8901CDEF0123 /* DefaultBLEClientConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultBLEClientConfig.swift; sourceTree = "<group>"; };
 		DEB8A825499ECA680EBFFB21 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ReactNativeBoilerPlate/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F540EE31D4192DC01AF26BEF /* BLEError.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BLEError.swift; sourceTree = "<group>"; };
@@ -94,7 +98,8 @@
 			children = (
 				529078982C411AFB00D5D254 /* ReactNativeBoilerPlate-Bridging-Header.h */,
 				529078962C411AE500D5D254 /* BridgingCodeModule.swift */,
-				529078942C411AD000D5D254 /* BridgingCodeModule.m */,
+				529078942C411AD000D5D254 /* BridgingCodeModule.mm */,
+				A1B2C3D42E5F6789ABCDEF01 /* config */,
 				13B07FAE1A68108700A75B9A /* ReactNativeBoilerPlate */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
@@ -115,6 +120,15 @@
 				13B07F961A680F5B00A75B9A /* ReactNativeBoilerPlate.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A1B2C3D42E5F6789ABCDEF01 /* config */ = {
+			isa = PBXGroup;
+			children = (
+				B2C3D4E53F6A7890BCDEF012 /* BLEClientConfig.swift */,
+				C3D4E5F64A7B8901CDEF0123 /* DefaultBLEClientConfig.swift */,
+			);
+			path = config;
 			sourceTree = "<group>";
 		};
 		BBD78D7AC51CEA395F1C20DB /* Pods */ = {
@@ -277,10 +291,12 @@
 			buildActionMask = 2147483647;
 			files = (
 				520F96712DCE3699006A8CDE /* BridgingCodeModule.swift in Sources */,
-				520F96722DCE3699006A8CDE /* BridgingCodeModule.m in Sources */,
+				520F96722DCE3699006A8CDE /* BridgingCodeModule.mm in Sources */,
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
 				DFCCA02FE41DE37612B0579D /* TransactionManager.swift in Sources */,
 				020680C8D7A68BCD1F81FBA0 /* BLEError.swift in Sources */,
+				E5F6A7B86C9D0123EF012345 /* BLEClientConfig.swift in Sources */,
+				F6A7B8C97D0E1234F0123456 /* DefaultBLEClientConfig.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -295,7 +311,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = W6642NRBTG;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = ReactNativeBoilerPlate/Info.plist;
@@ -312,7 +328,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.dyreid.health;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dyreid.healthtag;
 				PRODUCT_NAME = ReactNativeBoilerPlate;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -335,7 +351,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 8;
+				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = W6642NRBTG;
 				INFOPLIST_FILE = ReactNativeBoilerPlate/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Health Tag";
@@ -351,7 +367,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.dyreid.health;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dyreid.healthtag;
 				PRODUCT_NAME = ReactNativeBoilerPlate;
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

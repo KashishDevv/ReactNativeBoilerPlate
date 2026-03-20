@@ -123,6 +123,14 @@ android {
     }
 }
 
+// Force androidx.core to versions compatible with compileSdk 35 (avoid 1.17.0 which requires SDK 36 + AGP 8.9.1)
+configurations.all {
+    resolutionStrategy {
+        force "androidx.core:core:1.12.0"
+        force "androidx.core:core-ktx:1.12.0"
+    }
+}
+
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")

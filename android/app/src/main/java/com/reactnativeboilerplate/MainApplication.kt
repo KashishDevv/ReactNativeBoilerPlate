@@ -35,6 +35,10 @@ class MainApplication : Application(), ReactApplication {
 
   override fun onCreate() {
     super.onCreate()
+    // Set BLE client config for white-label; use default (DyreID) if no flavor overrides.
+    com.reactnativeboilerplate.config.BLEClientConfigHolder.set(
+      com.reactnativeboilerplate.config.DefaultBLEClientConfig()
+    )
     SoLoader.init(this, OpenSourceMergedSoMapping)
     if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {
       // If you opted-in for the New Architecture, we load the native entry point for this app.

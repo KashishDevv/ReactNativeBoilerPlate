@@ -1,5 +1,6 @@
-import { Text, SafeAreaView, NativeModules, View, Button, Platform } from 'react-native'
+import { Text, SafeAreaView, View, Button, Platform } from 'react-native'
 import React, { useState } from 'react'
+import NativeBLE from '../../NativeBridgingCodeModule';
 import styles from './style';
 import Header from '../../components/Header';
 import { useNavigation } from '@react-navigation/native';
@@ -10,30 +11,31 @@ function Welcome() {
     const [id, setId] = useState('Press the button to get The ID');
     const navigation = useNavigation();
 
-    let NativeModule;
-
-    if (Platform.OS === 'android') {
-        NativeModule = NativeModules.SampleBridgeAndroid;
-    } else {
-        NativeModule = NativeModules.BridgingCodeModule;
-    }
+    const NativeModule = NativeBLE;
     console.log(NativeModule, "NativeModule=====>")
 
 
     // For Android
+    // Note: examplePayment and callExampleApi are legacy bridge methods not present in the
+    // TurboModule spec. Guard with typeof to avoid a TypeError crash on TurboModule proxy.
     const nativeSimpleMethodReturnsforAndroid = () => {
-        NativeModule.examplePayment("Api Called", "i3789293782", result => {
-            alert(result)
-        })
+        if (typeof NativeModule.examplePayment === 'function') {
+            NativeModule.examplePayment("Api Called", "i3789293782", result => {
+                alert(result)
+            });
+        } else {
+            alert('examplePayment is not available in TurboModule mode');
+        }
 
-        NativeModule.callExampleApi('https://jsonplaceholder.typicode.com/todos/1', (status, response) => {
-            if (status === 'Success') {
-                console.log('API Response:', response);
-            } else {
-                console.error('API Error:', response);
-            }
-        });
-
+        if (typeof NativeModule.callExampleApi === 'function') {
+            NativeModule.callExampleApi('https://jsonplaceholder.typicode.com/todos/1', (status, response) => {
+                if (status === 'Success') {
+                    console.log('API Response:', response);
+                } else {
+                    console.error('API Error:', response);
+                }
+            });
+        }
     }
 
     // For IOS

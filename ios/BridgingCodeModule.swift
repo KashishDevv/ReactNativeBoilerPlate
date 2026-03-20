@@ -123,6 +123,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       "SystemCommandResponse",           // Response from device system command
       "DeviceDisconnected",              // Device disconnected
       "DeviceDataUpdated",               // Device status/data updated
+      "deviceDataUpdate",                // Detailed sync_complete etc. (match Android)
       "HealthDataApiRequest",            // Health data ready for API upload
       "DeviceConnected",                 // Device connected successfully
       "DeviceFound",                     // Device discovered during scan
@@ -137,10 +138,18 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       "DFUError"                         // McuMgr DFU error
     ]
   }
-  // MARK: - BLE Service UUIDs
+  // MARK: - BLE Client Config (white-label)
   
-  /// Custom Smart Tag service UUID (proprietary, defined in SDD)
-  private let SMART_TAG_SERVICE_UUID = CBUUID(string: "0f0e0d0c-0b0a-0908-0706-050403020100")
+  /// Resolved BLE client config; falls back to DyreID default if holder not set.
+  private var bleConfig: BLEClientConfig { BLEClientConfigHolder.get() ?? DefaultBLEClientConfig() }
+  
+  /// Returns true if the given device name matches any accepted pattern from config.
+  private func isAcceptedDevice(name: String?) -> Bool {
+    guard let name = name, !name.isEmpty else { return false }
+    return bleConfig.acceptedDeviceNamePatterns.contains { name.contains($0) }
+  }
+  
+  // MARK: - BLE Service UUIDs (standard / protocol; client-specific from bleConfig)
   
   /// Standard BLE Battery Service UUID (0x180F)
   private let BATTERY_SERVICE_UUID = CBUUID(string: "0000180f-0000-1000-8000-00805f9b34fb")
@@ -186,11 +195,6 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   /// Standard Firmware Revision characteristic (0x2A26) - firmware version
   private let FIRMWARE_REVISION_CHAR_UUID = CBUUID(string: "00002a26-0000-1000-8000-00805f9b34fb")
-  
-  // MARK: - Device Identification
-  
-  /// Manufacturer ID used in BLE advertisement data (0x1234 as per SDD)
-  private let SMART_TAG_MANUFACTURER_ID: UInt16 = 0x1234
   
   // MARK: - Connection Management Constants
   
@@ -266,9 +270,6 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   /// Queue of pending permission request promises (resolve/reject pairs)
   private var pendingPermissionResolvers: [(RCTPromiseResolveBlock, RCTPromiseRejectBlock)] = []
-  
-  /// Smart Tag service UUID (duplicate for compatibility)
-  private let smartTagServiceUUID = CBUUID(string: "0f0e0d0c-0b0a-0908-0706-050403020100")
   
   // MARK: - Reconnection Management
   
@@ -371,6 +372,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   
   /// Background queue for service/characteristic discovery operations
   private let discoveryQueue = DispatchQueue(label: "com.reactnativeboilerplate.discovery", qos: .userInitiated)
+
+  /// Serial queue for Data Transfer notification parsing.
+  /// CoreBluetooth calls didUpdateValueFor on its delegate queue; if we parse synchronously we block and can drop notifications.
+  /// Offloading parsing here keeps the callback fast so we don't lose packets (match Android fix).
+  private let dataTransferParseQueue = DispatchQueue(label: "com.reactnativeboilerplate.dataTransferParse", qos: .userInitiated)
   
   /// Services awaiting characteristic discovery (deviceId -> pending service UUIDs)
   private var servicesWithPendingCharDiscovery: [String: Set<CBUUID>] = [:]
@@ -379,7 +385,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   private var discoveryCompleteEventSent: [String: Bool] = [:] 
   // MARK: - Data Sync Management
   
-  /// Current data sync state per device ("idle", "syncing", "time_syncing", "complete", "failed")
+  /// Current data sync state per device ("idle", "preparing", "syncing", "stopping", "complete", "failed")
   private var dataSyncState: [String: String] = [:]
   
   /// Number of data sync retry attempts per device
@@ -400,11 +406,20 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   /// Count of device status notifications received (for debugging)
   private var deviceStatusNotificationCount: [String: Int] = [:]
   
+  /// Devices for which we requested a Device Status read after sync complete; when that read completes we check for more records (match Android POST-SYNC CHECK).
+  private let postSyncReadLock = NSLock()
+  private var pendingPostSyncDeviceStatusRead: Set<String> = []
+  
   /// Track notification enable state for each device (deviceId -> Set of enabled characteristic UUIDs)
   /// Used to ensure all critical notifications are enabled before sending commands (matching nRF Connect pattern)
   private var deviceNotificationStates: [String: Set<String>] = [:]
   
   // MARK: - McuMgr DFU (SMP / MCUboot - matches Android and nRF Connect)
+  //
+  // NOTE: Android requests CONNECTION_PRIORITY_HIGH before DFU upload to avoid SMP transaction timeouts
+  // (nRF Connect app does this). iOS CoreBluetooth does NOT expose connection parameter control to centrals—
+  // there is no equivalent of requestConnectionPriority. iOS manages parameters automatically. If DFU timeouts
+  // occur on iOS, consider retry logic at the RN layer or updating iOSMcuManagerLibrary.
   
   /// Current McuMgr DFU manager (one at a time)
   private var mcuMgrDfuManager: FirmwareUpgradeManager?
@@ -418,6 +433,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     guard let current = currentMcuMgrDfuDeviceId else { return false }
     return current == deviceId
   }
+  /// Devices that failed DFU and need connection interval restored to 360ms (firmware default)
+  private var dfuFailedNeedsConnIntervalRestore: Set<String> = []
   
   /// Forwarder for McuMgr DFU delegate callbacks to React Native events (must be retained by manager)
   private class DFUEventForwarder: FirmwareUpgradeDelegate {
@@ -473,6 +490,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         self.module?.mcuMgrDfuManager = nil
         self.module?.mcuMgrDfuDelegate = nil
         self.module?.manualDisconnectInProgress.remove(self.deviceId)
+        self.module?.dfuFailedNeedsConnIntervalRestore.insert(self.deviceId)
       }
     }
     func upgradeDidCancel(state: FirmwareUpgradeState) {
@@ -486,6 +504,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         self.module?.mcuMgrDfuManager = nil
         self.module?.mcuMgrDfuDelegate = nil
         self.module?.manualDisconnectInProgress.remove(self.deviceId)
+        self.module?.dfuFailedNeedsConnIntervalRestore.insert(self.deviceId)
       }
     }
     func uploadProgressDidChange(bytesSent: Int, imageSize: Int, timestamp: Date) {
@@ -594,23 +613,33 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   /// Grace period after sync complete: don't overwrite deviceRecordCounts with tag value (tag may report stale count before flash cleared)
   private let SYNC_COMPLETE_GRACE_PERIOD_SECONDS: TimeInterval = 10
   
-  /// Flag: true when record path (500 boundary) already sent STOP+Start — skip duplicate in DATA_SYNC_COMPLETE handler
-  private var recordPathChunkAdvanced: [String: Bool] = [:]
+  /// Last chunk number for which we already processed Sync Complete (0x02) — skip duplicate 0x02 for same chunk (match Android)
+  private var syncCompleteProcessedForChunk: [String: Int] = [:]
   
-  /// Pending "start next chunk" — runs 200ms after STOP ACK (BB 09). Matches Android: no next START until device acknowledges STOP.
-  private var pendingStartNextChunkAfterStopResponse: [String: () -> Void] = [:]
+  /// Remaining records to sync: set from total at 0x01, then remaining -= actualCount after each 0x02 (match Android SYNC_FLOW)
+  private var syncRemainingRecords: [String: Int] = [:]
   
-  // MARK: - Data Transfer Deduplication
+  /// Manual sync with record limit: do NOT auto-continue to next chunk (match Android startDataSyncWithRecordCount).
+  private var syncSingleChunkOnly: [String: Bool] = [:]
+  /// Record count for next DATA_SYNC_START when using manual sync (overrides RECORDS_PER_FILE).
+  private var pendingSyncRecordCount: [String: Int] = [:]
   
-  /// Last processed data transfer hex per device (prevents duplicate notification processing)
-  /// iOS BLE can sometimes deliver the same notification multiple times in quick succession
+  /// Delay (seconds) before sending next START(500) after STOP(actualCount). No STOP ACK wait (match Android).
+  private let NEXT_CHUNK_START_DELAY: TimeInterval = 0.2
+  
+  /// Cleared on disconnect; was used for hex dedupe — dedupe is now in live/history layers only
   private var lastDataTransferHex: [String: String] = [:]
-  
-  /// Timestamp of last processed data transfer per device (for time-based deduplication)
   private var lastDataTransferTime: [String: Date] = [:]
   
-  /// Deduplication time window in seconds (ignore duplicate data within this window)
-  private let DATA_TRANSFER_DEDUPE_WINDOW: TimeInterval = 0.5  // 500ms
+  /// Throttle sync_records progress (match Android: 250 records / 500ms) so bridge queue doesn't delay sync_complete
+  private let SYNC_RECORDS_THROTTLE_RECORDS = 250
+  private let SYNC_RECORDS_THROTTLE_MS: TimeInterval = 0.5
+  private var lastSyncRecordsEmitGrandTotal: [String: Int] = [:]
+  private var lastSyncRecordsEmitTime: [String: Date] = [:]
+  
+  /// Batch sync records before sending to JS (match Android: reduces 17k events to ~85)
+  private let SYNC_RECORD_BATCH_SIZE = 200
+  private var syncRecordBuffer: [String: [[String: Any]]] = [:]
   
   // MARK: - Scanning Management
   
@@ -881,6 +910,27 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let isReady = manager.state == .poweredOn
     resolve(["isReady": isReady, "state": manager.state.rawValue])
   }
+
+  /// Returns current BLE client config for white-label (brand name, device patterns, service UUID, manufacturer ID).
+  /// JS layer uses this for UI strings and device acceptance.
+  @objc(getBLEClientConfig:rejecter:)
+  func getBLEClientConfig(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    guard let config = BLEClientConfigHolder.get() else {
+      reject("GET_BLE_CONFIG_ERROR", "BLE config not set", nil)
+      return
+    }
+    var result: [String: Any] = [
+      "brandName": config.brandName,
+      "acceptedDeviceNamePatterns": config.acceptedDeviceNamePatterns,
+      "smartTagServiceUuid": config.smartTagServiceUUID.uuidString,
+      "manufacturerId": config.manufacturerId
+    ]
+    if let passkey = config.defaultPasskey {
+      result["defaultPasskey"] = passkey
+    }
+    resolve(result)
+  }
+
   // MARK: - Device Scanning (React Native API)
   
   /// Start BLE scanning for Smart Health Tag devices with configurable options
@@ -930,10 +980,10 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let useTargetedScan = options["useTargetedScan"] as? Bool ?? false
     let servicesToScan: [CBUUID]?
     if useTargetedScan {
-      servicesToScan = [smartTagServiceUUID]
+      servicesToScan = [bleConfig.smartTagServiceUUID]
       NSLog("🔍 [iOS] Starting FAST targeted BLE scan...")
       NSLog("   - Strategy: Service UUID filter (⚡ Fast)")
-      NSLog("   - Service UUID: 0f0e0d0c-0b0a-0908-0706-050403020100")
+      NSLog("   - Service UUID: \(bleConfig.smartTagServiceUUID.uuidString)")
     } else {
       servicesToScan = nil
       NSLog("🔍 [iOS] Starting BROAD BLE scan...")
@@ -942,8 +992,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     NSLog("   - Scan mode: \(scanMode)")
     NSLog("   - Allow duplicates: \(allowDuplicates)")
     NSLog("   - Duration: \(maxScanDurationMs)ms")
-    NSLog("   - Also looking for: DyreID, Health Tag device name")
-    NSLog("   - Or Manufacturer ID: 0x1234")
+    NSLog("   - Also looking for device name matching: \(bleConfig.acceptedDeviceNamePatterns.joined(separator: ", "))")
+    NSLog("   - Or Manufacturer ID: 0x%04X", bleConfig.manufacturerId)
     
     // First, sync any system-connected devices to our bonded list
     syncSystemBondedDevices()
@@ -952,7 +1002,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     // We must retrieve and emit them explicitly so they appear in the UI
     // Use multiple service UUIDs to catch devices connected with different service discovery states
     let allServiceUUIDs = [
-      smartTagServiceUUID,
+      bleConfig.smartTagServiceUUID,
       BATTERY_SERVICE_UUID,
       DEVICE_INFO_SERVICE_UUID,
       GENERIC_ACCESS_SERVICE_UUID
@@ -981,8 +1031,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       for peripheral in allConnectedPeripherals {
         let deviceId = peripheral.identifier.uuidString
         let deviceName = peripheral.name ?? "Unknown"
-        let isDyreID = deviceName.contains("DyreID") || deviceName.contains("Health Tag")
-        NSLog("      • \(deviceName) (\(deviceId)) - ALREADY CONNECTED (isDyreID: \(isDyreID))")
+        let isAccepted = isAcceptedDevice(name: deviceName)
+        NSLog("      • \(deviceName) (\(deviceId)) - ALREADY CONNECTED (isAccepted: \(isAccepted))")
         
         // Store the peripheral reference in scannedDevices so it can be connected to
         scannedDevices[deviceId] = peripheral
@@ -1114,8 +1164,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           NSLog("      • Device is within range (< 10m)")
           NSLog("      • Bluetooth is enabled on iPhone")
           NSLog("      • Location services are enabled (required for BLE on iOS)")
-          NSLog("      • Device name contains 'DyreID' or 'Health Tag'")
-          NSLog("      • Device advertises Service UUID: 0f0e0d0c-0b0a-0908-0706-050403020100")
+          NSLog("      • Device name matches one of: \(bleConfig.acceptedDeviceNamePatterns.joined(separator: ", "))")
+          NSLog("      • Device advertises Service UUID: \(bleConfig.smartTagServiceUUID.uuidString)")
         } else {
           NSLog("   ✅ Scan successful!")
         }
@@ -1322,26 +1372,35 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let peripheral = connectedPeripherals.first { $0.identifier.uuidString == deviceId }
     if let peripheral = peripheral {
       manualDisconnectInProgress.insert(deviceId)
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1800.0) { 
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1800.0) {
         if self.manualDisconnectInProgress.contains(deviceId) {
           self.manualDisconnectInProgress.remove(deviceId)
         }
       }
-      manager.cancelPeripheralConnection(peripheral)
-      connectedPeripherals.removeAll { $0.identifier.uuidString == deviceId }
-      connectingPeripherals.removeValue(forKey: deviceId)
-      connectionTimeoutTimers[deviceId]?.cancel()
-      connectionTimeoutTimers.removeValue(forKey: deviceId)
-      connectionRetryAttempts.removeValue(forKey: deviceId)
-      if let timer = serviceDiscoveryTimers[deviceId] {
-        timer.invalidate()
-        serviceDiscoveryTimers.removeValue(forKey: deviceId)
+      let didSendStop = ensureDataSyncStopSent(deviceId: deviceId)
+      let doDisconnect: () -> Void = { [weak self] in
+        guard let self = self else { return }
+        manager.cancelPeripheralConnection(peripheral)
+        self.connectedPeripherals.removeAll { $0.identifier.uuidString == deviceId }
+        self.connectingPeripherals.removeValue(forKey: deviceId)
+        self.connectionTimeoutTimers[deviceId]?.cancel()
+        self.connectionTimeoutTimers.removeValue(forKey: deviceId)
+        self.connectionRetryAttempts.removeValue(forKey: deviceId)
+        if let timer = self.serviceDiscoveryTimers[deviceId] {
+          timer.invalidate()
+          self.serviceDiscoveryTimers.removeValue(forKey: deviceId)
+        }
+        if let timer = self.reconnectTimers[deviceId] {
+          timer.invalidate()
+          self.reconnectTimers.removeValue(forKey: deviceId)
+          self.reconnectBackoff.removeValue(forKey: deviceId)
+          self.reconnectAttempts.removeValue(forKey: deviceId)
+        }
       }
-      if let timer = reconnectTimers[deviceId] {
-        timer.invalidate()
-        reconnectTimers.removeValue(forKey: deviceId)
-        reconnectBackoff.removeValue(forKey: deviceId)
-        reconnectAttempts.removeValue(forKey: deviceId) 
+      if didSendStop {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: doDisconnect)
+      } else {
+        doDisconnect()
       }
       resolve(["status": "disconnection_initiated", "deviceId": deviceId])
     } else {
@@ -1457,9 +1516,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   @objc(getManufacturerInfo:rejecter:)
   func getManufacturerInfo(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     resolve([
-      "manufacturerId": SMART_TAG_MANUFACTURER_ID,
-      "manufacturerIdHex": String(format: "0x%04X", SMART_TAG_MANUFACTURER_ID),
-      "manufacturerIdLittleEndian": String(format: "0x%02X%02X", SMART_TAG_MANUFACTURER_ID & 0xFF, (SMART_TAG_MANUFACTURER_ID >> 8) & 0xFF)
+      "manufacturerId": bleConfig.manufacturerId,
+      "manufacturerIdHex": String(format: "0x%04X", bleConfig.manufacturerId),
+      "manufacturerIdLittleEndian": String(format: "0x%02X%02X", bleConfig.manufacturerId & 0xFF, (bleConfig.manufacturerId >> 8) & 0xFF)
     ])
   }
   // MARK: - Data Sync Command Sequence (React Native API)
@@ -1573,14 +1632,77 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       }
     }
   }
+
+  /// Manual sync with a specific record count (e.g. 50). Sends DATA_SYNC_START(count) and does NOT auto-continue
+  /// to the next chunk when the device has more records (match Android startDataSyncWithRecordCount).
+  @objc(startDataSyncWithRecordCount:recordCount:resolver:rejecter:)
+  func startDataSyncWithRecordCount(deviceId: String, recordCount: Int, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    let count = min(0x01F4, max(1, recordCount))
+    NSLog("📤 Data Sync Start (manual, \(count) records) requested for \(deviceId)")
+    let currentState = dataSyncState[deviceId] ?? "idle"
+    if currentState == "syncing" || currentState == "time_syncing" {
+      resolve([
+        "status": "already_syncing",
+        "message": "Data sync already in progress",
+        "deviceId": deviceId
+      ])
+      return
+    }
+    pendingSyncRecordCount[deviceId] = count
+    syncSingleChunkOnly[deviceId] = true
+    dataSyncState[deviceId] = "idle"
+    dataSyncRequested[deviceId] = false
+    hasCompletedInitialSync[deviceId] = false
+    let rtcValid = deviceRTCValidity[deviceId]
+    if rtcValid == nil || rtcValid == false {
+      sendSetSystemTimeCommand(deviceId: deviceId)
+      DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
+        guard let self = self else { return }
+        self.dataSyncRequested[deviceId] = true
+        let success = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+        if success {
+          resolve([
+            "status": "success",
+            "message": "Manual sync started (\(count) records, time synced first)",
+            "deviceId": deviceId,
+            "recordCount": count,
+            "timeSyncRequired": true
+          ])
+        } else {
+          self.pendingSyncRecordCount.removeValue(forKey: deviceId)
+          self.syncSingleChunkOnly.removeValue(forKey: deviceId)
+          self.dataSyncRequested[deviceId] = false
+          reject("SYNC_START_ERROR", "Failed to send data sync start command after time sync", nil)
+        }
+      }
+    } else {
+      dataSyncRequested[deviceId] = true
+      let success = sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+      if success {
+        resolve([
+          "status": "success",
+          "message": "Manual sync started (\(count) records)",
+          "deviceId": deviceId,
+          "recordCount": count,
+          "timeSyncRequired": false
+        ])
+      } else {
+        pendingSyncRecordCount.removeValue(forKey: deviceId)
+        syncSingleChunkOnly.removeValue(forKey: deviceId)
+        dataSyncRequested[deviceId] = false
+        reject("SYNC_START_ERROR", "Failed to send data sync start command", nil)
+      }
+    }
+  }
+
   @objc(readDeviceStatus:resolver:rejecter:)
   func readDeviceStatus(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
     guard let peripheral = connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) else {
       reject("DEVICE_NOT_CONNECTED", "Device not connected", nil)
       return
     }
-    guard let smartTagService = peripheral.services?.first(where: { $0.uuid == SMART_TAG_SERVICE_UUID }),
-          let deviceStatusChar = smartTagService.characteristics?.first(where: { $0.uuid == DEVICE_STATUS_CHAR_UUID }) else {
+    guard let smartTagService = peripheral.services?.first(where: { $0.uuid == self.bleConfig.smartTagServiceUUID }),
+          let deviceStatusChar = smartTagService.characteristics?.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) else {
       reject("CHARACTERISTIC_NOT_FOUND", "Device Status characteristic not found", nil)
       return
     }
@@ -1617,7 +1739,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         self.keepAliveTimers.removeValue(forKey: deviceId)
         return
       }
-      if let smartTagService = peripheral.services?.first(where: { $0.uuid == self.SMART_TAG_SERVICE_UUID }),
+      if let smartTagService = peripheral.services?.first(where: { $0.uuid == self.bleConfig.smartTagServiceUUID }),
          let deviceStatusChar = smartTagService.characteristics?.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) {
         // ✅ FIX: Verify notifications are still enabled during keep-alive (first read only)
         if readCount == 0 {
@@ -1754,7 +1876,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     } else if charUuid == SYSTEM_COMMAND_CHAR_UUID.uuidString {
       parseSystemCommandResponse(deviceId: deviceId, data: data)
     } else if charUuid == DATA_TRANSFER_CHAR_UUID.uuidString {
-      parseDataTransferData(deviceId: deviceId, data: data)
+      let dataCopy = Data(data)
+      let deviceIdForParse = deviceId
+      dataTransferParseQueue.async { [weak self] in
+        self?.parseDataTransferData(deviceId: deviceIdForParse, data: dataCopy)
+      }
     } else if charUuid == BATTERY_LEVEL_CHAR_UUID.uuidString {
       if data.count > 0 {
         let batteryLevel = data[0]
@@ -1802,6 +1928,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     guard data.count >= BLEProtocolConstants.minDeviceStatusSize else {
       return
     }
+    // Match Android: mark if this read was the POST-SYNC CHECK (so we can trigger auto-sync when device has more records).
+    postSyncReadLock.lock()
+    let isPostSyncCheck = pendingPostSyncDeviceStatusRead.remove(deviceId) != nil
+    postSyncReadLock.unlock()
+
     let timestamp = data.withUnsafeBytes { $0.load(as: UInt32.self) }
     let recordCount = data.subdata(in: 4..<6).withUnsafeBytes { $0.load(as: UInt16.self) }
       let batteryVoltage = data.subdata(in: 6..<8).withUnsafeBytes { $0.load(as: UInt16.self) }
@@ -1881,6 +2012,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       }
       if isPending {
         rtcCheckPendingBeforeNotifications.removeValue(forKey: deviceId)
+        NSLog("✅ [DEVICE STATUS] Read complete with recordCount: \(recordCount) (RTC valid: \(isRTCValid))")
         guard let peripheral = connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) else {
           return
         }
@@ -1893,7 +2025,12 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           NSLog("📤 [RTC CHECK] RTC invalid - sending Set System Time command...")
           sendSetSystemTimeCommand(deviceId: deviceId)
         } else {
-          // RTC is valid - proceed directly to data sync
+          // RTC is valid - proceed directly to data sync (match Android connection logs)
+          if recordCount > 0 {
+            NSLog("🔄 [HISTORY SYNC] Starting history sync - \(recordCount) records available")
+          } else {
+            NSLog("⏭️ [SKIP HISTORY SYNC] No records available - entering live mode directly")
+          }
           NSLog("✅ [RTC CHECK] RTC valid - proceeding with data sync...")
           confirmConnection(peripheral: peripheral, deviceId: deviceId)
           
@@ -1924,46 +2061,99 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     if notificationNum > 1 {
     }
     NSLog("═══════════════════════════════════════════════════════")
-    // During grace period after sync complete, don't overwrite with higher tag count (tag may report stale value)
-    // While sync is in progress, don't overwrite — tag may report mid-transfer value (e.g. 201 = progress)
-    let shouldUpdateRecordCount: Bool
-    if let lastSyncTime = lastSyncCompleteTime[deviceId] {
+    // ✅ FIX: Always store and send the REAL record count from the device.
+    // deviceRecordCounts now exclusively holds the real device count (never overwritten by chunk math).
+    // During sync, still update deviceRecordCounts — the device reports the real current state.
+    // The sync progress is tracked separately in syncRemainingRecords.
+    let recordCountToSend = Int(recordCount)
+    deviceRecordCounts[deviceId] = Int(recordCount)
+    if syncState == "syncing" || syncState == "stopping" || syncState == "preparing" {
+      NSLog("   [SYNC IN PROGRESS] Device reports \(recordCount) records (real device count, sync in progress)")
+    } else if let lastSyncTime = lastSyncCompleteTime[deviceId] {
       let timeSinceSync = Date().timeIntervalSince(lastSyncTime)
-      if timeSinceSync < SYNC_COMPLETE_GRACE_PERIOD_SECONDS {
-        let current = deviceRecordCounts[deviceId] ?? 0
-        if Int(recordCount) > current {
-          NSLog("   [GRACE] Ignoring tag record count \(recordCount) (keeping \(current)) until grace period ends")
+      if timeSinceSync < SYNC_COMPLETE_GRACE_PERIOD_SECONDS && recordCount > 0 {
+        NSLog("   [POST-SYNC GRACE] Device reports \(recordCount) records during grace period (may be stale or new) (isPostSyncCheck=\(isPostSyncCheck))")
+        if isPostSyncCheck {
+          NSLog("   🔄 [POST-SYNC AUTO-SYNC] \(recordCount) new records detected after sync – starting auto-sync for complete history")
+          lastSyncCompleteTime.removeValue(forKey: deviceId)
+          deviceRecordCounts[deviceId] = Int(recordCount)
+          dataSyncState[deviceId] = "idle"
         }
-        shouldUpdateRecordCount = false
-      } else {
+      } else if timeSinceSync >= SYNC_COMPLETE_GRACE_PERIOD_SECONDS {
         lastSyncCompleteTime.removeValue(forKey: deviceId)
-        shouldUpdateRecordCount = (syncState != "syncing")
       }
-    } else {
-      shouldUpdateRecordCount = (syncState != "syncing")
     }
-    if shouldUpdateRecordCount {
-      deviceRecordCounts[deviceId] = Int(recordCount)
-    } else if syncState == "syncing" {
-      let current = deviceRecordCounts[deviceId] ?? 0
-      NSLog("   [SYNC IN PROGRESS] Ignoring tag record count \(recordCount) (keeping \(current)) until sync finishes")
-    }
+    let historySyncInProgress = (syncState == "syncing")
     let timestampMs = UInt64(timestamp) * 1000
-    let deviceData: [String: Any] = [
+    var deviceData: [String: Any] = [
       "deviceId": deviceId,
       "deviceName": connectedPeripherals.first { $0.identifier.uuidString == deviceId }?.name ?? "Unknown",
       "timestamp": timestampMs,
-      "batteryVoltage": batteryVoltage,      
-      "recordCount": recordCount,            
+      "batteryVoltage": batteryVoltage,
+      "recordCount": recordCountToSend,
       "lastUpdate": Date().timeIntervalSince1970 * 1000,
       "rawBuffer": dataToHexString(data),
       "sddCompliant": data.count == 8,
-      "sddVersion": "1.3",                   
+      "sddVersion": "1.3",
       "rtcValid": isRTCValid,
-      "dataSource": isRTCValid ? "live" : "cached"
+      "dataSource": isRTCValid ? "live" : "cached",
+      "historySyncInProgress": historySyncInProgress
     ]
-    NSLog("📤 Sending device status update (SDD v1.3) for: \(deviceId) - Battery Voltage: \(batteryVoltage)mV (percentage from 2A19), Records: \(recordCount), RTC Valid: \(isRTCValid)")
+    NSLog("📤 Sending device status update (SDD v1.4) for: \(deviceId) - Battery Voltage: \(batteryVoltage)mV (percentage from 2A19), Records: \(recordCountToSend), RTC Valid: \(isRTCValid), historySyncInProgress: \(historySyncInProgress)")
+    if recordCountToSend > 0 {
+      NSLog("📦 \(recordCountToSend) records available for sync on \(deviceId)")
+    }
     sendDeviceDataUpdateEvent(deviceId: deviceId, deviceData: deviceData)
+    // Match Android: also send deviceDataUpdate with type "device_status" (JS may listen for this).
+    let deviceDataUpdateBody: [String: Any] = [
+      "deviceId": deviceId,
+      "type": "device_status",
+      "historySyncInProgress": historySyncInProgress,
+      "deviceData": [
+        "batteryVoltage": batteryVoltage,
+        "recordCount": recordCountToSend,
+        "rtcValid": isRTCValid,
+        "lastUpdate": Date().timeIntervalSince1970 * 1000
+      ]
+    ]
+    sendEvent(withName: "deviceDataUpdate", body: deviceDataUpdateBody)
+
+    // Match Android: if this was the POST-SYNC CHECK read and device has more records, trigger auto-sync for complete history (300ms delay like Android).
+    if isPostSyncCheck && recordCount > 0 {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+        guard let self = self else { return }
+        let currentState = self.dataSyncState[deviceId] ?? "idle"
+        if currentState == "syncing" || currentState == "stopping" {
+          NSLog("⏭️ [POST-SYNC AUTO-SYNC] Skipping – sync already in progress for \(deviceId)")
+          return
+        }
+        let postSyncRecordCount = Int(recordCount)
+        NSLog("🔄 [POST-SYNC AUTO-SYNC] Triggering auto-sync for \(postSyncRecordCount) remaining records on \(deviceId)")
+        NSLog("📦 [POST-SYNC AUTO-SYNC] Starting sync for \(postSyncRecordCount) accumulated records on \(deviceId)")
+        self.dataSyncState[deviceId] = "preparing"
+        self.dataSyncRequested[deviceId] = true
+        self.syncRecordsReceived.removeValue(forKey: deviceId)
+        self.syncTotalRecords.removeValue(forKey: deviceId)
+        self.syncRemainingRecords.removeValue(forKey: deviceId)
+        self.syncCurrentFileNumber.removeValue(forKey: deviceId)
+        self.syncGrandTotalReceived.removeValue(forKey: deviceId)
+        self.syncCompleteProcessedForChunk.removeValue(forKey: deviceId)
+        _ = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+        if self.dataSyncState[deviceId] == "syncing" {
+          NSLog("✅ [POST-SYNC AUTO-SYNC] Started sync for \(deviceId)")
+          self.sendEvent(withName: "DataTransfer", body: [
+            "deviceId": deviceId,
+            "type": "sync_start",
+            "totalRecords": postSyncRecordCount,
+            "isPostSyncContinuation": true
+          ])
+        } else {
+          NSLog("❌ [POST-SYNC AUTO-SYNC] Failed to start sync for \(deviceId)")
+          self.dataSyncState[deviceId] = "idle"
+          self.dataSyncRequested[deviceId] = false
+        }
+      }
+    }
   }
   private func buildSystemCommandPacket(commandId: UInt8, payload: [UInt8] = []) -> Data {
     guard payload.count <= BLEProtocolConstants.maxPayloadSize else {
@@ -1991,8 +2181,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     guard peripheral.state == .connected else {
       return false
     }
-    guard let smartTagService = peripheral.services?.first(where: { $0.uuid == SMART_TAG_SERVICE_UUID }),
-          let systemCommandChar = smartTagService.characteristics?.first(where: { $0.uuid == SYSTEM_COMMAND_CHAR_UUID }) else {
+    guard let smartTagService = peripheral.services?.first(where: { $0.uuid == self.bleConfig.smartTagServiceUUID }),
+          let systemCommandChar = smartTagService.characteristics?.first(where: { $0.uuid == self.SYSTEM_COMMAND_CHAR_UUID }) else {
       return false
     }
     guard systemCommandChar.properties.contains(.write) || systemCommandChar.properties.contains(.writeWithoutResponse) else {
@@ -2047,7 +2237,11 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   /// Flow: Enable notifications → Read Device Status → Check RTC → Send Set Time if needed → Data Sync
   private func enableNotificationsFirst(peripheral: CBPeripheral, deviceId: String) {
     NSLog("🔔 [NOTIFICATIONS] enableNotificationsFirst called for \(deviceId) (SDD v1.5 correct flow)")
-    
+    // Restore connection interval to 360ms if DFU failed earlier (firmware stayed at 15ms)
+    if dfuFailedNeedsConnIntervalRestore.remove(deviceId) != nil {
+      NSLog("📤 [DFU RESTORE] Restoring connection interval to 360ms for \(deviceId) (DFU had failed)")
+      _ = sendSystemCommand(deviceId: deviceId, commandId: 0x03, payload: [0x68, 0x01, 0x00, 0x00])
+    }
     // Guard against duplicate calls (race condition between auto-connect and RTC check paths)
     if notificationEnableInProgress[deviceId] == true {
       NSLog("⏭️ [NOTIFICATIONS] Notification enable already in progress for \(deviceId) - skipping duplicate call")
@@ -2371,8 +2565,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   private func triggerDeviceStatusReadAfterSetTime(deviceId: String, peripheral: CBPeripheral) {
     NSLog("📖 [POST SET TIME] Reading Device Status after RTC sync for \(deviceId)")
     
-    guard let smartTagService = peripheral.services?.first(where: { $0.uuid == SMART_TAG_SERVICE_UUID }),
-          let deviceStatusChar = smartTagService.characteristics?.first(where: { $0.uuid == DEVICE_STATUS_CHAR_UUID }) else {
+    guard let smartTagService = peripheral.services?.first(where: { $0.uuid == self.bleConfig.smartTagServiceUUID }),
+          let deviceStatusChar = smartTagService.characteristics?.first(where: { $0.uuid == self.DEVICE_STATUS_CHAR_UUID }) else {
       NSLog("⚠️ [POST SET TIME] Device Status characteristic not found - falling back to sendDataAcquisitionAndLiveNotifications")
       sendDataAcquisitionAndLiveNotifications(deviceId: deviceId, forceSync: false)
       return
@@ -2394,12 +2588,23 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   /// - Parameters:
   ///   - deviceId: UUID string of the device
   ///   - recordsAcknowledged: Number of records to acknowledge (default: 500 to match AA08 request)
+  /// If we sent DATA_SYNC_START but are about to disconnect without having sent DATA_SYNC_STOP,
+  /// send STOP now so the device can enable live notifications. Device requires STOP after START.
+  /// - Returns: true if STOP was sent (caller should delay disconnect so write can complete)
+  private func ensureDataSyncStopSent(deviceId: String) -> Bool {
+    let state = dataSyncState[deviceId] ?? "idle"
+    guard state == "syncing" || state == "stopping" else { return false }
+    let count = UInt16(min(0x01F4, syncRecordsReceived[deviceId] ?? 0))
+    NSLog("📤 [SYNC GUARANTEE] Sending DATA_SYNC_STOP(\(count)) so device can enable live mode (state=\(state))")
+    return sendDataSyncStopCommand(deviceId: deviceId, recordsAcknowledged: count)
+  }
+
   /// - Returns: true if command was sent successfully
   private func sendDataSyncStopCommand(deviceId: String, recordsAcknowledged: UInt16 = 500) -> Bool {
     let currentState = dataSyncState[deviceId] ?? "idle"
     // Allow sending AA09 in "complete" state as well - it's an acknowledgment after sync completion
     // This matches nRF Connect pattern where AA09 is sent to acknowledge/cleanup after receiving sync complete
-    guard currentState == "syncing" || currentState == "idle" || currentState == "complete" else {
+    guard currentState == "syncing" || currentState == "stopping" || currentState == "idle" || currentState == "complete" else {
       NSLog("⚠️ [AA09] Cannot send Data Sync Stop - invalid state: \(currentState)")
       return false
     }
@@ -2420,6 +2625,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       // Don't reset state here - let the response handler do it
     } else {
       NSLog("❌ [AA09] Failed to send Data Sync Stop command")
+      // Parity with Android: clear state so next DATA_SYNC_START can run (avoid stuck "stopping")
+      dataSyncState[deviceId] = "idle"
+      NSLog("   Cleared sync state to idle so next START can run")
     }
     return success
   }
@@ -2437,10 +2645,16 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     }
     let recordCount = deviceRecordCounts[deviceId] ?? 0
     if retryAttempt == 0 && !isContinuationChunk {
-      syncTotalRecords[deviceId] = recordCount
+      // Manual sync: use requested count (independent of device total). Else use device recordCount.
+      let manualCount = pendingSyncRecordCount[deviceId]
+      let sessionTotal = (manualCount != nil && manualCount! > 0) ? min(0x01F4, max(1, manualCount!)) : recordCount
+      syncTotalRecords[deviceId] = sessionTotal
       syncRecordsReceived[deviceId] = 0
       syncCurrentFileNumber[deviceId] = 1
       syncGrandTotalReceived[deviceId] = 0
+      if manualCount != nil && manualCount! > 0 {
+        NSLog("📦 [MANUAL SYNC] Session total=\(sessionTotal) (user requested, independent of device total \(recordCount))")
+      }
       _ = (recordCount + RECORDS_PER_FILE - 1) / RECORDS_PER_FILE
     }
     let currentFileNum = syncCurrentFileNumber[deviceId] ?? 1
@@ -2453,18 +2667,10 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     } else {
     }
     NSLog("📤 Sending Data Sync Start command to \(deviceId) (attempt \(retryAttempt + 1)/3)")
-    // Firmware v1.5: Send 2-byte record count. When continuing, request min(500, remaining) per SDD.
-    let totalRecords = syncTotalRecords[deviceId] ?? recordCount
-    let grandTotal = syncGrandTotalReceived[deviceId] ?? 0
-    let remaining = max(0, totalRecords - grandTotal)
-    let recordsToSync: UInt16
-    if remaining > 0 && remaining < RECORDS_PER_FILE {
-      recordsToSync = UInt16(remaining)
-      NSLog("   [LAST CHUNK] Requesting remaining \(remaining) records (total \(totalRecords), have \(grandTotal))")
-    } else {
-      recordsToSync = UInt16(RECORDS_PER_FILE)
-      NSLog("   Command: AA 08 02 (v1.5: requesting \(recordsToSync) records)")
-    }
+    // SDD: Default 500 records per DATA_SYNC_START. Manual sync (startDataSyncWithRecordCount) uses pendingSyncRecordCount.
+    let pendingCount = pendingSyncRecordCount.removeValue(forKey: deviceId)
+    let recordsToSync = UInt16((pendingCount != nil && pendingCount! > 0) ? min(0x01F4, max(1, pendingCount!)) : RECORDS_PER_FILE)
+    NSLog("   Command: AA 08 02 (requesting \(recordsToSync) records)")
     NSLog("   Expected records: \(recordCount)")
     let syncPayload: [UInt8] = [
       UInt8(recordsToSync & 0xFF),           // LSB
@@ -2540,26 +2746,28 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       _ = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: currentRetry + 1)
     }
   }
-  private func parseDataTransferData(deviceId: String, data: Data) {
-    // ✅ DEDUPLICATION: Prevent processing the same notification multiple times
-    // iOS BLE can sometimes deliver the same notification 2-3 times in quick succession
-    let currentHex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
-    let now = Date()
-    
-    if let lastHex = lastDataTransferHex[deviceId],
-       let lastTime = lastDataTransferTime[deviceId],
-       lastHex == currentHex,
-       now.timeIntervalSince(lastTime) < DATA_TRANSFER_DEDUPE_WINDOW {
-      // Skip duplicate notification
-      NSLog("⏭️ [DEDUPE] Skipping duplicate data transfer notification for \(deviceId)")
-      NSLog("   Same data received \(String(format: "%.0f", now.timeIntervalSince(lastTime) * 1000))ms ago")
-      return
+  /// Flush buffered sync records for a device to JS (single DataTransfer event). Reduces bridge crossings during large syncs.
+  private func flushSyncRecordBuffer(deviceId: String) {
+    guard var buf = syncRecordBuffer[deviceId], !buf.isEmpty else { return }
+    let count = buf.count
+    DispatchQueue.main.async { [weak self] in
+      self?.sendEvent(withName: "DataTransfer", body: [
+        "deviceId": deviceId,
+        "type": "record",
+        "records": buf,
+        "recordCount": count,
+        "isPushGenerated": false,
+        "isLiveData": false
+      ])
     }
-    
-    // Update deduplication tracking
-    lastDataTransferHex[deviceId] = currentHex
-    lastDataTransferTime[deviceId] = now
-    
+    syncRecordBuffer[deviceId] = []
+  }
+  
+  private func parseDataTransferData(deviceId: String, data: Data) {
+    guard data.count >= 1 else { return }
+    let dataType = data[0]
+    // No hex-level dedupe: sync must receive and count every notification from the tag.
+    // Dedupe is done in live data and history data (UI/store) layers.
     let wasRequested = dataSyncRequested[deviceId] ?? false
     let syncState = dataSyncState[deviceId] ?? "unknown"
     // "ready" is a connection state, not a sync state. Only check actual sync states.
@@ -2570,31 +2778,35 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       NSLog("═══════════════════════════════════════════════════════")
       return
     }
-    let dataType = data[0]
+    // dataType already set at top of function
     
     // Firmware v1.5: Accept push-generated records (type 0x03) even when not in sync
     // These are automatic notifications sent at each data acquisition interval
     let isPushGeneratedRecord = (dataType == 0x03) && !wasRequested && !isSyncActive
     // ✅ FIX: Always accept Data Sync Complete (type 0x02) - it's the completion signal
-    // This ensures we receive completion even if sync state was cleared prematurely
     let isSyncComplete = (dataType == 0x02)
-    let shouldAcceptData = wasRequested || isSyncActive || isPushGeneratedRecord || isSyncComplete
+    // Accept read error (0x04) and empty read (0x00) so we don't log IGNORING (match Android)
+    let isReadErrorOrEmpty = (dataType == 0x04) || (dataType == 0x00)
+    let shouldAcceptData = wasRequested || isSyncActive || isPushGeneratedRecord || isSyncComplete || isReadErrorOrEmpty
     
-    NSLog("═══════════════════════════════════════════════════════")
-    NSLog("🔍 RAW DATA TRANSFER ANALYSIS")
-    NSLog("═══════════════════════════════════════════════════════")
-    NSLog("Device: \(deviceId)")
-    NSLog("Data Sync Requested: \(wasRequested ? "YES ✅" : "NO ❌")")
-    NSLog("Data Sync State: \(syncState)")
-    NSLog("Data Type: 0x\(String(format: "%02X", dataType))")
-    NSLog("Is Push-Generated: \(isPushGeneratedRecord ? "YES ✅ (v1.5 live record)" : "No (sync record)")")
-    NSLog("Is Sync Complete: \(isSyncComplete ? "YES ✅ (type 0x02)" : "NO ❌")")
-    NSLog("Should Accept Data: \(shouldAcceptData ? "YES ✅" : "NO ❌ (UNSOLICITED)")")
-    NSLog("Total data length: \(data.count) bytes")
-    let allBytes = data.enumerated().map { (index, byte) in
-      String(format: "[\(index)]:%02X", byte)
-    }.joined(separator: " ")
-    NSLog("All bytes: \(allBytes)")
+    let isRecordDuringSync = (dataType == 0x03) && isSyncActive && shouldAcceptData
+    if !isRecordDuringSync {
+      NSLog("═══════════════════════════════════════════════════════")
+      NSLog("🔍 RAW DATA TRANSFER ANALYSIS")
+      NSLog("═══════════════════════════════════════════════════════")
+      NSLog("Device: \(deviceId)")
+      NSLog("Data Sync Requested: \(wasRequested ? "YES ✅" : "NO ❌")")
+      NSLog("Data Sync State: \(syncState)")
+      NSLog("Data Type: 0x\(String(format: "%02X", dataType))")
+      NSLog("Is Push-Generated: \(isPushGeneratedRecord ? "YES ✅ (v1.5 live record)" : "No (sync record)")")
+      NSLog("Is Sync Complete: \(isSyncComplete ? "YES ✅ (type 0x02)" : "NO ❌")")
+      NSLog("Should Accept Data: \(shouldAcceptData ? "YES ✅" : "NO ❌ (UNSOLICITED)")")
+      NSLog("Total data length: \(data.count) bytes")
+      let allBytes = data.enumerated().map { (index, byte) in
+        String(format: "[\(index)]:%02X", byte)
+      }.joined(separator: " ")
+      NSLog("All bytes: \(allBytes)")
+    }
     if !shouldAcceptData {
       NSLog("⚠️ IGNORING UNSOLICITED DATA TRANSFER!")
       NSLog("   This is auto-transmitted cached/test data from device")
@@ -2605,12 +2817,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let length = data[1]
     let payloadEnd = min(2 + Int(length), data.count)
     let payload = data.subdata(in: 2..<payloadEnd)
-    NSLog("Payload length: \(payload.count) bytes")
-    let rawHex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
-    NSLog("Full packet hex: \(rawHex)")
-    let payloadHex = payload.map { String(format: "%02X", $0) }.joined(separator: " ")
-    NSLog("Payload hex: \(payloadHex)")
-    NSLog("═══════════════════════════════════════════════════════")
+    if !isRecordDuringSync {
+      NSLog("Payload length: \(payload.count) bytes")
+      let rawHex = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+      NSLog("Full packet hex: \(rawHex)")
+      let payloadHex = payload.map { String(format: "%02X", $0) }.joined(separator: " ")
+      NSLog("Payload hex: \(payloadHex)")
+      NSLog("═══════════════════════════════════════════════════════")
+    }
     switch dataType {
     case 0x01: 
       NSLog("   Payload hex: \(dataToHexString(payload))")
@@ -2627,6 +2841,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           NSLog("   This appears to be: 10 20 30 40 50 60 70 80 (sequential test pattern)")
           NSLog("   Device may not have real data or firmware needs update")
           NSLog("   Setting record count to 0")
+          let chunkNumTest = self.syncCurrentFileNumber[deviceId] ?? 1
           DispatchQueue.main.async {
             self.sendEvent(withName: "DataTransfer", body: [
               "deviceId": deviceId,
@@ -2634,6 +2849,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
               "totalRecords": 0,
               "payloadLength": payload.count,
               "rawPayload": self.dataToHexString(payload),
+              "chunkNumber": chunkNumTest,
               "isTestData": true,
               "error": "Device sent test/garbage data instead of real record count"
             ])
@@ -2645,37 +2861,38 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           NSLog("⚠️ Warning: Unusually high record count: \(totalRecords)")
           NSLog("   This may indicate data corruption or device issue")
         }
+        let chunkNum = self.syncCurrentFileNumber[deviceId] ?? 1
+        
+        // ✅ FIX: syncTotalRecords is set from REAL device count in sendDataSyncStartCommand.
+        // The BB08 response totalRecords is only the per-chunk count (up to 500).
+        // Use the real total from syncTotalRecords (set from deviceRecordCounts which comes from Device Status).
+        var realTotal = self.syncTotalRecords[deviceId] ?? 0
+        if realTotal <= 0 {
+          // Fallback: if syncTotalRecords not set yet, use deviceRecordCounts
+          realTotal = self.deviceRecordCounts[deviceId] ?? Int(totalRecords)
+          self.syncTotalRecords[deviceId] = realTotal
+        }
+        let chunkRecords = Int(totalRecords) // What the device will send THIS chunk (up to 500)
+        NSLog("📦 [SYNC START] Chunk #\(chunkNum): device will send \(chunkRecords) records this chunk. Real total: \(realTotal)")
+        
         DispatchQueue.main.async {
           self.sendEvent(withName: "DataTransfer", body: [
             "deviceId": deviceId,
             "type": "sync_start",
-            "totalRecords": totalRecords,
+            "totalRecords": realTotal, // Send REAL total to JS, not chunk count
+            "chunkRecords": chunkRecords, // Also send per-chunk count for progress
             "payloadLength": payload.count,
-            "rawPayload": self.dataToHexString(payload)
+            "rawPayload": self.dataToHexString(payload),
+            "chunkNumber": chunkNum
           ])
         }
-        let previousTotal = self.syncTotalRecords[deviceId] ?? 0
-        let deviceStatusTotal = self.deviceRecordCounts[deviceId] ?? 0
-        let grandTotalReceived = self.syncGrandTotalReceived[deviceId] ?? 0
-        // SDD v1.5: Use device status total as floor only when sync_start reported a full chunk (500).
-        // When device reports a small batch (e.g. 10 from manual Start Sync(10)), use as-is so we don't
-        // expand to device status (e.g. 201) and pull extra chunks — user wanted only 10.
-        var newTotal = Int(totalRecords)
-        if deviceStatusTotal > 0 && newTotal < deviceStatusTotal && newTotal >= RECORDS_PER_FILE {
-          newTotal = deviceStatusTotal
-          NSLog("📦 [MULTI-FILE] Device sync_start reported \(totalRecords); using device status total \(deviceStatusTotal) (SDD: sync up to 500 per start)")
-        }
-        if previousTotal > 0 && newTotal < previousTotal {
-          newTotal = previousTotal
-          NSLog("📦 [MULTI-FILE] Device reported \(totalRecords) for this file; keeping app total \(previousTotal)")
-        }
-        if grandTotalReceived > 0 && newTotal <= grandTotalReceived {
-          let minTotal = grandTotalReceived + 1
-          NSLog("📦 [MULTI-FILE] Device reported \(totalRecords) but we have \(grandTotalReceived) already; keeping total >= \(minTotal)")
-          newTotal = max(newTotal, minTotal)
-        }
-        self.syncTotalRecords[deviceId] = newTotal
-        if self.syncRecordsReceived[deviceId] == nil {
+
+        // Only initialize remaining/counters on the first chunk.
+        // For chunk 2+, remaining was already decremented by parseSyncCompleteData.
+        let isFirstChunk = (self.syncCurrentFileNumber[deviceId] ?? 1) == 1 &&
+                           (self.syncGrandTotalReceived[deviceId] ?? 0) == 0
+        if isFirstChunk {
+          self.syncRemainingRecords[deviceId] = realTotal
           self.syncRecordsReceived[deviceId] = 0
           self.syncCurrentFileNumber[deviceId] = 1
           self.syncGrandTotalReceived[deviceId] = 0
@@ -2683,60 +2900,69 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       } else {
         NSLog("❌ Data Sync Start payload too short: \(payload.count) bytes")
       }
-    case 0x02: 
+    case 0x02:
       NSLog("═══════════════════════════════════════════════════════")
-      dataSyncState[deviceId] = "complete"
       systemCommandsSent[deviceId] = false
-      dataSyncRequested[deviceId] = false
       dataSyncRetryCount.removeValue(forKey: deviceId)
       dataSyncTimers[deviceId]?.invalidate()
       dataSyncTimers.removeValue(forKey: deviceId)
       if payload.count >= 2 {
         let count = payload.withUnsafeBytes { $0.load(as: UInt16.self) }
-        // Firmware v1.5: Removed 0xFFFF force termination. Valid range is 0x0001 to 0x01F4
-        // Any value in this range indicates successful sync completion
         let actualCount = Int(count)
         let isValidCount = actualCount >= 0x0001 && actualCount <= 0x01F4
         if isValidCount {
-          NSLog("✅ Data Sync Complete - \(count) records transmitted successfully (v1.5)")
-          let recordsInThisChunk = min(actualCount, RECORDS_PER_FILE) 
-          if actualCount > RECORDS_PER_FILE {
-            NSLog("⚠️ [SDD v1.5] Device reported \(actualCount) records (exceeds \(RECORDS_PER_FILE) limit)")
-            NSLog("   This indicates device sent multiple files in one sync session")
-            NSLog("   Treating as \(RECORDS_PER_FILE) records for this chunk, \(actualCount - RECORDS_PER_FILE) for next")
+          let currentFileNumEarly = self.syncCurrentFileNumber[deviceId] ?? 1
+          if let lastProcessed = self.syncCompleteProcessedForChunk[deviceId], lastProcessed == currentFileNumEarly {
+            NSLog("⏭️ [DEDUPE 0x02] Skipping duplicate Sync Complete for chunk #\(currentFileNumEarly) (already processed)")
+            return
           }
+          self.syncCompleteProcessedForChunk[deviceId] = currentFileNumEarly
+          let recordsReceived = self.syncRecordsReceived[deviceId] ?? 0
+          if actualCount != recordsReceived {
+            NSLog("⚠️ [SYNC COMPLETE] actualCount (\(actualCount)) != recordsReceived (\(recordsReceived)) - using actualCount for STOP")
+          }
+          self.dataSyncState[deviceId] = "stopping"
+          let stopSuccess = self.sendDataSyncStopCommand(deviceId: deviceId, recordsAcknowledged: UInt16(actualCount))
+          if stopSuccess {
+            NSLog("✅ DATA_SYNC_STOP(\(actualCount)) sent (no ACK wait). Chunk #\(currentFileNumEarly)")
+          } else {
+            NSLog("❌ Failed to send DATA_SYNC_STOP command")
+          }
+          self.flushSyncRecordBuffer(deviceId: deviceId)
           let totalRecords = self.syncTotalRecords[deviceId] ?? 0
-          let grandTotal = (self.syncGrandTotalReceived[deviceId] ?? 0) + recordsInThisChunk
-          self.syncGrandTotalReceived[deviceId] = grandTotal
-          let currentFileNum = self.syncCurrentFileNumber[deviceId] ?? 1
-          NSLog("📊 File #\(currentFileNum) complete: \(recordsInThisChunk) records (device reported \(actualCount))")
-          var hasMoreChunks = (grandTotal < totalRecords) || (actualCount > RECORDS_PER_FILE)
-          // SDD v1.5: When tag sends DATA_SYNC_COMPLETE (0x02), that means "data sync complete" — no more data.
-          // So if we have 500/500 and tag sent 0x02, sync is done — do NOT start chunk 2.
-          if actualCount > RECORDS_PER_FILE {
-            let excessRecords = actualCount - RECORDS_PER_FILE
-            NSLog("   Excess records from device: \(excessRecords) (will be synced in next chunk)")
-            if totalRecords < grandTotal + excessRecords {
-              self.syncTotalRecords[deviceId] = grandTotal + excessRecords
-            }
+          let remainingBefore = self.syncRemainingRecords[deviceId] ?? totalRecords
+          let remainingAfter = max(0, remainingBefore - actualCount)
+          self.syncRemainingRecords[deviceId] = remainingAfter
+          // Manual sync (startDataSyncWithRecordCount): single chunk only, do NOT auto-continue (match Android).
+          let isSingleChunkOnly = self.syncSingleChunkOnly.removeValue(forKey: deviceId) ?? false
+          let hasMoreChunks = !isSingleChunkOnly && remainingAfter > 0
+          if isSingleChunkOnly {
+            NSLog("📦 [SYNC COMPLETE] Manual sync (single chunk) - not auto-continuing. remaining=\(remainingAfter)")
           }
+          // ✅ FIX: Do NOT overwrite deviceRecordCounts with chunk-based remainingAfter.
+          let grandTotal = self.syncGrandTotalReceived[deviceId] ?? 0
+          NSLog("📦 [SYNC COMPLETE] actualCount=\(actualCount), remaining \(remainingBefore) -> \(remainingAfter), hasMoreChunks=\(hasMoreChunks)")
           if hasMoreChunks {
-            // Send chunk_complete event for intermediate chunks
             DispatchQueue.main.async {
               self.sendEvent(withName: "DataTransfer", body: [
                 "deviceId": deviceId,
                 "type": "chunk_complete",
                 "success": true,
                 "recordsTransmitted": actualCount,
-                "chunkNumber": currentFileNum,
+                "chunkNumber": currentFileNumEarly,
                 "grandTotal": grandTotal,
                 "totalExpected": totalRecords,
                 "hasMoreChunks": true
               ])
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.NEXT_CHUNK_START_DELAY) { [weak self] in
+              guard let self = self else { return }
+              self.syncRecordsReceived[deviceId] = 0
+              self.syncCurrentFileNumber[deviceId] = currentFileNumEarly + 1
+              NSLog("📦 Chunk #\(currentFileNumEarly) done. Starting chunk #\(currentFileNumEarly + 1) (START(500)) after 200ms.")
+              _ = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
+            }
           } else {
-            // Send sync_complete event for final chunk — use grandTotal (total synced) so connection log and UI show total across all chunks.
-            // Cap at totalRecords to avoid double-count when 0x02 and record path both run (same as Android).
             let totalSynced = min(grandTotal, totalRecords)
             DispatchQueue.main.async {
               self.sendEvent(withName: "DataTransfer", body: [
@@ -2744,79 +2970,68 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
                 "type": "sync_complete",
                 "success": true,
                 "recordsTransmitted": totalSynced,
-                "chunkNumber": currentFileNum,
+                "chunkNumber": currentFileNumEarly,
                 "grandTotal": totalSynced,
                 "totalExpected": totalRecords,
                 "hasMoreChunks": false
               ])
             }
-          }
-          NSLog("═══════════════════════════════════════════════════════")
-          let remainingRecords = max(0, totalRecords - grandTotal)
-          self.deviceRecordCounts[deviceId] = remainingRecords
-          NSLog("✅ Updated record count to \(remainingRecords) after file #\(currentFileNum)")
-          
-          // SDD v1.5: STOP must use tag's actual count (from 0x02) so tag only clears records it sent.
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self = self else { return }
-            
-            let recordsToConfirm = UInt16(actualCount)
-            let cleanupSuccess = self.sendDataSyncStopCommand(deviceId: deviceId, recordsAcknowledged: recordsToConfirm)
-            if cleanupSuccess {
-              if actualCount < RECORDS_PER_FILE {
-                NSLog("✅ [LAST CHUNK] DATA_SYNC_STOP(\(recordsToConfirm)) sent after DATA_SYNC_COMPLETE (tag count) - chunk #\(currentFileNum)")
-              } else {
-                NSLog("✅ [DATA_SYNC_COMPLETE] DATA_SYNC_STOP(\(recordsToConfirm)) sent (tag count) - chunk #\(currentFileNum)")
+            var deviceDataUpdateBody: [String: Any] = [
+              "deviceId": deviceId,
+              "type": "sync_complete",
+              "recordCount": totalSynced,
+              "recordsTransmitted": totalSynced,
+              "totalRecords": totalSynced,
+              "grandTotal": totalSynced,
+              "totalExpected": totalRecords,
+              "hasMoreChunks": false
+            ]
+            deviceDataUpdateBody["deviceData"] = ["recordCount": totalSynced]
+            self.sendEvent(withName: "deviceDataUpdate", body: deviceDataUpdateBody)
+            NSLog("✅ [SYNC] All chunks complete. Total synced: \(totalSynced) records.")
+            self.dataSyncState[deviceId] = "complete"
+            self.dataSyncRequested[deviceId] = false
+            self.hasCompletedInitialSync[deviceId] = true
+            self.systemCommandsSent[deviceId] = false
+            self.syncTotalRecords.removeValue(forKey: deviceId)
+            self.syncRecordsReceived.removeValue(forKey: deviceId)
+            self.syncCurrentFileNumber.removeValue(forKey: deviceId)
+            self.syncGrandTotalReceived.removeValue(forKey: deviceId)
+            self.syncRemainingRecords.removeValue(forKey: deviceId)
+            self.syncCompleteProcessedForChunk.removeValue(forKey: deviceId)
+            self.lastSyncRecordsEmitGrandTotal.removeValue(forKey: deviceId)
+            self.lastSyncRecordsEmitTime.removeValue(forKey: deviceId)
+            self.syncRecordBuffer.removeValue(forKey: deviceId)
+            self.lastSyncCompleteTime[deviceId] = Date()
+            if let peripheral = self.connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) {
+              self.ensureNotificationsEnabledAfterSync(deviceId: deviceId, peripheral: peripheral)
+            }
+            self.startPostSyncKeepAlive(deviceId: deviceId)
+            // Manual sync: skip POST-SYNC CHECK – user requested N records only; don't re-trigger history sync.
+            // Full/auto sync: after sync completes, read Device Status to check for records accumulated during sync.
+            if !isSingleChunkOnly {
+              DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self else { return }
+                guard let peripheral = self.connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) else {
+                  NSLog("⚠️ [POST-SYNC CHECK] Device not connected for \(deviceId) - skipping post-sync check")
+                  return
+                }
+                guard let deviceStatusChar = self.findCharacteristic(peripheral: peripheral, uuid: self.DEVICE_STATUS_CHAR_UUID.uuidString) else {
+                  NSLog("⚠️ [POST-SYNC CHECK] Device Status characteristic not found for \(deviceId)")
+                  return
+                }
+                self.postSyncReadLock.lock()
+                self.pendingPostSyncDeviceStatusRead.insert(deviceId)
+                self.postSyncReadLock.unlock()
+                NSLog("🔄 [POST-SYNC CHECK] Reading device status to check for records accumulated during sync...")
+                peripheral.readValue(for: deviceStatusChar)
               }
             } else {
-              NSLog("❌ Failed to send DATA_SYNC_STOP command")
-            }
-            self.recordPathChunkAdvanced.removeValue(forKey: deviceId)
-            
-            if hasMoreChunks {
-              let nextFileNum = currentFileNum + 1
-              self.pendingStartNextChunkAfterStopResponse[deviceId] = { [weak self] in
-                guard let self = self else { return }
-                self.recordPathChunkAdvanced.removeValue(forKey: deviceId)
-                self.syncCurrentFileNumber[deviceId] = nextFileNum
-                self.syncRecordsReceived[deviceId] = 0
-                NSLog("📦 [CHUNKED SYNC] Chunk #\(currentFileNum) complete (\(actualCount) records). Progress: \(grandTotal)/\(totalRecords). Starting chunk #\(nextFileNum)...")
-                let startSuccess = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
-                if startSuccess {
-                  NSLog("✅ [CHUNKED SYNC] Started chunk #\(nextFileNum) for \(deviceId)")
-                } else {
-                  NSLog("❌ [CHUNKED SYNC] Failed to start chunk #\(nextFileNum)")
-                }
-              }
-            }
-            if !hasMoreChunks {
-              // No more chunks — cleanup (no need to wait for STOP ACK; we're done)
-              let totalSyncedLog = min(grandTotal, totalRecords)
-              NSLog("✅ [CHUNKED SYNC] All chunks complete. Total synced: \(totalSyncedLog) records.")
-              self.hasCompletedInitialSync[deviceId] = true
-              self.systemCommandsSent[deviceId] = false
-              self.dataSyncRequested[deviceId] = false
-              self.syncTotalRecords.removeValue(forKey: deviceId)
-              self.syncRecordsReceived.removeValue(forKey: deviceId)
-              self.syncCurrentFileNumber.removeValue(forKey: deviceId)
-              self.syncGrandTotalReceived.removeValue(forKey: deviceId)
-              self.recordPathChunkAdvanced.removeValue(forKey: deviceId)
-              self.pendingStartNextChunkAfterStopResponse.removeValue(forKey: deviceId)
-              self.lastSyncCompleteTime[deviceId] = Date()
-              NSLog("   📝 Tracked sync completion time to monitor for premature disconnects")
-              NSLog("   ✅ Initial sync completed - device will now send push-generated records automatically")
-              NSLog("   📡 App will receive live data via Data Transfer notifications (type 0x03)")
-              if let peripheral = self.connectedPeripherals.first(where: { $0.identifier.uuidString == deviceId }) {
-                self.ensureNotificationsEnabledAfterSync(deviceId: deviceId, peripheral: peripheral)
-              }
-              self.startPostSyncKeepAlive(deviceId: deviceId)
+              NSLog("⏭️ [MANUAL SYNC] Skipping post-sync check – manual sync is independent of history sync flow")
             }
           }
         } else {
-          // Firmware v1.5: Invalid record count (outside 0x0001-0x01F4 range)
           NSLog("❌ Data Sync Complete - Invalid record count: 0x\(String(format: "%04X", count))")
-          NSLog("   Firmware v1.5: Valid range is 0x0001 to 0x01F4")
-          NSLog("═══════════════════════════════════════════════════════")
           dataSyncState[deviceId] = "failed"
           dataSyncRequested[deviceId] = false
           DispatchQueue.main.async {
@@ -2831,8 +3046,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         }
       } else {
         NSLog("❌ Data Sync Complete payload too short: \(payload.count) bytes")
-        NSLog("═══════════════════════════════════════════════════════")
       }
+      NSLog("═══════════════════════════════════════════════════════")
     case 0x03: 
       NSLog("📋 Record Data")
       if payload.count >= 6 {
@@ -2840,14 +3055,26 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
         var offset = 0
         
         // FIX: Handle full 8-byte records first
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         while offset + 8 <= payload.count {
           let timestamp = payload.subdata(in: offset..<(offset + 4)).withUnsafeBytes { $0.load(as: UInt32.self) }
           let steps = payload.subdata(in: (offset + 4)..<(offset + 6)).withUnsafeBytes { $0.load(as: UInt16.self) }
           let temperature = payload[offset + 6]
           let flags = payload[offset + 7]
+          let recordHex = dataToHexString(payload.subdata(in: offset..<(offset + 8)))
+          let currentTimeSeconds = Int64(Date().timeIntervalSince1970)
+          let oneYearAgo = currentTimeSeconds - (365 * 24 * 3600)
+          let oneDayAhead = currentTimeSeconds + (24 * 3600)
+          let isPastOneYear = Int64(timestamp) < oneYearAgo
+          let isFutureOneDayOrMore = Int64(timestamp) > oneDayAhead
+          if isPastOneYear || isFutureOneDayOrMore {
+            let reason = isPastOneYear ? "past_1_year" : "future_1_day_or_more"
+            let invalidDateStr = dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestamp)))
+            NSLog("⚠️ [INVALID TIMESTAMP] Record \(reason) - timestamp=\(timestamp), date=\(invalidDateStr) | hex=\(recordHex)")
+          }
           let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-          let formatter = DateFormatter()
-          formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+          let formatter = dateFormatter
           let dateString = formatter.string(from: date)
           let record: [String: Any] = [
             "timestamp": timestamp,
@@ -2859,7 +3086,9 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
             "isPartialRecord": false
           ]
           records.append(record)
-          NSLog("   Record \(records.count): \(dateString) - Temp: \(temperature)°C, Steps: \(steps)")
+          if !isSyncActive {
+            NSLog("   Record \(records.count): \(dateString) - Temp: \(temperature)°C, Steps: \(steps)")
+          }
           offset += 8
         }
         
@@ -2882,10 +3111,20 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
             bytesUsed = 7
           }
           
+          let recordHex = dataToHexString(payload.subdata(in: offset..<(offset + bytesUsed)))
+          let currentTimeSeconds = Int64(Date().timeIntervalSince1970)
+          let oneYearAgo = currentTimeSeconds - (365 * 24 * 3600)
+          let oneDayAhead = currentTimeSeconds + (24 * 3600)
+          let isPastOneYear = Int64(timestamp) < oneYearAgo
+          let isFutureOneDayOrMore = Int64(timestamp) > oneDayAhead
+          if isPastOneYear || isFutureOneDayOrMore {
+            let reason = isPastOneYear ? "past_1_year" : "future_1_day_or_more"
+            let invalidDateStr = dateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestamp)))
+            NSLog("⚠️ [INVALID TIMESTAMP] Record \(reason) - timestamp=\(timestamp), date=\(invalidDateStr) | hex=\(recordHex)")
+          }
+          
           let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-          let formatter = DateFormatter()
-          formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-          let dateString = formatter.string(from: date)
+          let dateString = dateFormatter.string(from: date)
           
           // FIX: 7-byte records are VALID and COMPLETE per SDD v1.5 (timestamp + steps + temp, no flags byte)
           // Only records with < 7 bytes should be marked as partial
@@ -2904,7 +3143,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           
           if isPartial {
             NSLog("⚠️ Parsed partial record: \(dateString) - Temp: \(temperature)°C, Steps: \(steps) (PARTIAL - \(remainingBytes) bytes)")
-          } else {
+          } else if !isSyncActive {
             NSLog("✅ Parsed 7-byte record (no flags byte): \(dateString) - Temp: \(temperature)°C, Steps: \(steps)")
           }
           offset += bytesUsed
@@ -2928,102 +3167,71 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           return
         }
         
-        // Sync record: Process as part of sync operation
-        let currentReceived = syncRecordsReceived[deviceId] ?? 0
-        let newTotal = currentReceived + records.count
-        // When sync was force-completed or cleaned up, syncTotalRecords may be 0; use device count so we never emit "X/0"
-        var totalExpected = syncTotalRecords[deviceId] ?? 0
-        if totalExpected <= 0 {
-          totalExpected = deviceRecordCounts[deviceId] ?? 0
-        }
-        let currentGrandTotal = syncGrandTotalReceived[deviceId] ?? 0
-        
-        NSLog("📊 Records in current chunk: \(newTotal) / \(RECORDS_PER_FILE)")
-        
-        if newTotal >= RECORDS_PER_FILE {
-          // SDD v1.5: Do NOT send STOP here. Wait for tag's DATA_SYNC_COMPLETE (0x02) and send STOP(actualCount) so tag only clears records it sent.
-          NSLog("⚠️ [500 BOUNDARY HIT] Chunk has \(newTotal) records (current=\(currentReceived), new=\(records.count))")
-          NSLog("   Waiting for tag 0x02, then STOP(actualCount); next START after STOP ACK.")
-          
-          let excessRecords = newTotal - RECORDS_PER_FILE
-          let cumulativeForBoundary = currentGrandTotal + min(newTotal, RECORDS_PER_FILE)
-          if excessRecords > 0 {
-            NSLog("   Excess \(excessRecords) records will roll over to next chunk")
-            let recordsForThisChunk = Array(records.prefix(RECORDS_PER_FILE - currentReceived))
-            DispatchQueue.main.async {
-              self.sendEvent(withName: "DataTransfer", body: [
-                "deviceId": deviceId,
-                "type": "record",
-                "records": recordsForThisChunk,
-                "recordCount": recordsForThisChunk.count,
-                "totalReceived": cumulativeForBoundary,
-                "totalExpected": totalExpected,
-                "isPushGenerated": false,
-                "isLiveData": false
-              ])
-            }
-          } else {
-            DispatchQueue.main.async {
-              self.sendEvent(withName: "DataTransfer", body: [
-                "deviceId": deviceId,
-                "type": "record",
-                "records": records,
-                "recordCount": records.count,
-                "totalReceived": cumulativeForBoundary,
-                "totalExpected": totalExpected,
-                "isPushGenerated": false,
-                "isLiveData": false
-              ])
-            }
-          }
-          
-          syncRecordsReceived[deviceId] = excessRecords
-          
-          DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            var totalRecords = self.syncTotalRecords[deviceId] ?? 0
-            if totalRecords <= 0 { totalRecords = self.deviceRecordCounts[deviceId] ?? 0 }
-            let grandTotal = (self.syncGrandTotalReceived[deviceId] ?? 0) + RECORDS_PER_FILE
-            self.syncGrandTotalReceived[deviceId] = grandTotal
-            let hasMoreChunks = (grandTotal < totalRecords)
-            
-            if hasMoreChunks {
-              self.recordPathChunkAdvanced[deviceId] = true
-              let currentFileNum = self.syncCurrentFileNumber[deviceId] ?? 1
-              let nextFileNum = currentFileNum + 1
-              self.syncCurrentFileNumber[deviceId] = nextFileNum
-              NSLog("📦 [500 BOUNDARY] Chunk #\(currentFileNum) hit 500 records. Waiting for tag 0x02, then STOP(actualCount); next START after STOP ACK.")
-              self.pendingStartNextChunkAfterStopResponse[deviceId] = { [weak self] in
-                guard let self = self else { return }
-                _ = self.sendDataSyncStartCommand(deviceId: deviceId, retryAttempt: 0)
-                NSLog("✅ [CHUNKED SYNC] Started chunk #\(nextFileNum) sync for \(deviceId)")
-              }
-            }
-            // If !hasMoreChunks: sync_complete and cleanup happen when tag sends 0x02 and we send STOP(actualCount) in DATA_SYNC_COMPLETE handler.
-          }
-        } else {
-          // Not at 500 boundary yet, continue receiving
-          syncRecordsReceived[deviceId] = newTotal
-          let cumulativeReceived = currentGrandTotal + newTotal
-          NSLog("📊 Chunk progress: \(newTotal)/500 records (+\(records.count)). Grand total will be: \(cumulativeReceived)/\(totalExpected)")
-          
+        // Sync record: buffer and batch (match Android); flush at chunk/sync end
+        let syncStateNow = dataSyncState[deviceId] ?? "idle"
+        let syncAlreadyEnded = (syncStateNow == "complete" || syncStateNow == "stopping")
+        if syncAlreadyEnded {
+          NSLog("⏭️ [SYNC] Ignoring sync_records emit – sync already \(syncStateNow) (late notification)")
           DispatchQueue.main.async {
             self.sendEvent(withName: "DataTransfer", body: [
               "deviceId": deviceId,
               "type": "record",
               "records": records,
               "recordCount": records.count,
-              "totalReceived": cumulativeReceived,
-              "totalExpected": totalExpected,
               "isPushGenerated": false,
               "isLiveData": false
+            ])
+          }
+          return
+        }
+        let currentReceived = syncRecordsReceived[deviceId] ?? 0
+        let newTotal = currentReceived + records.count
+        syncRecordsReceived[deviceId] = newTotal
+        let currentGrandTotal = syncGrandTotalReceived[deviceId] ?? 0
+        let newGrandTotal = currentGrandTotal + records.count
+        syncGrandTotalReceived[deviceId] = newGrandTotal
+        var totalExpected = syncTotalRecords[deviceId] ?? 0
+        if totalExpected <= 0 {
+          totalExpected = deviceRecordCounts[deviceId] ?? 0
+        }
+        // Batch: add to buffer, send to JS only when buffer reaches BATCH_SIZE (match Android)
+        var buf = syncRecordBuffer[deviceId] ?? []
+        buf.append(contentsOf: records)
+        syncRecordBuffer[deviceId] = buf
+        if buf.count >= SYNC_RECORD_BATCH_SIZE {
+          flushSyncRecordBuffer(deviceId: deviceId)
+        }
+        if newGrandTotal % 500 == 0 || newGrandTotal == totalExpected {
+          NSLog("📊 Chunk progress: \(newTotal) records this chunk. Grand total: \(newGrandTotal)/\(totalExpected)")
+        }
+        // Throttle deviceDataUpdate sync_records (250 records / 500ms) so UI doesn't hang
+        let now = Date()
+        let lastEmitTotal = lastSyncRecordsEmitGrandTotal[deviceId] ?? 0
+        let lastEmitTime = lastSyncRecordsEmitTime[deviceId] ?? Date.distantPast
+        let throttlePass = (newGrandTotal - lastEmitTotal >= SYNC_RECORDS_THROTTLE_RECORDS)
+          || (now.timeIntervalSince(lastEmitTime) >= SYNC_RECORDS_THROTTLE_MS)
+          || (totalExpected > 0 && newGrandTotal >= totalExpected)
+        if throttlePass {
+          lastSyncRecordsEmitGrandTotal[deviceId] = newGrandTotal
+          lastSyncRecordsEmitTime[deviceId] = now
+          DispatchQueue.main.async {
+            self.sendEvent(withName: "deviceDataUpdate", body: [
+              "deviceId": deviceId,
+              "type": "sync_records",
+              "recordsReceived": records.count,
+              "totalReceived": newGrandTotal,
+              "totalExpected": totalExpected,
+              "recordCount": records.count
             ])
           }
         }
       } else {
         NSLog("❌ Record Data payload too short: \(payload.count) bytes")
       }
-    case 0x04: 
+    case 0x00:
+      // Empty read / no data (match Android - accept, no IGNORING)
+      break
+    case 0x04:
       NSLog("❌ Data Read Error")
       DispatchQueue.main.async {
         self.sendEvent(withName: "DataTransfer", body: [
@@ -3185,21 +3393,14 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           dataSyncRetryCount.removeValue(forKey: deviceId)
         }
       }
-    case 0x09: 
+    case 0x09:
       if responseStatus == 0x00 {
         NSLog("✅ Data Sync Stopped - Flash cleared successfully")
         responseData["message"] = "Data sync stopped and flash cleared"
-        // Industry-correct (match Android): Start next chunk ONLY after STOP ACK — prevents GATT queue collision
-        if let pending = pendingStartNextChunkAfterStopResponse.removeValue(forKey: deviceId) {
-          NSLog("✅ [GATT QUEUE] STOP response (BB 09) received — scheduling next START in 200ms")
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { pending() }
-        }
+        // No STOP ACK wait: next START is scheduled in 0x02 path after 200ms (match Android)
       } else {
         NSLog("⚠️ Data Sync Stop returned status: 0x\(String(format: "%02X", responseStatus))")
-        NSLog("   This is expected if device auto-clears flash or doesn't support this command")
-        NSLog("   Device may handle flash management automatically")
         responseData["message"] = "Data sync stop acknowledged (device manages flash)"
-        pendingStartNextChunkAfterStopResponse.removeValue(forKey: deviceId)
       }
     case 0x10: 
       NSLog("✅ System Restart command acknowledged")
@@ -3340,7 +3541,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
           NSLog("")
           NSLog("⚠️ IMPORTANT: iOS System-Level Pairing")
           NSLog("   If reconnection fails, user must FORGET device from iOS Settings:")
-          NSLog("   Settings → Bluetooth → DyreID → Forget This Device")
+          NSLog("   Settings → Bluetooth → \(bleConfig.brandName) → Forget This Device")
           NSLog("")
           return
         }
@@ -3485,7 +3686,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       return false
     }
     let companyId = manufacturerData.withUnsafeBytes { $0.load(as: UInt16.self) }
-    if companyId != SMART_TAG_MANUFACTURER_ID {
+    if companyId != bleConfig.manufacturerId {
       return false
     }
     let bytes = [UInt8](manufacturerData)
@@ -3528,8 +3729,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     
     guard bytes.count > 1 else { return nil }
     let companyId = UInt16(bytes[0]) | (UInt16(bytes[1]) << 8)
-    if companyId != 0x1234 {
-    }
+    guard companyId == bleConfig.manufacturerId else { return nil }
     guard bytes.count > 2 else { return nil }
     let version = bytes[2]
     guard bytes.count > 3 else { return nil }
@@ -3615,8 +3815,6 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     if bytes.count < minLengthV14 {
       NSLog("   📍 MAC ID valid: \(macIdValid), MAC: \(macId)")
     } else if bytes.count != minLengthV14 && bytes.count != minLengthV15 {
-    }
-    if companyId != SMART_TAG_MANUFACTURER_ID {
     }
     // SDD v1.5: "The record count can be configured up to a maximum of 25,000"
     if recordCount > MAX_TOTAL_RECORDS {
@@ -3806,7 +4004,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   }
   @objc(debugConnectionStatus:rejecter:)
   func debugConnectionStatus(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
-    let healthTagConnected = connectedPeripherals.first { $0.name == "Health Tag" }
+    let healthTagConnected = connectedPeripherals.first { isAcceptedDevice(name: $0.name) }
     let healthTagInfo = healthTagConnected != nil ? [
       "name": healthTagConnected?.name ?? "Unknown",
       "uuid": healthTagConnected?.identifier.uuidString ?? "Unknown",
@@ -4056,32 +4254,37 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       resolvedURL = tempFile
     }
     currentMcuMgrDfuDeviceId = deviceId
-    // Notify JS that we released the connection for DFU (same as Android)
-    sendEvent(withName: "DeviceDisconnected", body: [
-      "deviceId": deviceId,
-      "connectionState": "disconnected",
-      "reason": "released_for_dfu"
-    ])
-    // Disconnect and clean up app-side state so McuMgr can have the only link
-    manualDisconnectInProgress.insert(deviceId)
-    connectedPeripherals.removeAll { $0.identifier.uuidString == deviceId }
-    connectingPeripherals.removeValue(forKey: deviceId)
-    connectionTimeoutTimers[deviceId]?.cancel()
-    connectionTimeoutTimers.removeValue(forKey: deviceId)
-    connectionRetryAttempts.removeValue(forKey: deviceId)
-    serviceDiscoveryTimers[deviceId]?.invalidate()
-    serviceDiscoveryTimers.removeValue(forKey: deviceId)
-    reconnectTimers[deviceId]?.invalidate()
-    reconnectTimers.removeValue(forKey: deviceId)
-    reconnectBackoff.removeValue(forKey: deviceId)
-    reconnectAttempts.removeValue(forKey: deviceId)
-    manager.cancelPeripheralConnection(peripheral)
-    let urlToUse = resolvedURL
-    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-      Thread.sleep(forTimeInterval: 5.0)
-      DispatchQueue.main.async {
-        guard let self = self else { return }
-        self.performMcuMgrDfuStart(peripheral: peripheral, deviceId: deviceId, fileURL: urlToUse, resolver: resolve, rejecter: reject)
+    // Step 0: Tell firmware to use 15ms connection interval for fast SMP (same as nRF Connect)
+    let sent15ms = sendSystemCommand(deviceId: deviceId, commandId: 0x03, payload: [0x0F, 0x00, 0x00, 0x00])
+    NSLog("📤 [McuMgr DFU] CMD_SET_CONN_INTERVAL(15ms) %@", sent15ms ? "sent" : "failed (not connected?)")
+    // Wait for write to complete before disconnect, then release connection
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+      guard let self = self else { return }
+      self.sendEvent(withName: "DeviceDisconnected", body: [
+        "deviceId": deviceId,
+        "connectionState": "disconnected",
+        "reason": "released_for_dfu"
+      ])
+      self.manualDisconnectInProgress.insert(deviceId)
+      self.connectedPeripherals.removeAll { $0.identifier.uuidString == deviceId }
+      self.connectingPeripherals.removeValue(forKey: deviceId)
+      self.connectionTimeoutTimers[deviceId]?.cancel()
+      self.connectionTimeoutTimers.removeValue(forKey: deviceId)
+      self.connectionRetryAttempts.removeValue(forKey: deviceId)
+      self.serviceDiscoveryTimers[deviceId]?.invalidate()
+      self.serviceDiscoveryTimers.removeValue(forKey: deviceId)
+      self.reconnectTimers[deviceId]?.invalidate()
+      self.reconnectTimers.removeValue(forKey: deviceId)
+      self.reconnectBackoff.removeValue(forKey: deviceId)
+      self.reconnectAttempts.removeValue(forKey: deviceId)
+      manager.cancelPeripheralConnection(peripheral)
+      let urlToUse = resolvedURL
+      DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Thread.sleep(forTimeInterval: 5.0)
+        DispatchQueue.main.async {
+          guard let self = self else { return }
+          self.performMcuMgrDfuStart(peripheral: peripheral, deviceId: deviceId, fileURL: urlToUse, resolver: resolve, rejecter: reject)
+        }
       }
     }
   }
@@ -4210,12 +4413,18 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     setTimeRetryAttempts.removeValue(forKey: deviceId)
     setTimeResponseReceived.removeValue(forKey: deviceId)
     deviceRecordCounts.removeValue(forKey: deviceId)
+    flushSyncRecordBuffer(deviceId: deviceId)
     syncTotalRecords.removeValue(forKey: deviceId)
     syncRecordsReceived.removeValue(forKey: deviceId)
     syncCurrentFileNumber.removeValue(forKey: deviceId)
     syncGrandTotalReceived.removeValue(forKey: deviceId)
-    recordPathChunkAdvanced.removeValue(forKey: deviceId)
-    pendingStartNextChunkAfterStopResponse.removeValue(forKey: deviceId)
+    syncRemainingRecords.removeValue(forKey: deviceId)
+    syncSingleChunkOnly.removeValue(forKey: deviceId)
+    pendingSyncRecordCount.removeValue(forKey: deviceId)
+    syncCompleteProcessedForChunk.removeValue(forKey: deviceId)
+    lastSyncRecordsEmitGrandTotal.removeValue(forKey: deviceId)
+    lastSyncRecordsEmitTime.removeValue(forKey: deviceId)
+    syncRecordBuffer.removeValue(forKey: deviceId)
     dataSyncRequested.removeValue(forKey: deviceId)
     deviceStatusNotificationCount.removeValue(forKey: deviceId)
     healthCheckFailures.removeValue(forKey: deviceId)
@@ -4373,13 +4582,13 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     let deviceName = peripheral.name ?? "Unknown"
     let deviceId = peripheral.identifier.uuidString
     
-    // Apply device filters
-    let isDyreIDDevice = deviceName == "DyreID" || deviceName.contains("DyreID") || deviceName.contains("Health Tag")
+    // Apply device filters (from BLE client config)
+    let isAcceptedByName = isAcceptedDevice(name: deviceName)
     let serviceUUIDs = advertisementData["kCBAdvDataServiceUUIDs"] as? [CBUUID] ?? []
-    let hasCorrectService = serviceUUIDs.contains(smartTagServiceUUID)
+    let hasCorrectService = serviceUUIDs.contains(bleConfig.smartTagServiceUUID)
     let hasManufacturerID = isSmartHealthTag(advertisementData: advertisementData)
     NSLog("🔍 [iOS] Discovered: \(deviceName) | ID: \(deviceId) | RSSI: \(RSSI)")
-    NSLog("   - Is DyreID device: \(isDyreIDDevice)")
+    NSLog("   - Is accepted device (by name): \(isAcceptedByName)")
     NSLog("   - Has correct service UUID: \(hasCorrectService)")
     NSLog("   - Service UUIDs: \(serviceUUIDs.map { $0.uuidString })")
     NSLog("   - Has valid manufacturer ID: \(hasManufacturerID)")
@@ -4392,13 +4601,13 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     var acceptReason = ""
     if hasManufacturerID {
       shouldAcceptDevice = true
-      acceptReason = "Valid manufacturer ID (0x1234) with proper data structure"
+      acceptReason = "Valid manufacturer ID (0x\(String(format: "%04X", bleConfig.manufacturerId))) with proper data structure"
     } else if hasCorrectService {
       shouldAcceptDevice = true
-      acceptReason = "Correct service UUID (0f0e0d0c-0b0a-0908-0706-050403020100)"
-    } else if isDyreIDDevice {
+      acceptReason = "Correct service UUID (\(bleConfig.smartTagServiceUUID.uuidString))"
+    } else if isAcceptedByName {
       shouldAcceptDevice = true
-      acceptReason = "DyreID/Health Tag device name"
+      acceptReason = "Device name matches accepted patterns (\(bleConfig.acceptedDeviceNamePatterns.joined(separator: ", ")))"
     }
     if !shouldAcceptDevice {
       NSLog("   ❌ Device rejected - does not match any filter criteria")
@@ -4836,8 +5045,8 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
   override func constantsToExport() -> [AnyHashable : Any]! {
     return [
       "initialCount": 0,
-      "MANUFACTURER_ID": SMART_TAG_MANUFACTURER_ID,
-      "MANUFACTURER_ID_HEX": String(format: "0x%04X", SMART_TAG_MANUFACTURER_ID)
+      "MANUFACTURER_ID": bleConfig.manufacturerId,
+      "MANUFACTURER_ID_HEX": String(format: "0x%04X", bleConfig.manufacturerId)
     ]
   }
   /// Called when device connection attempt fails
@@ -5113,7 +5322,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     // Use all known service UUIDs - iOS only returns peripherals that have had
     // that specific service discovered during a previous connection
     let serviceUUIDs: [CBUUID] = [
-      SMART_TAG_SERVICE_UUID,
+      bleConfig.smartTagServiceUUID,
       BATTERY_SERVICE_UUID,  
       DEVICE_INFO_SERVICE_UUID,
       GENERIC_ACCESS_SERVICE_UUID  // Standard service, almost always discovered
@@ -5159,7 +5368,7 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
     var syncedCount = 0
     var removedCount = 0
     let serviceUUIDs: [CBUUID] = [
-      SMART_TAG_SERVICE_UUID,
+      bleConfig.smartTagServiceUUID,
       BATTERY_SERVICE_UUID,
       DEVICE_INFO_SERVICE_UUID,
       GENERIC_ACCESS_SERVICE_UUID
@@ -5806,6 +6015,70 @@ class BridgingCodeModule: RCTEventEmitter, CBCentralManagerDelegate, CBPeriphera
       }
     }
   }
+  // MARK: - Android-specific stubs
+  // These methods exist in the TurboModule spec for cross-platform compatibility.
+  // They are guarded by Platform.OS === 'android' in JS and should never be called on iOS.
+
+  @objc(refreshSystemConnectedDevices:rejecter:)
+  func refreshSystemConnectedDevices(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    reject("PLATFORM_ERROR", "refreshSystemConnectedDevices is Android-only", nil)
+  }
+
+  @objc(readDeviceRSSI:resolver:rejecter:)
+  func readDeviceRSSI(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    reject("PLATFORM_ERROR", "readDeviceRSSI is Android-only; use readRSSI on iOS", nil)
+  }
+
+  @objc(cancelConnection:resolver:rejecter:)
+  func cancelConnection(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    reject("PLATFORM_ERROR", "cancelConnection is Android-only; use disconnectFromDevice on iOS", nil)
+  }
+
+  @objc(getDeviceServices:resolver:rejecter:)
+  func getDeviceServices(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    reject("PLATFORM_ERROR", "getDeviceServices is Android-only; use discoverServices on iOS", nil)
+  }
+
+  @objc(monitorCharacteristicForService:serviceUUID:characteristicUUID:resolver:rejecter:)
+  func monitorCharacteristicForService(deviceId: String, serviceUUID: String, characteristicUUID: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    reject("PLATFORM_ERROR", "monitorCharacteristicForService is Android-only; use enableNotifications on iOS", nil)
+  }
+
+  @objc(readCharacteristicForService:serviceUUID:characteristicUUID:resolver:rejecter:)
+  func readCharacteristicForService(deviceId: String, serviceUUID: String, characteristicUUID: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    reject("PLATFORM_ERROR", "readCharacteristicForService is Android-only; use readCharacteristic on iOS", nil)
+  }
+
+  @objc(isDeviceBonded:resolver:rejecter:)
+  func isDeviceBonded(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(false)
+  }
+
+  @objc(initiateSecurePairing:resolver:rejecter:)
+  func initiateSecurePairing(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(false)
+  }
+
+  @objc(openBluetoothSettings:rejecter:)
+  func openBluetoothSettings(resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(false)
+  }
+
+  @objc(triggerHealthDataApiCall:resolver:rejecter:)
+  func triggerHealthDataApiCall(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(nil)
+  }
+
+  @objc(stopHealthDataApiMonitoring:resolver:rejecter:)
+  func stopHealthDataApiMonitoring(deviceId: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(nil)
+  }
+
+  @objc(onAppStateChanged:resolver:rejecter:)
+  func onAppStateChanged(state: String, resolver resolve: @escaping RCTPromiseResolveBlock, rejecter reject: @escaping RCTPromiseRejectBlock) {
+    resolve(nil)
+  }
+
   private func sendLocalNotificationIfBackground(title: String, body: String) {
     DispatchQueue.main.async {
       if UIApplication.shared.applicationState == .background {

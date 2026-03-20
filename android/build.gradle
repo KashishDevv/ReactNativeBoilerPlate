@@ -1,3 +1,7 @@
+// Help libraries like @react-native-community/netinfo resolve react-native without running node
+// (Gradle/IDE often can't find node when it's from nvm/fnm/volta)
+ext.REACT_NATIVE_NODE_MODULES_DIR = file("${rootDir}/../node_modules/react-native")
+
 buildscript {
     ext {
         buildToolsVersion = "35.0.0"

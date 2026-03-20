@@ -1,25 +1,39 @@
 package com.reactnativeboilerplate;
- 
-import com.facebook.react.ReactPackage;
-import com.facebook.react.ReactPackage;
+
+import com.facebook.react.TurboReactPackage;
 import com.facebook.react.bridge.NativeModule;
 import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.uimanager.ViewManager;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-//import android.widget.Toast;
- 
-public class SamplePackageModule implements ReactPackage {
+import com.facebook.react.module.model.ReactModuleInfo;
+import com.facebook.react.module.model.ReactModuleInfoProvider;
+import java.util.HashMap;
+import java.util.Map;
+
+public class SamplePackageModule extends TurboReactPackage {
+
     @Override
-    public List<ViewManager> createViewManagers(ReactApplicationContext reactContext) {
-        return Collections.emptyList();
+    public NativeModule getModule(String name, ReactApplicationContext reactContext) {
+        if (name.equals(SampleBridgeAndroid.NAME)) {
+            return new SampleBridgeAndroid(reactContext);
+        }
+        return null;
     }
- 
+
     @Override
-    public List<NativeModule> createNativeModules(ReactApplicationContext reactContext) {
-        return Arrays.<NativeModule>asList(
-                new SampleBridgeAndroid(reactContext)
-        );
+    public ReactModuleInfoProvider getReactModuleInfoProvider() {
+        return () -> {
+            Map<String, ReactModuleInfo> moduleInfos = new HashMap<>();
+            moduleInfos.put(
+                SampleBridgeAndroid.NAME,
+                new ReactModuleInfo(
+                    SampleBridgeAndroid.NAME,
+                    SampleBridgeAndroid.class.getName(),
+                    false,  // canOverrideExistingModule
+                    false,  // needsEagerInit
+                    false,  // isCxxModule
+                    true    // isTurboModule
+                )
+            );
+            return moduleInfos;
+        };
     }
 }

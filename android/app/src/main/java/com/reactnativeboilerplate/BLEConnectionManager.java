@@ -34,13 +34,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import com.reactnativeboilerplate.config.BLEClientConfigHolder;
+
 /**
  * Singleton ConnectionManager to handle BLE operations outside of Activities/Fragments
  * Following the Punch Through guide recommendations for reliable BLE connections
  */
 public class BLEConnectionManager {
     private static final String TAG = "BLEConnectionManager";
-    private static final String SMART_TAG_SERVICE_UUID = "0f0e0d0c-0b0a-0908-0706-050403020100";
     private static final String CCC_DESCRIPTOR_UUID = "00002902-0000-1000-8000-00805f9b34fb";
     private static BLEConnectionManager instance;
     private static final Object lock = new Object();
@@ -335,10 +336,11 @@ public class BLEConnectionManager {
         }
         
         try {
-            // Create scan filter for Smart Tag devices
+            // Create scan filter for Smart Tag devices (UUID from client config for white-label)
+            String serviceUuid = BLEClientConfigHolder.get().getSmartTagServiceUuid();
             List<ScanFilter> filters = new ArrayList<>();
             ScanFilter filter = new ScanFilter.Builder()
-                    .setServiceUuid(ParcelUuid.fromString(SMART_TAG_SERVICE_UUID))
+                    .setServiceUuid(ParcelUuid.fromString(serviceUuid))
                     .build();
             filters.add(filter);
             
@@ -509,6 +511,28 @@ public class BLEConnectionManager {
      */
     public void connectToDeviceWithQueueDrivenDiscovery(String deviceId, BluetoothDevice device, BLEConnectionCallback callback) {
         connectToDevice(deviceId, device, callback, false, true);
+    }
+
+    /**
+     * Connect to a previously-bonded device during state restoration (app reopen / cold start).
+     *
+     * Uses autoConnect=true so the Android BLE controller manages the connection timing
+     * instead of attempting an aggressive immediate connect (autoConnect=false). This avoids
+     * GATT error 133 which frequently occurs when:
+     *   - Two bonded devices are restored in parallel (BLE stack overload)
+     *   - The device is bonded but not yet cached (DEVICE_TYPE_UNKNOWN)
+     *   - The BLE controller is still initialising after app launch
+     *
+     * autoConnect=true behaviour:
+     *   - Slow-duty scan (48 ms window / 1280 ms interval) — patient, power-efficient
+     *   - Android initiates the link as soon as the device advertises
+     *   - Never fails with 133 on the initial attempt; times out via our 35 s guard
+     *
+     * discoverServicesHandledByCaller=true is preserved so SampleBridgeAndroid drives
+     * service discovery through its GATT queue (requestMtu → discoverServices).
+     */
+    public void connectToDeviceForStateRestoration(String deviceId, BluetoothDevice device, BLEConnectionCallback callback) {
+        connectToDevice(deviceId, device, callback, true, true);
     }
     
     /**

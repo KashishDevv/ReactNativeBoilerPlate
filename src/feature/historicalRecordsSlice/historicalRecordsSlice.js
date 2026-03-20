@@ -69,26 +69,25 @@ export const historicalRecordsSlice = createSlice({
     },
     
     // Add multiple records for a device (used when syncing)
+    // O(n) dedupe using Set — prevents O(n²) .some() per record during large syncs (2000+ records)
     addRecords: (state, action) => {
       const { deviceId, records } = action.payload;
       if (!state.recordsByDevice[deviceId]) {
         state.recordsByDevice[deviceId] = [];
       }
-      
+      const existing = state.recordsByDevice[deviceId];
+      const existingKeys = new Set(
+        existing.map(r => {
+          const t = getRecordedTimeSeconds(r);
+          return t != null ? `${t}_${r.steps}_${r.temperature}` : null;
+        }).filter(Boolean)
+      );
       records.forEach(record => {
-        // Dedupe by RECORDED TIME only (device time), not received/synced time
         const recordedTime = getRecordedTimeSeconds(record);
-        const isDuplicate = state.recordsByDevice[deviceId].some(r => {
-          const existingRecordedTime = getRecordedTimeSeconds(r);
-          return existingRecordedTime !== null &&
-                 recordedTime !== null &&
-                 existingRecordedTime === recordedTime &&
-                 r.steps === record.steps &&
-                 r.temperature === record.temperature;
-        });
-        
-        if (!isDuplicate) {
-          state.recordsByDevice[deviceId].push({
+        const key = recordedTime != null ? `${recordedTime}_${record.steps}_${record.temperature}` : null;
+        if (key != null && !existingKeys.has(key)) {
+          existingKeys.add(key);
+          existing.push({
             ...record,
             receivedAt: record.receivedAt || new Date().toISOString(),
             deviceId,

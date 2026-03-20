@@ -1,6 +1,7 @@
-import { NativeModules, Platform, NativeEventEmitter } from 'react-native';
+import { Platform, NativeEventEmitter } from 'react-native';
+import NativeBLE from '../NativeBridgingCodeModule';
 
-const { BridgingCodeModule } = NativeModules;
+const BridgingCodeModule = NativeBLE;
 
 class AutoConnectService {
   constructor() {

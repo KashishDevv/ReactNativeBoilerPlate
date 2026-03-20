@@ -1,9 +1,15 @@
+/**
+ * BLE service/characteristic UUIDs and protocol constants.
+ * For white-label: client-specific values (SMART_TAG UUID, MANUFACTURER_COMPANY_ID, device name patterns)
+ * are provided by native BLEClientConfig and exposed via BLEAppConfig (getSmartTagServiceUuid(), getManufacturerId(), getAcceptedDeviceNamePatterns()).
+ * Use BLEAppConfig when you need the current client's values; these constants remain as fallback/default for DyreID.
+ */
 export const BLE_SERVICES = {
   // Standard BLE Services (from SDD)
   GENERIC_ACCESS: '00001800-0000-1000-8000-00805f9b34fb',
   BATTERY: '0000180f-0000-1000-8000-00805f9b34fb',
   DEVICE_INFO: '0000180a-0000-1000-8000-00805f9b34fb',
-  // Smart Health Tag Data Service (from SDD - corrected UUID format)
+  // Smart Health Tag Data Service (from SDD - corrected UUID format). Prefer BLEAppConfig.getSmartTagServiceUuid() for white-label.
   SMART_TAG: '0F0E0D0C-0B0A-0908-0706-050403020100',
   // Alternative service UUIDs that might be used by the device
   SMART_TAG_ALT: '0f0e0d0c-0b0a-0908-0706-050403020100',
@@ -34,7 +40,7 @@ export const BLE_CHARACTERISTICS = {
   SMP_CHARACTERISTIC: 'DA2E7828-FBCE-4E01-AE9E-261174997C48',
 };
 
-// Advertisement parsing
+// Advertisement parsing. Prefer BLEAppConfig.getManufacturerId() for white-label (client-specific ID).
 // ⚠️ ACTION REQUIRED: Replace this with actual Bluetooth SIG assigned Company ID before production
 // Current value 0x1234 is a PLACEHOLDER and must be updated
 export const MANUFACTURER_COMPANY_ID = 0x1234; 
@@ -146,6 +152,21 @@ export const DATA_SYNC_CONFIG = {
   FILE_SIZE_KB: 4,              // Each file is 4KB
   RECORD_SIZE_BYTES: 8,         // Each record is 8 bytes
   // Example: 1,500 records = 3 file chunks, requiring 3 Start/Stop command pairs
+};
+
+/**
+ * Industry-standard sync UI tuning (Fitbit/Garmin-style).
+ * - Main thread stays responsive: heavy work deferred and throttled.
+ * - Progress updates throttled; full list refresh only on sync_complete or throttled during sync.
+ */
+export const SYNC_UI_CONFIG = {
+  REDUX_BATCH_SIZE: 50,
+  REDUX_BATCH_MAX_MS: 150,
+  HEAVY_WORK_THROTTLE_MS: 200,
+  PROGRESS_EMIT_THROTTLE_MS: 500,
+  PROGRESS_EMIT_MIN_RECORDS: 250,
+  LIST_REFRESH_THROTTLE_MS: 500,
+  DEVICE_LIST_UPDATE_THROTTLE_MS: 600,
 };
 
 // ✅ NEW in v1.4: Device Fault Status Codes (SDD v1.4 Table 18 - Enhanced from v1.3)

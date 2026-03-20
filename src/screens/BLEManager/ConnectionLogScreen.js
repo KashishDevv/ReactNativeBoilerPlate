@@ -28,7 +28,7 @@ const ConnectionLogScreen = ({ route, navigation }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const logListenerRef = useRef(null);
+  const listenersRef = useRef(null);
 
   useEffect(() => {
     loadInitialData();
@@ -42,14 +42,20 @@ const ConnectionLogScreen = ({ route, navigation }) => {
 
     return () => {
       clearInterval(connectionCheckInterval);
-      if (logListenerRef.current) {
-        BLEService.off('connectionLogUpdated', logListenerRef.current);
-        BLEService.off('deviceConnected', logListenerRef.current);
-        BLEService.off('deviceDisconnected', logListenerRef.current);
-        BLEService.off('syncDataUpdated', logListenerRef.current);
+      const listeners = listenersRef.current;
+      if (listeners) {
+        BLEService.off('connectionLogUpdated', listeners.handleLogUpdate);
+        BLEService.off('deviceConnected', listeners.handleConnect);
+        BLEService.off('deviceDisconnected', listeners.handleDisconnect);
+        BLEService.off('syncDataUpdated', listeners.handleSyncUpdate);
       }
     };
-  }, [deviceId, reduxLogs]); // ✅ Re-run when Redux logs change
+  }, [deviceId]);
+
+  useEffect(() => {
+    // Redux-persisted logs changed (e.g. new entries added) → refresh merged view
+    loadInitialData();
+  }, [reduxLogs, deviceId]);
 
   const checkConnectionStatus = () => {
     try {
@@ -102,7 +108,7 @@ const ConnectionLogScreen = ({ route, navigation }) => {
     BLEService.on('deviceDisconnected', handleDisconnect);
     BLEService.on('syncDataUpdated', handleSyncUpdate);
     
-    logListenerRef.current = handleLogUpdate;
+    listenersRef.current = { handleLogUpdate, handleConnect, handleDisconnect, handleSyncUpdate };
   };
 
   const loadInitialData = () => {
@@ -436,6 +442,18 @@ const ConnectionLogScreen = ({ route, navigation }) => {
             ) : null}
             {item.deviceRTCValid !== undefined ? (
               <Text style={styles.hexText}>Device RTC Valid: {item.deviceRTCValid ? 'Yes' : 'No'}</Text>
+            ) : null}
+          </>
+        ) : null}
+        {/* ✅ Display invalid timestamp record hex (tag sent past 1 year or future date) */}
+        {item.recordHex ? (
+          <>
+            <Text style={[styles.hexText, { color: '#F44336' }]}>Record Hex: {safeStr(item.recordHex)}</Text>
+            {item.recordTimestampDate ? (
+              <Text style={styles.hexText}>Date from tag: {safeStr(item.recordTimestampDate)}</Text>
+            ) : null}
+            {item.reason ? (
+              <Text style={styles.hexText}>Reason: {safeStr(item.reason)}</Text>
             ) : null}
           </>
         ) : null}

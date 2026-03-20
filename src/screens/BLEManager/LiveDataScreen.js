@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import BLEService from '../../services/ble/BLEService';
+import HealthDataRepository from '../../services/database/HealthDataRepository';
 import { CONNECTION_STATES } from '../../constants/BLEConstants';
 import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
@@ -94,9 +95,16 @@ const LiveDataScreen = ({ route, navigation }) => {
   const loadInitialData = () => {
     try {
       setLoading(true);
-      // All synced records, deduplicated by (time recorded, steps, temperature)
-      const syncRecords = BLEService.getSyncRecordsForDisplay(deviceId);
-
+      // Prefer local DB (6-min aggregated); fallback to in-memory sync records
+      let syncRecords = [];
+      try {
+        syncRecords = HealthDataRepository.getAggregatedRecordsForUI(deviceId, { limit: 2000 });
+      } catch (e) {
+        if (__DEV__) console.warn('[LiveData] DB read failed, using sync records:', e);
+      }
+      if (!syncRecords || syncRecords.length === 0) {
+        syncRecords = BLEService.getSyncRecordsForDisplay(deviceId) || [];
+      }
       if (!syncRecords || syncRecords.length === 0) {
         setRecords([]);
         setLoading(false);
@@ -158,7 +166,7 @@ const LiveDataScreen = ({ route, navigation }) => {
         ? formatDateTimeReceived(new Date(record.receivedAt))
         : timeRecorded;
       const temperature = record.temperature !== null && record.temperature !== undefined
-        ? `${record.temperature}°C`
+        ? `${Number(record.temperature).toFixed(1)}°C`
         : 'N/A';
       const steps = record.steps || 0;
 
@@ -278,8 +286,8 @@ const LiveDataScreen = ({ route, navigation }) => {
       ? formatTime(new Date(item.receivedAt))
       : timeRecorded;
     const steps = item.steps || 0;
-    const temperature = item.temperature !== null && item.temperature !== undefined 
-      ? `${item.temperature}°C`
+    const temperature = item.temperature !== null && item.temperature !== undefined
+      ? `${Number(item.temperature).toFixed(1)}°C`
       : 'N/A';
 
     return (

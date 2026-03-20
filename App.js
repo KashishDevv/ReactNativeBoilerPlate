@@ -14,6 +14,7 @@ import ConnectionInfo from './src/utils/ConnectionInfo';
 import NotificationPermissions from './src/utils/NotificationPermissions';
 import { Platform, StatusBar, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { init as initHealthDataDB } from './src/services/database';
 
 
 function AppContent() {
@@ -39,6 +40,12 @@ function AppContent() {
 
 function App() {
   useEffect(() => {
+    // Init local SQLite DB for health tag data (raw + 6-min aggregated buckets)
+    try {
+      initHealthDataDB();
+    } catch (e) {
+      console.warn('[App] HealthDataDB init failed:', e);
+    }
     // Hide splash screen
     SplashScreen.hide();
     

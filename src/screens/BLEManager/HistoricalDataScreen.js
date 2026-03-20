@@ -14,7 +14,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSelector, useDispatch } from 'react-redux';
 import BLEService from '../../services/ble/BLEService';
+import { SYNC_UI_CONFIG } from '../../constants/BLEConstants';
 import { selectRecordsByDevice, clearDeviceRecords } from '../../feature/historicalRecordsSlice/historicalRecordsSlice';
+import HealthDataRepository from '../../services/database/HealthDataRepository';
 import Colors from '../../theme/Colors';
 import Fonts from '../../theme/Fonts';
 import { Metrics } from '../../theme/Metrics';
@@ -27,6 +29,8 @@ const HistoricalDataScreen = ({ route, navigation }) => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const historicalDataListenerRef = useRef(null);
+  const lastLoadTimeRef = useRef(0);
+  const syncListThrottleMs = SYNC_UI_CONFIG?.LIST_REFRESH_THROTTLE_MS ?? 500;
 
   useEffect(() => {
     loadInitialData();
@@ -38,30 +42,41 @@ const HistoricalDataScreen = ({ route, navigation }) => {
         BLEService.off('syncDataUpdated', historicalDataListenerRef.current);
       }
     };
-  }, [deviceId, reduxRecords]); // ✅ Re-run when Redux records change
+  }, [deviceId]);
+
+  useEffect(() => {
+    const syncStatus = BLEService.getSyncStatus?.(deviceId);
+    const now = Date.now();
+    if (syncStatus?.isActive && (now - lastLoadTimeRef.current < syncListThrottleMs)) {
+      return;
+    }
+    lastLoadTimeRef.current = now;
+    loadInitialData();
+  }, [deviceId, reduxRecords, syncListThrottleMs]);
 
   const setupHistoricalDataListener = () => {
-    // Listen for sync record updates (new records are automatically saved to Redux)
-    // When Redux updates, the component will re-render via the useSelector hook
     const handleDataUpdate = (eventData) => {
-      if (eventData.deviceId === deviceId && 
-          (eventData.type === 'live_record' || eventData.type === 'sync_records' || eventData.type === 'sync_complete')) {
+      if (eventData.deviceId !== deviceId) return;
+      if (eventData.type === 'sync_records') {
+        return;
+      }
+      if (eventData.type === 'live_record' || eventData.type === 'sync_complete') {
         console.log(`📊 [HistoricalData] ${eventData.type} updated, refreshing...`);
+        lastLoadTimeRef.current = 0;
         loadInitialData();
       }
     };
-    
-    // Listen for sync record updates
+
     const handleSyncUpdate = (eventData) => {
-      if (eventData.deviceId === deviceId) {
+      if (eventData.deviceId === deviceId && eventData.type !== 'sync_records') {
         console.log('📊 [HistoricalData] Sync data updated, refreshing...');
+        lastLoadTimeRef.current = 0;
         loadInitialData();
       }
     };
 
     BLEService.on('deviceDataUpdate', handleDataUpdate);
     BLEService.on('syncDataUpdated', handleSyncUpdate);
-    
     historicalDataListenerRef.current = handleDataUpdate;
   };
 
@@ -69,9 +84,17 @@ const HistoricalDataScreen = ({ route, navigation }) => {
     try {
       setLoading(true);
 
-      // All records from Redux, deduplicated by (time recorded, steps, temperature)
-      const allRecords = reduxRecords || [];
-      const historicalRecords = BLEService.deduplicateRecordsByTimeStepsTemp(allRecords);
+      // Prefer local DB (6-min aggregated buckets); fallback to Redux
+      let historicalRecords = [];
+      try {
+        historicalRecords = HealthDataRepository.getAggregatedRecordsForUI(deviceId, { limit: 2000 });
+      } catch (e) {
+        if (__DEV__) console.warn('[HistoricalData] DB read failed, using Redux:', e);
+      }
+      if (historicalRecords.length === 0) {
+        const allRecords = reduxRecords || [];
+        historicalRecords = BLEService.deduplicateRecordsByTimeStepsTemp(allRecords);
+      }
 
       if (historicalRecords.length === 0) {
         setRecords([]);
@@ -133,7 +156,7 @@ const HistoricalDataScreen = ({ route, navigation }) => {
         ? formatDateTimeReceived(new Date(record.receivedAt))
         : timeRecorded;
       const temperature = record.temperature !== null && record.temperature !== undefined
-        ? `${record.temperature}°C`
+        ? `${Number(record.temperature).toFixed(1)}°C`
         : 'N/A';
       const steps = record.steps || 0;
 
@@ -166,10 +189,8 @@ const HistoricalDataScreen = ({ route, navigation }) => {
           style: 'destructive',
           onPress: async () => {
             try {
-              // ✅ Clear from Redux only (historical records are stored in Redux)
-              // Do NOT clear BLEService sync records - those are for Live Data
+              HealthDataRepository.clearDeviceData(deviceId);
               dispatch(clearDeviceRecords({ deviceId }));
-              
               setRecords([]);
               Alert.alert('Data Cleared', 'All historical records have been cleared. Live data remains intact.');
             } catch (error) {
@@ -252,8 +273,8 @@ const HistoricalDataScreen = ({ route, navigation }) => {
       ? formatTime(new Date(item.receivedAt))
       : timeRecorded;
     const steps = item.steps || 0;
-    const temperature = item.temperature !== null && item.temperature !== undefined 
-      ? `${item.temperature}°C`
+    const temperature = item.temperature !== null && item.temperature !== undefined
+      ? `${Number(item.temperature).toFixed(1)}°C`
       : 'N/A';
 
     return (
